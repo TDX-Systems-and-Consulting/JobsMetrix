@@ -3255,7 +3255,7 @@ function renderTaskNodeRow(node, depth, phase, room, isOwner, siblings, siblingI
     <div class="gantt-name-cell" style="padding-left:${indentPx}px;color:${isDone?'var(--muted)':'#cbd5e1'}">
       ${hasKids ? `<span class="gantt-collapse-btn" onclick="event.stopPropagation();ganttToggleTaskNode('${node.id}')" style="cursor:pointer">${collapsed?'▶':'▼'}</span>` : ''}
       ${isReal ? `<span style="color:var(--muted);font-size:.68rem;margin-right:4px" title="Task #${node._ganttNum} — reference this number when setting dependencies elsewhere">#${node._ganttNum}</span>` : ''}
-      <span style="${isDone?'text-decoration:line-through;opacity:.5':''}">${esc(node.name)}</span>
+      <span class="gantt-task-name-text" style="${isDone?'text-decoration:line-through;opacity:.5':''}">${esc(node.name)}</span>
       ${isReal && isOwner ? `
         <span style="display:inline-flex;gap:2px;margin-left:6px;flex-shrink:0">
           ${canOutdent ? `<button onclick="event.stopPropagation();outdentGanttTask('${phase.id}','${room.id}','${node.id}')" title="Outdent — promote up one level" style="background:none;border:1px solid rgba(110,145,210,.25);border-radius:4px;color:var(--muted);cursor:pointer;font-size:.65rem;padding:0 4px">◀</button>` : ''}
@@ -3421,7 +3421,7 @@ function renderGanttLeft(jobId, job) {
       <div class="gantt-name-cell" style="color:#93c5fd">
         ${isOwner ? `<span class="gantt-drag-handle" title="Drag to reorder phases" onclick="event.stopPropagation()">⠿</span>` : ''}
         <span class="gantt-collapse-btn">${phaseCollapsed ? '▶' : '▼'}</span>
-        ${esc(phase.name)}
+        <span class="gantt-task-name-text">${esc(phase.name)}</span>
       </div>
       <div class="gantt-days-cell">${phaseDays !== null ? phaseDays+'d' : '—'}</div>
       <div class="gantt-date-cell gantt-start-cell">${isOwner
@@ -3458,7 +3458,7 @@ function renderGanttLeft(jobId, job) {
           <div class="gantt-name-cell" style="padding-left:24px;color:#e2e8f0">
             <span class="gantt-collapse-btn">${roomCollapsed ? '▶' : '▼'}</span>
             <span style="color:var(--muted);font-size:.68rem;margin-right:4px" title="Room #${room._ganttNum} — reference this number when setting dependencies elsewhere">#${room._ganttNum}</span>
-            ${esc(room.name)}
+            <span class="gantt-task-name-text">${esc(room.name)}</span>
             ${isOwner ? `<button onclick="event.stopPropagation();addGanttTask('${phase.id}','${room.id}')" title="Add a task to this room" style="background:none;border:1px dashed rgba(110,145,210,.3);border-radius:4px;color:var(--muted);cursor:pointer;font-size:.68rem;margin-left:6px;padding:0 5px;flex-shrink:0">+ task</button>` : ''}
             ${statusWarning ? `<span title="${esc(statusWarning)}" style="margin-left:6px;font-size:.72rem;color:#f59e0b;cursor:help">⚠</span>` : ''}
           </div>
