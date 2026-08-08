@@ -25263,6 +25263,16 @@ function loadEpicTree(jobId) {
               assignedTo: t.assignedTo || null,
               costType: t.costType || '',
               unit: t.unit || '',
+              // These four were missing entirely -- every task-level
+              // custom date, duration, and dependency ever saved was
+              // silently discarded on the very next reload, since this
+              // function rebuilds the whole tree from Firestore and
+              // never copied them onto the task object it returns. The
+              // write always succeeded; only the read-back was broken.
+              startDate: t.startDate || null,
+              endDate: t.endDate || null,
+              durationDays: t.durationDays || null,
+              dependsOn: t.dependsOn || [],
             });
           });
 
