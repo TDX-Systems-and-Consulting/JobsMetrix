@@ -3295,7 +3295,9 @@ function renderGanttLeft(jobId, job) {
             ${isOwner ? `<button onclick="event.stopPropagation();openRoomScheduleModal('${phase.id}','${room.id}')" title="${depCount ? depCount+' dependenc'+(depCount===1?'y':'ies')+' set' : 'Set duration and dependencies'}" style="background:none;border:1px solid rgba(110,145,210,.25);border-radius:6px;color:${depCount?'var(--amber)':'var(--muted)'};cursor:pointer;font-size:.68rem;margin-left:6px;padding:1px 5px;flex-shrink:0">🔗${depCount?' '+depCount:''}</button>` : ''}
             ${statusWarning ? `<span title="${esc(statusWarning)}" style="margin-left:6px;font-size:.72rem;color:#f59e0b;cursor:help">⚠</span>` : ''}
           </div>
-          <div class="gantt-days-cell">${circular ? '⚠' : (roomDays !== null ? roomDays+'d' : '—')}</div>
+          <div class="gantt-days-cell" onclick="event.stopPropagation()">${circular ? '⚠' : (isOwner
+            ? `<input type="number" min="1" value="${room.durationDays || (roomDays!==null?roomDays:'')}" placeholder="—" onchange="updateRoomDuration('${phase.id}','${room.id}',this.value)" onclick="event.stopPropagation()" title="Set duration directly — clears any manual Start/Finish override and drives the schedule from here">`
+            : (roomDays !== null ? roomDays+'d' : '—'))}</div>
           <div class="gantt-date-cell gantt-start-cell" onclick="event.stopPropagation()">${circular ? `<span style="color:#f87171;font-size:.72rem" title="Circular dependency — check this room's Schedule settings">⚠ Circular</span>` : (isOwner
             ? `<input type="date" value="${room.startDate||''}" onchange="updateRoomDate('${phase.id}','${room.id}','startDate',this.value)" onclick="event.stopPropagation()" title="${room.startDate?'Custom date — overrides auto-scheduling and dependencies':(depCount?'Computed from dependencies — set a date here to override':'Auto-scheduled from phase dates — set a date here to override')}">`
             : (roomStart||'—'))}
@@ -3347,7 +3349,9 @@ function renderGanttLeft(jobId, job) {
                 <span style="${isDone?'text-decoration:line-through;opacity:.5':''}">${esc(task.name)}</span>
                 ${isReal ? `<button onclick="event.stopPropagation();openTaskScheduleModal('${phase.id}','${room.id}','${task.id}')" title="${taskDepCount ? taskDepCount+' dependenc'+(taskDepCount===1?'y':'ies')+' set' : 'Set duration and dependencies'}" style="background:none;border:1px solid rgba(110,145,210,.25);border-radius:6px;color:${taskDepCount?'var(--amber)':'var(--muted)'};cursor:pointer;font-size:.65rem;margin-left:6px;padding:0 4px;flex-shrink:0">🔗${taskDepCount?' '+taskDepCount:''}</button>` : ''}
               </div>
-              <div class="gantt-days-cell">${taskCircular ? '⚠' : (taskDays !== null ? taskDays+'d' : '—')}</div>
+              <div class="gantt-days-cell" onclick="event.stopPropagation()">${taskCircular ? '⚠' : (isReal && isOwner
+                ? `<input type="number" min="1" value="${task.durationDays || (taskDays!==null?taskDays:'')}" placeholder="—" onchange="updateTaskDuration('${phase.id}','${room.id}','${task.id}',this.value)" onclick="event.stopPropagation()" title="Set duration directly — clears any manual Start/Finish override and drives the schedule from here">`
+                : (taskDays !== null ? taskDays+'d' : '—'))}</div>
               <div class="gantt-date-cell gantt-start-cell" onclick="event.stopPropagation()">${taskCircular ? `<span style="color:#f87171" title="Circular dependency">⚠</span>` : (isReal && isOwner
                 ? `<input type="date" value="${task.startDate||''}" onchange="updateTaskDate('${phase.id}','${room.id}','${task.id}','startDate',this.value)" onclick="event.stopPropagation()" title="${task.startDate?'Custom date — overrides dependency/duration scheduling':(taskDepCount?'Computed from dependencies — set a date here to override':'Set a start date directly, or use 🔗 for duration/dependencies')}">`
                 : (taskStart||'—'))}
@@ -3774,10 +3778,18 @@ function getTaskDates(task, room, phase, _visiting) {
   const depResult = computeDependencyBasedDates(task, task.id, _visiting);
   if (depResult) return depResult; // real dates OR {circular:true} — either way, done
 
-  if (task.durationDays && room && room.startDate) {
+  if (task.durationDays && room && phase) {
     // No dependency, but a duration was set anyway — anchor to the
-    // room's own start if it has one, otherwise stays unscheduled.
-    return { start: room.startDate, end: addDaysISO(room.startDate, Math.max(1, task.durationDays) - 1) };
+    // room's real computed start (override, dependency-based, OR
+    // auto-divided from the phase — whichever getRoomDates resolves
+    // to), not just an explicit room.startDate override. Previously
+    // this required room.startDate specifically, so setting a
+    // duration on a task silently produced nothing at all for any
+    // room relying on normal phase auto-division (the common case).
+    const anchor = getRoomDates(room, phase, _visiting);
+    if (anchor.start) {
+      return { start: anchor.start, end: addDaysISO(anchor.start, Math.max(1, task.durationDays) - 1) };
+    }
   }
 
   return { start: null, end: null };
@@ -3970,9 +3982,9 @@ window.initGanttResize = initGanttResize;
 // panel's own width. Widths persist in localStorage per-browser (a
 // personal display preference, not company data) so they don't reset
 // on every reload.
-const GANTT_COL_MIN = { days: 36, start: 90, end: 90 };
-const GANTT_COL_MAX = { days: 120, start: 320, end: 320 };
-const GANTT_COL_DEFAULT = { days: 48, start: 150, end: 150 };
+const GANTT_COL_MIN = { days: 46, start: 90, end: 90 };
+const GANTT_COL_MAX = { days: 140, start: 320, end: 320 };
+const GANTT_COL_DEFAULT = { days: 64, start: 150, end: 150 };
 const GANTT_COL_STORAGE_KEY = 'jobsmetrix_gantt_col_widths';
 
 function applyStoredGanttColumnWidths() {
@@ -4113,6 +4125,64 @@ async function updateTaskDate(phaseId, roomId, taskId, field, value) {
   }
 }
 window.updateTaskDate = updateTaskDate;
+
+// Duration is now the primary, directly-editable driver of scheduling
+// (Phase 2 of the Gantt rework), not just computed display text.
+// Rule: typing a duration switches the row back to computed
+// scheduling and clears any active manual date override — "pin exact
+// dates" and "let duration drive the schedule" are mutually exclusive
+// states, and silently keeping a stale override active while duration
+// also changed would make the Days column lie about what's actually
+// controlling the row.
+async function updateTaskDuration(phaseId, roomId, taskId, days) {
+  if (!_ganttJobId || !conDb) return;
+  const d = Math.max(1, Math.round(Number(days) || 1));
+  try {
+    const entry = _ganttData.find(p => p.phase.id === phaseId);
+    const roomEntry = entry?.rooms.find(r => r.room.id === roomId);
+    const task = roomEntry?.tasks.find(t => t.id === taskId);
+    if (task) { task.durationDays = d; delete task.startDate; delete task.endDate; }
+    await coll('jobs').doc(_ganttJobId)
+      .collection('estimateGroups').doc(phaseId)
+      .collection('subgroups').doc(roomId)
+      .collection('items').doc(taskId)
+      .update({
+        durationDays: d,
+        startDate: firebase.firestore.FieldValue.delete(),
+        endDate: firebase.firestore.FieldValue.delete(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    renderJobGantt(_ganttJobId);
+  } catch(e) {
+    console.error('updateTaskDuration failed:', e);
+    alert('Could not save duration: ' + e.message);
+  }
+}
+window.updateTaskDuration = updateTaskDuration;
+
+async function updateRoomDuration(phaseId, roomId, days) {
+  if (!_ganttJobId || !conDb) return;
+  const d = Math.max(1, Math.round(Number(days) || 1));
+  try {
+    const entry = _ganttData.find(p => p.phase.id === phaseId);
+    const roomEntry = entry?.rooms.find(r => r.room.id === roomId);
+    if (roomEntry) { roomEntry.room.durationDays = d; delete roomEntry.room.startDate; delete roomEntry.room.endDate; }
+    await coll('jobs').doc(_ganttJobId)
+      .collection('estimateGroups').doc(phaseId)
+      .collection('subgroups').doc(roomId)
+      .update({
+        durationDays: d,
+        startDate: firebase.firestore.FieldValue.delete(),
+        endDate: firebase.firestore.FieldValue.delete(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    renderJobGantt(_ganttJobId);
+  } catch(e) {
+    console.error('updateRoomDuration failed:', e);
+    alert('Could not save duration: ' + e.message);
+  }
+}
+window.updateRoomDuration = updateRoomDuration;
 
 async function clearTaskDateOverride(phaseId, roomId, taskId) {
   if (!_ganttJobId || !conDb || !confirm('Clear this task\'s custom dates and go back to dependency/duration-based scheduling?')) return;
