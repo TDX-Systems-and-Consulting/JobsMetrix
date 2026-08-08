@@ -479,10 +479,10 @@
     .gantt-left-row.task-row:hover { background:rgba(245,158,11,.05); }
     .gantt-name-cell { flex:1; min-width:0; padding:6px 10px; font-size:.8rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border-right:1px solid rgba(110,145,210,.1); display:flex; align-items:center; gap:6px; text-align:left; }
     .gantt-days-cell { width:var(--gc-days); flex-shrink:0; padding:4px; font-size:.75rem; color:var(--muted); text-align:center; border-right:1px solid rgba(110,145,210,.1); }
-    .gantt-date-cell { flex-shrink:0; padding:3px 6px; font-size:.72rem; color:var(--muted); border-right:1px solid rgba(110,145,210,.1); }
+    .gantt-date-cell { flex-shrink:0; padding:3px 6px; font-size:.72rem; color:var(--muted); border-right:1px solid rgba(110,145,210,.1); display:flex; align-items:center; gap:3px; }
     .gantt-start-cell { width:var(--gc-start); }
     .gantt-end-cell { width:var(--gc-end); }
-    .gantt-date-cell input { background:rgba(110,145,210,.08); border:1px solid rgba(110,145,210,.25); border-radius:5px; color:var(--text); font-size:.72rem; width:calc(100% - 10px); padding:4px 5px; cursor:pointer; min-height:26px; }
+    .gantt-date-cell input { background:rgba(110,145,210,.08); border:1px solid rgba(110,145,210,.25); border-radius:5px; color:var(--text); font-size:.72rem; flex:1; min-width:0; padding:4px 5px; cursor:pointer; min-height:26px; }
     .gantt-date-cell input:focus { outline:1px solid var(--amber); border-radius:3px; background:rgba(245,158,11,.08); }
     .gantt-pct-cell { width:var(--gc-pct); flex-shrink:0; padding:4px; font-size:.75rem; text-align:center; }
     .gantt-col-resizer { width:5px; flex-shrink:0; cursor:col-resize; align-self:stretch; position:relative; z-index:5; }
@@ -4743,7 +4743,7 @@
 
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
-<script src="kytrac-app.js?v=202608081827"></script>
+<script src="kytrac-app.js?v=202608081836"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW

@@ -3303,7 +3303,7 @@ function renderGanttLeft(jobId, job) {
           <div class="gantt-date-cell gantt-end-cell" onclick="event.stopPropagation()">${circular ? '' : (isOwner
             ? `<input type="date" value="${room.endDate||''}" onchange="updateRoomDate('${phase.id}','${room.id}','endDate',this.value)" onclick="event.stopPropagation()" title="${room.endDate?'Custom date — overrides auto-scheduling and dependencies':(depCount?'Computed from dependencies — set a date here to override':'Auto-scheduled from phase dates — set a date here to override')}">`
             : (roomEnd||'—'))}
-            ${isOwner && (room.startDate || room.endDate) ? `<button onclick="event.stopPropagation();clearRoomDateOverride('${phase.id}','${room.id}')" title="Clear override, go back to duration/dependency-based or auto-scheduling" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.7rem;margin-left:4px">✕</button>` : ''}
+            ${isOwner && (room.startDate || room.endDate) ? `<button onclick="event.stopPropagation();clearRoomDateOverride('${phase.id}','${room.id}')" title="Clear override, go back to duration/dependency-based or auto-scheduling" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.7rem;flex-shrink:0;padding:0">✕</button>` : ''}
           </div>
           <div class="gantt-pct-cell" style="color:${pctColor(roomPct)}">${roomPct}%</div>
         </div>`;
@@ -3348,7 +3348,7 @@ function renderGanttLeft(jobId, job) {
               <div class="gantt-date-cell gantt-end-cell" onclick="event.stopPropagation()">${taskCircular ? '' : (isReal && isOwner
                 ? `<input type="date" value="${task.endDate||''}" onchange="updateTaskDate('${phase.id}','${room.id}','${task.id}','endDate',this.value)" onclick="event.stopPropagation()" title="${task.endDate?'Custom date — overrides dependency/duration scheduling':(taskDepCount?'Computed from dependencies — set a date here to override':'Set an end date directly, or use 🔗 for duration/dependencies')}">`
                 : (taskEnd||'—'))}
-                ${isReal && isOwner && (task.startDate || task.endDate) ? `<button onclick="event.stopPropagation();clearTaskDateOverride('${phase.id}','${room.id}','${task.id}')" title="Clear override, go back to duration/dependency-based scheduling" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.7rem;margin-left:4px">✕</button>` : ''}
+                ${isReal && isOwner && (task.startDate || task.endDate) ? `<button onclick="event.stopPropagation();clearTaskDateOverride('${phase.id}','${room.id}','${task.id}')" title="Clear override, go back to duration/dependency-based scheduling" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.7rem;flex-shrink:0;padding:0">✕</button>` : ''}
               </div>
               <div class="gantt-pct-cell" style="color:${isDone?'#10b981':'var(--muted)'}">${isDone?'100':'0'}%</div>
             </div>`;
