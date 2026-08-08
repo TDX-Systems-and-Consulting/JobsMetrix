@@ -3337,7 +3337,7 @@ function renderGanttLeft(jobId, job) {
             const taskDepCount = isReal ? (task.dependsOn || []).length : 0;
             const glyphColor = isDone ? '#10b981' : (tPct > 0 ? '#60a5fa' : 'var(--muted)');
             html += `<div class="gantt-left-row task-row">
-              <div class="gantt-name-cell" style="padding-left:44px;color:${isDone?'var(--muted)':'#cbd5e1'}">
+              <div class="gantt-name-cell" style="padding-left:60px;color:${isDone?'var(--muted)':'#cbd5e1'}">
                 ${isReal ? `<span style="color:var(--muted);font-size:.68rem;margin-right:4px" title="Task #${task._ganttNum} — reference this number when setting dependencies elsewhere">#${task._ganttNum}</span>` : ''}
                 <span style="${isDone?'text-decoration:line-through;opacity:.5':''}">${esc(task.name)}</span>
               </div>
@@ -25367,8 +25367,17 @@ function loadEpicTree(jobId) {
   const jobRef = coll('jobs').doc(jobId);
   return jobRef.collection('estimateGroups').get()
     .then(async groupSnap => {
-      const epics = [];
-      for (const groupDoc of groupSnap.docs) {
+      // Parallelized — this used to await every group's subgroups, and
+      // every subgroup's items, one at a time in a plain for-of loop.
+      // For a job with 106 tasks across ~10 phases/rooms, that's 60+
+      // sequential Firestore round trips on EVERY single Gantt render
+      // (which fires after every edit — duration, date, percent,
+      // anything), each paying real network latency serially. That's
+      // exactly the several-second delay reported after setting a
+      // duration or date. Promise.all across groups, and across each
+      // group's subgroups, turns that into two parallel "waves"
+      // instead of dozens of sequential waits.
+      const epics = await Promise.all(groupSnap.docs.map(async groupDoc => {
         const epicData = groupDoc.data();
         const epic = {
           id: groupDoc.id,
@@ -25383,7 +25392,7 @@ function loadEpicTree(jobId) {
         const subSnap = await jobRef.collection('estimateGroups').doc(groupDoc.id)
           .collection('subgroups').get();
 
-        for (const subDoc of subSnap.docs) {
+        epic.features = await Promise.all(subSnap.docs.map(async subDoc => {
           const featData = subDoc.data();
           const feature = {
             id: subDoc.id,
@@ -25417,31 +25426,21 @@ function loadEpicTree(jobId) {
               assignedTo: t.assignedTo || null,
               costType: t.costType || '',
               unit: t.unit || '',
-              // These four were missing entirely -- every task-level
-              // custom date, duration, and dependency ever saved was
-              // silently discarded on the very next reload, since this
-              // function rebuilds the whole tree from Firestore and
-              // never copied them onto the task object it returns. The
-              // write always succeeded; only the read-back was broken.
               startDate: t.startDate || null,
               endDate: t.endDate || null,
               durationDays: t.durationDays || null,
               dependsOn: t.dependsOn || [],
-              // pctDone deliberately left as t.pctDone with NO fallback
-              // to 0 here -- getTaskPct() derives the right value from
-              // taskStatus when pctDone is undefined (null would break
-              // that "!= null" check). Adding a fallback here would
-              // have been the exact same silent-discard mistake just
-              // fixed above, just for a field that doesn't exist yet.
               pctDone: t.pctDone,
             });
           });
 
-          epic.features.push(feature);
-        }
+          return feature;
+        }));
+
         epic.features.sort((a, b) => a.order - b.order);
-        epics.push(epic);
-      }
+        return epic;
+      }));
+
       epics.sort((a, b) => a.order - b.order);
       return epics;
     });
