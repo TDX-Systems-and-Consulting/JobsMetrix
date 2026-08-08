@@ -3327,6 +3327,7 @@ function renderGanttLeft(jobId, job) {
                 fromScopeNotes: true,
               }));
           }
+          if (!_ganttShowExcluded) displayTasks = displayTasks.filter(t => !t.excludeFromSchedule);
           displayTasks.forEach(task => {
             const isReal = !task.fromScopeNotes;
             const tPct = isReal ? getTaskPct(task) : (task.taskStatus === 'done' ? 100 : 0);
@@ -3337,10 +3338,14 @@ function renderGanttLeft(jobId, job) {
             const taskDays = isReal ? workDaysBetween(taskStart, taskEnd) : 1;
             const taskDepCount = isReal ? (task.dependsOn || []).length : 0;
             const glyphColor = isDone ? '#10b981' : (tPct > 0 ? '#60a5fa' : 'var(--muted)');
-            html += `<div class="gantt-left-row task-row">
+            html += `<div class="gantt-left-row task-row" style="${task.excludeFromSchedule?'opacity:.45':''}">
               <div class="gantt-name-cell" style="padding-left:60px;color:${isDone?'var(--muted)':'#cbd5e1'}">
                 ${isReal ? `<span style="color:var(--muted);font-size:.68rem;margin-right:4px" title="Task #${task._ganttNum} — reference this number when setting dependencies elsewhere">#${task._ganttNum}</span>` : ''}
                 <span style="${isDone?'text-decoration:line-through;opacity:.5':''}">${esc(task.name)}</span>
+                ${isReal && isOwner ? (task.excludeFromSchedule
+                  ? `<button onclick="event.stopPropagation();restoreTaskToSchedule('${phase.id}','${room.id}','${task.id}')" title="Restore to schedule" style="background:none;border:1px solid rgba(110,145,210,.25);border-radius:6px;color:var(--amber);cursor:pointer;font-size:.65rem;margin-left:6px;padding:0 5px;flex-shrink:0">↺ Restore</button>`
+                  : `<button onclick="event.stopPropagation();removeTaskFromSchedule('${phase.id}','${room.id}','${task.id}','${esc(task.name).replace(/'/g,"\\\\'")}')" title="Remove from schedule (stays in the Estimate — price/cost untouched)" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.72rem;margin-left:6px;padding:0;flex-shrink:0">✕</button>`
+                ) : ''}
               </div>
               <div class="gantt-days-cell" onclick="event.stopPropagation()">${taskCircular ? '⚠' : (isReal && isOwner
                 ? `<input type="number" min="1" value="${task.durationDays || (taskDays!==null?taskDays:'')}" placeholder="—" onchange="updateTaskDuration('${phase.id}','${room.id}','${task.id}',this.value)" onclick="event.stopPropagation()" title="Set duration directly — clears any manual Start/Finish override and drives the schedule from here">`
@@ -3477,6 +3482,7 @@ function renderGanttRight(minDate, maxDate, today) {
             .map(l => l.trim()).filter(Boolean)
             .map((line, i) => ({ id: `scope_${room.id}_${i}`, name: line, taskStatus: statusMap[`scope_${room.id}_${i}`] || 'todo' }));
         }
+        if (!_ganttShowExcluded) displayTasks = displayTasks.filter(t => !t.excludeFromSchedule);
         const roomPct = calcRoomPct(room, tasks);
 
         barsHtml += barRow('background:rgba(8,19,37,.2)') +
@@ -3647,18 +3653,32 @@ function calcJobPct() {
 }
 
 // Helper to get displayTasks consistently
+// Global toggle for showing/hiding excluded tasks — a task flagged
+// excludeFromSchedule (see the "remove from schedule" button on each
+// task row) is a materials/labor estimate line that doesn't belong in
+// the SCHEDULE view, but must never be deleted (that's the same
+// Firestore doc powering Estimate pricing). Filtered out here by
+// default so every consumer of getDisplayTasks — the Gantt rows, the
+// % rollups, Master Schedule — agrees on what's visible, with a
+// single toggle to reveal/restore them rather than a permanent
+// one-way hide.
+let _ganttShowExcluded = false;
+
 function getDisplayTasks(room, tasks) {
+  let dt;
   if (!tasks.length && room.scopeNotes) {
     const statusMap = room.scopeNoteStatus || {};
-    return room.scopeNotes.split('\n')
+    dt = room.scopeNotes.split('\n')
       .map(l => l.trim()).filter(Boolean)
       .map((line, i) => ({
         id: `scope_${room.id}_${i}`,
         name: line,
         taskStatus: statusMap[`scope_${room.id}_${i}`] || 'todo',
       }));
+  } else {
+    dt = tasks;
   }
-  return tasks;
+  return _ganttShowExcluded ? dt : dt.filter(t => !t.excludeFromSchedule);
 }
 
 function calcPhasePct(rooms) {
@@ -4205,6 +4225,60 @@ window.updateTaskDate = updateTaskDate;
 // states, and silently keeping a stale override active while duration
 // also changed would make the Days column lie about what's actually
 // controlling the row.
+// "Remove from schedule" — this is the SAME Firestore document that
+// powers Estimate pricing, so this must never delete it (that would
+// silently erase a priced line item from the customer's estimate).
+// Sets excludeFromSchedule:true, which every task-list consumer
+// (getDisplayTasks and its inline mirrors in renderGanttLeft/Right
+// and Master Schedule) filters out by default. Fully recoverable via
+// the "Show excluded" toggle + Restore button, never a one-way trap.
+async function removeTaskFromSchedule(phaseId, roomId, taskId, taskName) {
+  if (!_ganttJobId || !conDb) return;
+  if (!confirm(`Remove "${taskName}" from the schedule view?\n\nIt stays fully intact in the Estimate — price and cost are untouched. You can bring it back anytime with the "Show excluded" toggle.`)) return;
+  try {
+    const entry = _ganttData.find(p => p.phase.id === phaseId);
+    const roomEntry = entry?.rooms.find(r => r.room.id === roomId);
+    const task = roomEntry?.tasks.find(t => t.id === taskId);
+    if (task) task.excludeFromSchedule = true;
+    await coll('jobs').doc(_ganttJobId)
+      .collection('estimateGroups').doc(phaseId)
+      .collection('subgroups').doc(roomId)
+      .collection('items').doc(taskId)
+      .update({ excludeFromSchedule: true, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+    renderGanttFromCache();
+  } catch(e) {
+    alert('Could not remove from schedule: ' + e.message);
+  }
+}
+window.removeTaskFromSchedule = removeTaskFromSchedule;
+
+async function restoreTaskToSchedule(phaseId, roomId, taskId) {
+  if (!_ganttJobId || !conDb) return;
+  try {
+    const entry = _ganttData.find(p => p.phase.id === phaseId);
+    const roomEntry = entry?.rooms.find(r => r.room.id === roomId);
+    const task = roomEntry?.tasks.find(t => t.id === taskId);
+    if (task) task.excludeFromSchedule = false;
+    await coll('jobs').doc(_ganttJobId)
+      .collection('estimateGroups').doc(phaseId)
+      .collection('subgroups').doc(roomId)
+      .collection('items').doc(taskId)
+      .update({ excludeFromSchedule: false, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+    renderGanttFromCache();
+  } catch(e) {
+    alert('Could not restore: ' + e.message);
+  }
+}
+window.restoreTaskToSchedule = restoreTaskToSchedule;
+
+function toggleGanttShowExcluded() {
+  _ganttShowExcluded = !_ganttShowExcluded;
+  const btn = document.getElementById('ganttShowExcludedBtn');
+  if (btn) btn.textContent = _ganttShowExcluded ? '👁 Hide excluded' : '👁 Show excluded';
+  renderGanttFromCache();
+}
+window.toggleGanttShowExcluded = toggleGanttShowExcluded;
+
 async function updateTaskDuration(phaseId, roomId, taskId, days) {
   if (!_ganttJobId || !conDb) return;
   const d = Math.max(1, Math.round(Number(days) || 1));
@@ -8316,7 +8390,7 @@ async function renderMasterSchedulePage() {
         const sm = room.scopeNoteStatus || {};
         const tl = (room.scopeNotes && room.scopeNotes.trim())
           ? room.scopeNotes.split('\n').map(l=>l.trim()).filter(Boolean).map((ln,i)=>({taskStatus:sm['scope_'+room.id+'_'+i]||'todo'}))
-          : (room.tasks||[]);
+          : (_ganttShowExcluded ? (room.tasks||[]) : (room.tasks||[]).filter(t=>!t.excludeFromSchedule));
         tl.forEach(t => {
           const w = taskWeight(t);
           _jobTotal += w;
@@ -8354,7 +8428,7 @@ async function renderMasterSchedulePage() {
           const sm = room.scopeNoteStatus||{};
           const tl = (room.scopeNotes&&room.scopeNotes.trim())
             ? room.scopeNotes.split('\n').map(l=>l.trim()).filter(Boolean).map((ln,i)=>({taskStatus:sm['scope_'+room.id+'_'+i]||'todo'}))
-            : (room.tasks||[]);
+            : (_ganttShowExcluded ? (room.tasks||[]) : (room.tasks||[]).filter(t=>!t.excludeFromSchedule));
           tl.forEach(t => {
             const w = taskWeight(t);
             phaseTotal += w;
@@ -25495,6 +25569,13 @@ function loadEpicTree(jobId) {
               durationDays: t.durationDays || null,
               dependsOn: t.dependsOn || [],
               pctDone: t.pctDone,
+              // Same underlying Firestore doc that powers Estimate
+              // pricing -- "removing" a line here must NEVER delete
+              // it (that would silently erase priced items from the
+              // customer's estimate). This flag hides it from the
+              // Gantt schedule view only; the Estimate tab is
+              // completely unaffected.
+              excludeFromSchedule: !!t.excludeFromSchedule,
             });
           });
 
