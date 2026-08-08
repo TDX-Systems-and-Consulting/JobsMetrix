@@ -457,7 +457,7 @@
     .gantt-wrap { overflow-x: auto; }
     /* MS Project style Gantt */
     #ganttContainer { height: calc(100vh - 320px); min-height: 400px; }
-    #ganttLeft { overflow-y: auto; overflow-x: auto; width: 860px; min-width: 300px; max-width: 900px; }
+    #ganttLeft { overflow-y: auto; overflow-x: auto; width: 825px; min-width: 300px; max-width: 900px; }
     @media (max-width: 700px) {
       /* Was overflow-x:hidden with a 480px fixed width -- on any phone
          screen, part of the table (columns past ~390px) was not just
@@ -486,10 +486,14 @@
     .gantt-end-cell { width:125px; }
     .gantt-date-cell input { background:rgba(110,145,210,.08); border:1px solid rgba(110,145,210,.25); border-radius:5px; color:var(--text); font-size:.72rem; flex:1; min-width:0; padding:4px 5px; cursor:pointer; min-height:26px; }
     .gantt-date-cell input:focus { outline:1px solid var(--amber); border-radius:3px; background:rgba(245,158,11,.08); }
-    .gantt-deps-cell { width:130px; flex-shrink:0; padding:4px 6px; font-size:.72rem; color:var(--muted); border-right:1px solid rgba(110,145,210,.1); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+    .gantt-deps-cell { width:95px; flex-shrink:0; padding:4px 6px; font-size:.72rem; color:var(--muted); border-right:1px solid rgba(110,145,210,.1); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
     .gantt-deps-cell:hover { color:var(--amber); text-decoration:underline; }
     .gantt-pct-cell { width:70px; flex-shrink:0; padding:4px; font-size:.75rem; text-align:center; }
     .gantt-bar-row { border-bottom:1px solid rgba(110,145,210,.07); min-height:36px; position:relative; display:flex; align-items:center; }
+    .gantt-drag-handle { cursor:grab; color:var(--muted); font-size:.85rem; margin-right:4px; flex-shrink:0; }
+    .gantt-drag-handle:active { cursor:grabbing; }
+    .gantt-left-row.phase-row.drag-over { border-top:2px solid var(--amber); }
+    .gantt-left-row.phase-row.dragging { opacity:.4; }
     .gantt-bar-phase { height:20px; background:linear-gradient(90deg,#1d4ed8,#3b82f6); border-radius:3px; position:absolute; display:flex; align-items:center; overflow:hidden; }
     .gantt-bar-room { height:16px; background:linear-gradient(90deg,#0d9488,#14b8a6); border-radius:3px; position:absolute; display:flex; align-items:center; overflow:hidden; }
     .gantt-bar-task { height:10px; background:#475569; border-radius:2px; position:absolute; }
@@ -4481,14 +4485,14 @@
             </button>
 
             <!-- LEFT PANEL: hierarchical task list -->
-            <div id="ganttLeft" style="width:860px;flex-shrink:0;overflow-y:auto;border-right:2px solid rgba(110,145,210,.2)">
+            <div id="ganttLeft" style="width:825px;flex-shrink:0;overflow-y:auto;border-right:2px solid rgba(110,145,210,.2)">
               <!-- Column headers — fixed widths, matches .gantt-*-cell CSS exactly. No drag-resize. -->
               <div style="display:flex;align-items:center;background:rgba(8,19,37,.8);border-bottom:2px solid rgba(110,145,210,.2);position:sticky;top:0;z-index:10;height:56px">
                 <div style="width:340px;flex-shrink:0;padding:8px 10px;font-size:.72rem;font-weight:800;color:var(--muted);border-right:1px solid rgba(110,145,210,.1)">TASK NAME</div>
                 <div style="width:70px;flex-shrink:0;padding:8px 4px;font-size:.72rem;font-weight:800;color:var(--muted);text-align:center;border-right:1px solid rgba(110,145,210,.1)">DAYS</div>
                 <div style="width:125px;flex-shrink:0;padding:8px 6px;font-size:.72rem;font-weight:800;color:var(--muted);border-right:1px solid rgba(110,145,210,.1)">START</div>
                 <div style="width:125px;flex-shrink:0;padding:8px 6px;font-size:.72rem;font-weight:800;color:var(--muted);border-right:1px solid rgba(110,145,210,.1)">FINISH</div>
-                <div style="width:130px;flex-shrink:0;padding:8px 6px;font-size:.72rem;font-weight:800;color:var(--muted);border-right:1px solid rgba(110,145,210,.1)">DEPENDS ON</div>
+                <div style="width:95px;flex-shrink:0;padding:8px 6px;font-size:.72rem;font-weight:800;color:var(--muted);border-right:1px solid rgba(110,145,210,.1)">DEPENDENCY</div>
                 <div style="width:70px;flex-shrink:0;padding:8px 4px;font-size:.72rem;font-weight:800;color:var(--muted);text-align:center">% DONE</div>
               </div>
               <div id="ganttLeftRows"></div>
@@ -4743,7 +4747,7 @@
 
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
-<script src="kytrac-app.js?v=202608082036"></script>
+<script src="kytrac-app.js?v=202608082046"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW

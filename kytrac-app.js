@@ -3252,8 +3252,9 @@ function renderGanttLeft(jobId, job) {
     const phasePct = calcPhasePct(rooms);
     const phaseDays = workDaysBetween(phase.startDate, phase.endDate);
 
-    html += `<div class="gantt-left-row phase-row" onclick="ganttTogglePhase('${phase.id}')">
+    html += `<div class="gantt-left-row phase-row" draggable="${isOwner}" ondragstart="ganttPhaseDragStart(event,'${phase.id}')" ondragover="ganttPhaseDragOver(event)" ondragleave="ganttPhaseDragLeave(event)" ondrop="ganttPhaseDrop(event,'${phase.id}')" ondragend="ganttPhaseDragEnd(event)" onclick="ganttTogglePhase('${phase.id}')" data-phase-id="${phase.id}">
       <div class="gantt-name-cell" style="color:#93c5fd">
+        ${isOwner ? `<span class="gantt-drag-handle" title="Drag to reorder phases" onclick="event.stopPropagation()">⠿</span>` : ''}
         <span class="gantt-collapse-btn">${phaseCollapsed ? '▶' : '▼'}</span>
         ${esc(phase.name)}
       </div>
@@ -4008,15 +4009,78 @@ async function updateJobDate(field, value) {
 }
 window.updateJobDate = updateJobDate;
 
-// Gantt panel resize — disabled. #ganttLeft is now a fixed 860px
+// Phase drag-and-drop reordering. Dragging updates order for every
+// phase in the job (not just the two that moved) since 'order' is a
+// plain sequential index -- moving one phase means everything between
+// its old and new position shifts by one, same as reordering any list.
+let _draggedPhaseId = null;
+
+function ganttPhaseDragStart(e, phaseId) {
+  _draggedPhaseId = phaseId;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', phaseId); // Firefox requires real data to be set
+  e.currentTarget.classList.add('dragging');
+}
+window.ganttPhaseDragStart = ganttPhaseDragStart;
+
+function ganttPhaseDragOver(e) {
+  e.preventDefault(); // required, or drop never fires
+  e.dataTransfer.dropEffect = 'move';
+  e.currentTarget.classList.add('drag-over');
+}
+window.ganttPhaseDragOver = ganttPhaseDragOver;
+
+function ganttPhaseDragLeave(e) {
+  e.currentTarget.classList.remove('drag-over');
+}
+window.ganttPhaseDragLeave = ganttPhaseDragLeave;
+
+function ganttPhaseDragEnd(e) {
+  e.currentTarget.classList.remove('dragging');
+  document.querySelectorAll('.gantt-left-row.phase-row.drag-over').forEach(el => el.classList.remove('drag-over'));
+}
+window.ganttPhaseDragEnd = ganttPhaseDragEnd;
+
+async function ganttPhaseDrop(e, targetPhaseId) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  const draggedId = _draggedPhaseId;
+  _draggedPhaseId = null;
+  if (!draggedId || draggedId === targetPhaseId || !_ganttJobId || !conDb) return;
+
+  const fromIdx = _ganttData.findIndex(p => p.phase.id === draggedId);
+  const toIdx = _ganttData.findIndex(p => p.phase.id === targetPhaseId);
+  if (fromIdx === -1 || toIdx === -1) return;
+
+  // Reorder locally first for an instant-feeling UI, then persist.
+  const [moved] = _ganttData.splice(fromIdx, 1);
+  _ganttData.splice(toIdx, 0, moved);
+  _ganttData.forEach((entry, i) => { entry.phase.order = i; });
+  renderGanttFromCache(); // instant re-paint from the new local order
+
+  try {
+    const writes = _ganttData.map((entry, i) =>
+      coll('jobs').doc(_ganttJobId).collection('estimateGroups').doc(entry.phase.id)
+        .update({ order: i, updatedAt: firebase.firestore.FieldValue.serverTimestamp() })
+    );
+    await Promise.all(writes);
+  } catch (e2) {
+    console.error('Could not save phase order:', e2);
+    alert('Could not save the new phase order: ' + e2.message);
+    renderJobGantt(_ganttJobId); // re-fetch real state on failure
+  }
+}
+window.ganttPhaseDrop = ganttPhaseDrop;
+
+// Gantt panel resize — disabled. #ganttLeft is now a fixed 825px
 // (sum of every .gantt-*-cell's fixed width), matching the "no more
 // resizable columns, ever" direction. Left draggable, this could pull
-// the panel wider/narrower than that 860px sum and either leave a
+// the panel wider/narrower than that 825px sum and either leave a
 // blank gap or clip content, since Name is a fixed width now too, not
 // flex:1 absorbing the difference the way it used to.
 function initGanttResize() {
   const left = document.getElementById('ganttLeft');
-  if (left) left.style.width = '860px';
+  if (left) left.style.width = '825px';
 }
 window.initGanttResize = initGanttResize;
 
