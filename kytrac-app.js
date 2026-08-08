@@ -3232,7 +3232,7 @@ function renderGanttLeft(jobId, job) {
       <span class="gantt-collapse-btn">${_ganttJobCollapsed ? '▶' : '▼'}</span>
       🏠 ${esc(job?.name || 'This Job')}
     </div>
-    <div class="gantt-days-cell" style="color:var(--amber)">${dateDiff(job?.startDate, job?.endDate) !== null ? dateDiff(job?.startDate, job?.endDate)+'d' : '—'}</div>
+    <div class="gantt-days-cell" style="color:var(--amber)" title="Working days (Mon-Fri) between these dates">${workDaysBetween(job?.startDate, job?.endDate) !== null ? workDaysBetween(job?.startDate, job?.endDate)+'d' : '—'}</div>
     <div class="gantt-date-cell gantt-start-cell" onclick="event.stopPropagation()">${isOwner
       ? `<input type="date" value="${job?.startDate||''}" onchange="updateJobDate('startDate',this.value)" onclick="event.stopPropagation()">`
       : (job?.startDate||'—')}
@@ -3250,7 +3250,7 @@ function renderGanttLeft(jobId, job) {
   _ganttData.forEach(({ phase, rooms }) => {
     const phaseCollapsed = _ganttCollapsed[phase.id];
     const phasePct = calcPhasePct(rooms);
-    const phaseDays = dateDiff(phase.startDate, phase.endDate);
+    const phaseDays = workDaysBetween(phase.startDate, phase.endDate);
 
     html += `<div class="gantt-left-row phase-row" onclick="ganttTogglePhase('${phase.id}')">
       <div class="gantt-name-cell" style="color:#93c5fd">
@@ -3284,7 +3284,7 @@ function renderGanttLeft(jobId, job) {
         const roomCollapsed = _ganttCollapsed[room.id];
         const roomPct = calcRoomPct(room, tasks);
         const { start: roomStart, end: roomEnd, circular } = getRoomDates(room, phase);
-        const roomDays = dateDiff(roomStart, roomEnd);
+        const roomDays = workDaysBetween(roomStart, roomEnd);
         const depCount = (room.dependsOn || []).length;
         const statusWarning = (typeof dependencyWarning === 'function') ? dependencyWarning(room, allRoomsById) : null;
 
@@ -3333,7 +3333,7 @@ function renderGanttLeft(jobId, job) {
             const { start: taskStart, end: taskEnd, circular: taskCircular } = isReal
               ? getTaskDates(task, room, phase)
               : { start: roomStart, end: roomEnd, circular: false };
-            const taskDays = isReal ? dateDiff(taskStart, taskEnd) : 1;
+            const taskDays = isReal ? workDaysBetween(taskStart, taskEnd) : 1;
             const taskDepCount = isReal ? (task.dependsOn || []).length : 0;
             const glyphColor = isDone ? '#10b981' : (tPct > 0 ? '#60a5fa' : 'var(--muted)');
             html += `<div class="gantt-left-row task-row">
@@ -3532,6 +3532,68 @@ function dateDiff(startStr, endStr) {
   const s = new Date(startStr), e = new Date(endStr);
   if (isNaN(s) || isNaN(e)) return null;
   return Math.ceil((e - s) / 86400000);
+}
+
+// Work-week-aware date engine. Every duration in this app now means
+// working days (Mon-Fri), never raw calendar days — a job that spans
+// Aug 12 to Sep 25 genuinely includes weekends the crew doesn't work,
+// and showing "44d" for that was counting Saturdays and Sundays as
+// scheduled work time.
+function isWeekendISO(iso) {
+  const day = new Date(iso + 'T00:00:00').getDay(); // 0=Sun, 6=Sat
+  return day === 0 || day === 6;
+}
+
+// Advances from an ISO date by `days` WORKING days, skipping
+// weekends — same convention addDaysISO(start, duration-1) always
+// used (a 1-day task starting Monday ends Monday, day one itself
+// counts), just counting only real workdays instead of raw calendar
+// days. An anchor that itself lands on a weekend gets nudged forward
+// to the next Monday first — nobody starts a work item on a Saturday.
+function addWorkDaysISO(iso, days) {
+  let d = new Date(iso + 'T00:00:00');
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+  let remaining = Math.max(1, days) - 1;
+  while (remaining > 0) {
+    d.setDate(d.getDate() + 1);
+    if (d.getDay() !== 0 && d.getDay() !== 6) remaining--;
+  }
+  return d.toISOString().split('T')[0];
+}
+
+// Counts working days (Mon-Fri) between two ISO dates — same
+// exclusive-count convention as dateDiff (days strictly after start
+// through end, inclusive of end) — used for the "Days" column display
+// wherever a row has a real start+end pair, so what's shown always
+// reflects an actual work week, not a raw calendar span.
+function workDaysBetween(startStr, endStr) {
+  if (!startStr || !endStr) return null;
+  const s = new Date(startStr + 'T00:00:00'), e = new Date(endStr + 'T00:00:00');
+  if (isNaN(s) || isNaN(e)) return null;
+  if (e < s) return 0;
+  let count = 0;
+  const d = new Date(s);
+  d.setDate(d.getDate() + 1);
+  while (d <= e) {
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) count++;
+    d.setDate(d.getDate() + 1);
+  }
+  return count;
+}
+
+// Same as addWorkDaysISO but counting backward — used when Finish is
+// set directly and Duration is already known, to back-compute Start
+// symmetrically with the Start-set-first direction.
+function subtractWorkDaysISO(iso, days) {
+  let d = new Date(iso + 'T00:00:00');
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1);
+  let remaining = Math.max(1, days) - 1;
+  while (remaining > 0) {
+    d.setDate(d.getDate() - 1);
+    if (d.getDay() !== 0 && d.getDay() !== 6) remaining--;
+  }
+  return d.toISOString().split('T')[0];
 }
 
 function pctColor(pct) {
@@ -3749,9 +3811,9 @@ function computeDependencyBasedDates(item, itemId, _visiting) {
   if (anyCircular) return { circular: true };
   if (!latestEnd) return null; // deps exist but none resolved to a real date — caller falls through
 
-  const start = addDaysISO(latestEnd, 1);
+  const start = addWorkDaysISO(addDaysISO(latestEnd, 1), 1); // next day, nudged off any weekend
   const duration = Math.max(1, item.durationDays || 1);
-  return { start, end: addDaysISO(start, duration - 1) };
+  return { start, end: addWorkDaysISO(start, duration) };
 }
 
 // Individual task scheduling — same shape of answer as getRoomDates
@@ -3777,7 +3839,7 @@ function getTaskDates(task, room, phase, _visiting) {
     // room relying on normal phase auto-division (the common case).
     const anchor = getRoomDates(room, phase, _visiting);
     if (anchor.start) {
-      return { start: anchor.start, end: addDaysISO(anchor.start, Math.max(1, task.durationDays) - 1) };
+      return { start: anchor.start, end: addWorkDaysISO(anchor.start, Math.max(1, task.durationDays)) };
     }
   }
 
@@ -3820,7 +3882,7 @@ function getRoomDates(room, phase, _visiting) {
     const phaseEnd = new Date(phase.endDate);
     const chunkMs = (phaseEnd - phaseStart) / total;
     const anchorStart = new Date(phaseStart.getTime() + Math.max(0, idx) * chunkMs).toISOString().split('T')[0];
-    return { start: anchorStart, end: addDaysISO(anchorStart, Math.max(1, room.durationDays) - 1) };
+    return { start: anchorStart, end: addWorkDaysISO(anchorStart, Math.max(1, room.durationDays)) };
   }
 
   // No override, no dependency, no duration — exactly the original
@@ -3994,11 +4056,21 @@ async function updateRoomDate(phaseId, roomId, field, value) {
   try {
     const entry = _ganttData.find(p => p.phase.id === phaseId);
     const roomEntry = entry?.rooms.find(r => r.room.id === roomId);
-    if (roomEntry) roomEntry.room[field] = value;
+    const updates = { [field]: value };
+    // If a duration is already known, typing just ONE date now
+    // auto-fills the other from it instead of leaving it blank —
+    // real gap: set Duration=5, set Start, expected Finish to
+    // populate itself, and it didn't.
+    const durationDays = roomEntry?.room.durationDays;
+    if (durationDays && value) {
+      if (field === 'startDate') updates.endDate = addWorkDaysISO(value, durationDays);
+      else if (field === 'endDate') updates.startDate = subtractWorkDaysISO(value, durationDays);
+    }
+    if (roomEntry) Object.assign(roomEntry.room, updates);
     await coll('jobs').doc(_ganttJobId)
       .collection('estimateGroups').doc(phaseId)
       .collection('subgroups').doc(roomId)
-      .update({ [field]: value, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+      .update({ ...updates, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
     renderJobGantt(_ganttJobId);
   } catch(e) {
     console.error('updateRoomDate failed:', e);
@@ -4040,12 +4112,19 @@ async function updateTaskDate(phaseId, roomId, taskId, field, value) {
     const entry = _ganttData.find(p => p.phase.id === phaseId);
     const roomEntry = entry?.rooms.find(r => r.room.id === roomId);
     const task = roomEntry?.tasks.find(t => t.id === taskId);
-    if (task) task[field] = value;
+    const updates = { [field]: value };
+    // Same auto-fill-the-paired-date behavior as updateRoomDate.
+    const durationDays = task?.durationDays;
+    if (durationDays && value) {
+      if (field === 'startDate') updates.endDate = addWorkDaysISO(value, durationDays);
+      else if (field === 'endDate') updates.startDate = subtractWorkDaysISO(value, durationDays);
+    }
+    if (task) Object.assign(task, updates);
     await coll('jobs').doc(_ganttJobId)
       .collection('estimateGroups').doc(phaseId)
       .collection('subgroups').doc(roomId)
       .collection('items').doc(taskId)
-      .update({ [field]: value, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+      .update({ ...updates, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
     renderJobGantt(_ganttJobId);
   } catch(e) {
     console.error('updateTaskDate failed:', e);
