@@ -3218,6 +3218,171 @@ async function renderJobGantt(jobId) {
 }
 window.renderJobGantt = renderJobGantt;
 
+// Recursively renders one task row plus its children (if not
+// collapsed) at increasing indentation — the actual "make things
+// Adult/Child" nesting. A node WITH children is a summary task: its
+// Days/Start/Finish/%Done show a computed rollup as read-only text
+// (never an independently-editable override — same rule real Gantt
+// tools use for summary rows), while a leaf node keeps full
+// editability exactly as before nesting existed. Indent/outdent
+// buttons only appear for real, owner-editable leaf-or-not tasks.
+function renderTaskNodeRow(node, depth, phase, room, isOwner, siblings, siblingIdx) {
+  const isReal = !node.fromScopeNotes;
+  const hasKids = node.children && node.children.length > 0;
+  const collapsed = _ganttCollapsed[node.id];
+  const indentPx = 60 + depth * 24;
+
+  let tPct, taskStart, taskEnd, taskCircular, taskDays;
+  if (hasKids) {
+    tPct = getTaskNodePct(node);
+    const d = getTaskNodeDates(node, room, phase);
+    taskStart = d.start; taskEnd = d.end; taskCircular = d.circular;
+    taskDays = workDaysBetween(taskStart, taskEnd);
+  } else {
+    tPct = isReal ? getTaskPct(node) : (node.taskStatus === 'done' ? 100 : 0);
+    const d = isReal ? getTaskDates(node, room, phase) : { start: null, end: null, circular: false };
+    taskStart = d.start; taskEnd = d.end; taskCircular = d.circular;
+    taskDays = isReal ? workDaysBetween(taskStart, taskEnd) : 1;
+  }
+  const isDone = tPct === 100;
+  const taskDepCount = isReal ? (node.dependsOn || []).length : 0;
+  const glyphColor = isDone ? '#10b981' : (tPct > 0 ? '#60a5fa' : 'var(--muted)');
+
+  const canIndent = isReal && isOwner && siblingIdx > 0; // needs a previous sibling to become its parent
+  const canOutdent = isReal && isOwner && depth > 0; // already nested under something
+
+  let html = `<div class="gantt-left-row task-row" style="${node.excludeFromSchedule?'opacity:.45':''}">
+    <div class="gantt-name-cell" style="padding-left:${indentPx}px;color:${isDone?'var(--muted)':'#cbd5e1'}">
+      ${hasKids ? `<span class="gantt-collapse-btn" onclick="event.stopPropagation();ganttToggleTaskNode('${node.id}')" style="cursor:pointer">${collapsed?'▶':'▼'}</span>` : ''}
+      ${isReal ? `<span style="color:var(--muted);font-size:.68rem;margin-right:4px" title="Task #${node._ganttNum} — reference this number when setting dependencies elsewhere">#${node._ganttNum}</span>` : ''}
+      <span style="${isDone?'text-decoration:line-through;opacity:.5':''}">${esc(node.name)}</span>
+      ${isReal && isOwner ? `
+        <span style="display:inline-flex;gap:2px;margin-left:6px;flex-shrink:0">
+          ${canOutdent ? `<button onclick="event.stopPropagation();outdentGanttTask('${phase.id}','${room.id}','${node.id}')" title="Outdent — promote up one level" style="background:none;border:1px solid rgba(110,145,210,.25);border-radius:4px;color:var(--muted);cursor:pointer;font-size:.65rem;padding:0 4px">◀</button>` : ''}
+          ${canIndent ? `<button onclick="event.stopPropagation();indentGanttTask('${phase.id}','${room.id}','${node.id}')" title="Indent — make this a child of the task above it" style="background:none;border:1px solid rgba(110,145,210,.25);border-radius:4px;color:var(--muted);cursor:pointer;font-size:.65rem;padding:0 4px">▶</button>` : ''}
+        </span>
+        ${node.excludeFromSchedule
+          ? `<button onclick="event.stopPropagation();restoreTaskToSchedule('${phase.id}','${room.id}','${node.id}')" title="Restore to schedule" style="background:none;border:1px solid rgba(110,145,210,.25);border-radius:6px;color:var(--amber);cursor:pointer;font-size:.65rem;margin-left:4px;padding:0 5px;flex-shrink:0">↺ Restore</button>`
+          : `<button onclick="event.stopPropagation();removeTaskFromSchedule('${phase.id}','${room.id}','${node.id}','${esc(node.name).replace(/'/g,"\\\\'")}')" title="Remove from schedule (stays in the Estimate — price/cost untouched)" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.72rem;margin-left:4px;padding:0;flex-shrink:0">✕</button>`}
+      ` : ''}
+    </div>
+    <div class="gantt-days-cell" onclick="event.stopPropagation()">${taskCircular ? '⚠' : (hasKids
+      ? (taskDays !== null ? `<span title="Rollup of ${node.children.length} sub-task(s)">${taskDays}d</span>` : '—')
+      : (isReal && isOwner
+        ? `<input type="number" min="1" value="${node.durationDays || (taskDays!==null?taskDays:'')}" placeholder="—" onchange="updateTaskDuration('${phase.id}','${room.id}','${node.id}',this.value)" onclick="event.stopPropagation()" title="Set duration directly — clears any manual Start/Finish override and drives the schedule from here">`
+        : (taskDays !== null ? taskDays+'d' : '—')))}</div>
+    <div class="gantt-date-cell gantt-start-cell" onclick="event.stopPropagation()">${taskCircular ? `<span style="color:#f87171" title="Circular dependency">⚠</span>` : (hasKids
+      ? `<span class="small muted" style="padding-left:4px">${taskStart||'—'}</span>`
+      : (isReal && isOwner
+        ? `<input type="date" value="${node.startDate||''}" onchange="updateTaskDate('${phase.id}','${room.id}','${node.id}','startDate',this.value)" onclick="event.stopPropagation()" title="${node.startDate?'Custom date — overrides dependency/duration scheduling':(taskDepCount?'Computed from dependencies — set a date here to override':'Set a start date directly, or use Depends On for dependencies')}">`
+        : (taskStart||'—')))}
+    </div>
+    <div class="gantt-date-cell gantt-end-cell" onclick="event.stopPropagation()">${taskCircular ? '' : (hasKids
+      ? `<span class="small muted" style="padding-left:4px">${taskEnd||'—'}</span>`
+      : (isReal && isOwner
+        ? `<input type="date" value="${node.endDate||''}" onchange="updateTaskDate('${phase.id}','${room.id}','${node.id}','endDate',this.value)" onclick="event.stopPropagation()" title="${node.endDate?'Custom date — overrides dependency/duration scheduling':(taskDepCount?'Computed from dependencies — set a date here to override':'Set an end date directly, or use Depends On for dependencies')}">`
+        : (taskEnd||'—')))}
+      ${!hasKids && isReal && isOwner && (node.startDate || node.endDate) ? `<button onclick="event.stopPropagation();clearTaskDateOverride('${phase.id}','${room.id}','${node.id}')" title="Clear override, go back to duration/dependency-based scheduling" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.7rem;flex-shrink:0;padding:0">✕</button>` : ''}
+    </div>
+    <div class="gantt-deps-cell" onclick="event.stopPropagation();${isReal&&isOwner?`openTaskScheduleModal('${phase.id}','${room.id}','${node.id}')`:''}" title="${isReal&&isOwner ? 'Click to set dependencies' : ''}">${isReal ? formatDependsOn(node.dependsOn) : ''}</div>
+    <div class="gantt-pct-cell" onclick="event.stopPropagation()">${hasKids
+      ? `<span style="color:${glyphColor}" title="Rollup of ${node.children.length} sub-task(s)">${tPct}%</span>`
+      : (isReal && isOwner
+        ? `<input type="number" min="0" max="100" step="5" value="${tPct}" onchange="updateTaskPct('${phase.id}','${room.id}','${node.id}',this.value)" onclick="event.stopPropagation()" style="width:58px;background:rgba(110,145,210,.08);border:1px solid rgba(110,145,210,.25);border-radius:5px;color:${glyphColor};font-weight:700;font-size:.72rem;padding:3px 2px;text-align:center" title="0-100% complete for this task">`
+        : `<span style="color:${glyphColor}">${tPct}%</span>`)}
+    </div>
+  </div>`;
+
+  if (hasKids && !collapsed) {
+    node.children.forEach((child, i) => {
+      html += renderTaskNodeRow(child, depth + 1, phase, room, isOwner, node.children, i);
+    });
+  }
+  return html;
+}
+
+function ganttToggleTaskNode(taskId) {
+  _ganttCollapsed[taskId] = !_ganttCollapsed[taskId];
+  renderGanttFromCache();
+}
+window.ganttToggleTaskNode = ganttToggleTaskNode;
+
+// Indent: this task becomes a child of its immediately-preceding
+// sibling (the task directly above it at the same level) -- standard
+// Tab-to-demote behavior. Appends as that sibling's last child.
+async function indentGanttTask(phaseId, roomId, taskId) {
+  if (!_ganttJobId || !conDb) return;
+  const entry = _ganttData.find(p => p.phase.id === phaseId);
+  const roomEntry = entry?.rooms.find(r => r.room.id === roomId);
+  if (!roomEntry) return;
+  const tree = buildTaskTree(roomEntry.tasks, true);
+
+  // Find the node and its sibling array anywhere in the tree.
+  const findWithSiblings = (nodes) => {
+    const idx = nodes.findIndex(n => n.id === taskId);
+    if (idx !== -1) return { node: nodes[idx], siblings: nodes, idx };
+    for (const n of nodes) {
+      const found = findWithSiblings(n.children);
+      if (found) return found;
+    }
+    return null;
+  };
+  const found = findWithSiblings(tree);
+  if (!found || found.idx === 0) return; // no previous sibling to become the parent
+  const newParent = found.siblings[found.idx - 1];
+  const newOrder = newParent.children.length
+    ? Math.max(...newParent.children.map(c => c.order || 0)) + 1
+    : 0;
+
+  try {
+    await coll('jobs').doc(_ganttJobId)
+      .collection('estimateGroups').doc(phaseId)
+      .collection('subgroups').doc(roomId)
+      .collection('items').doc(taskId)
+      .update({ parentTaskId: newParent.id, order: newOrder, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+    const task = roomEntry.tasks.find(t => t.id === taskId);
+    if (task) { task.parentTaskId = newParent.id; task.order = newOrder; }
+    renderGanttFromCache();
+  } catch (e) {
+    alert('Could not indent: ' + e.message);
+  }
+}
+window.indentGanttTask = indentGanttTask;
+
+// Outdent: promotes the task to become a sibling of its current
+// parent, placed immediately after it -- standard Shift+Tab behavior.
+// Uses a fractional order (parent's order + 0.5) so the new position
+// is correct without needing to reindex every other sibling.
+async function outdentGanttTask(phaseId, roomId, taskId) {
+  if (!_ganttJobId || !conDb) return;
+  const entry = _ganttData.find(p => p.phase.id === phaseId);
+  const roomEntry = entry?.rooms.find(r => r.room.id === roomId);
+  if (!roomEntry) return;
+  const task = roomEntry.tasks.find(t => t.id === taskId);
+  if (!task || !task.parentTaskId) return; // already top-level
+  const oldParent = roomEntry.tasks.find(t => t.id === task.parentTaskId);
+  if (!oldParent) return;
+  const newParentId = oldParent.parentTaskId || null;
+  const newOrder = (oldParent.order || 0) + 0.5;
+
+  try {
+    const updates = { order: newOrder, updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
+    if (newParentId) updates.parentTaskId = newParentId;
+    else updates.parentTaskId = firebase.firestore.FieldValue.delete();
+    await coll('jobs').doc(_ganttJobId)
+      .collection('estimateGroups').doc(phaseId)
+      .collection('subgroups').doc(roomId)
+      .collection('items').doc(taskId)
+      .update(updates);
+    task.parentTaskId = newParentId;
+    task.order = newOrder;
+    renderGanttFromCache();
+  } catch (e) {
+    alert('Could not outdent: ' + e.message);
+  }
+}
+window.outdentGanttTask = outdentGanttTask;
+
 function renderGanttLeft(jobId, job) {
   const container = document.getElementById('ganttLeftRows');
   if (!container) return;
@@ -3328,43 +3493,9 @@ function renderGanttLeft(jobId, job) {
               }));
           }
           if (!_ganttShowExcluded) displayTasks = displayTasks.filter(t => !t.excludeFromSchedule);
-          displayTasks.forEach(task => {
-            const isReal = !task.fromScopeNotes;
-            const tPct = isReal ? getTaskPct(task) : (task.taskStatus === 'done' ? 100 : 0);
-            const isDone = tPct === 100;
-            const { start: taskStart, end: taskEnd, circular: taskCircular } = isReal
-              ? getTaskDates(task, room, phase)
-              : { start: roomStart, end: roomEnd, circular: false };
-            const taskDays = isReal ? workDaysBetween(taskStart, taskEnd) : 1;
-            const taskDepCount = isReal ? (task.dependsOn || []).length : 0;
-            const glyphColor = isDone ? '#10b981' : (tPct > 0 ? '#60a5fa' : 'var(--muted)');
-            html += `<div class="gantt-left-row task-row" style="${task.excludeFromSchedule?'opacity:.45':''}">
-              <div class="gantt-name-cell" style="padding-left:60px;color:${isDone?'var(--muted)':'#cbd5e1'}">
-                ${isReal ? `<span style="color:var(--muted);font-size:.68rem;margin-right:4px" title="Task #${task._ganttNum} — reference this number when setting dependencies elsewhere">#${task._ganttNum}</span>` : ''}
-                <span style="${isDone?'text-decoration:line-through;opacity:.5':''}">${esc(task.name)}</span>
-                ${isReal && isOwner ? (task.excludeFromSchedule
-                  ? `<button onclick="event.stopPropagation();restoreTaskToSchedule('${phase.id}','${room.id}','${task.id}')" title="Restore to schedule" style="background:none;border:1px solid rgba(110,145,210,.25);border-radius:6px;color:var(--amber);cursor:pointer;font-size:.65rem;margin-left:6px;padding:0 5px;flex-shrink:0">↺ Restore</button>`
-                  : `<button onclick="event.stopPropagation();removeTaskFromSchedule('${phase.id}','${room.id}','${task.id}','${esc(task.name).replace(/'/g,"\\\\'")}')" title="Remove from schedule (stays in the Estimate — price/cost untouched)" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.72rem;margin-left:6px;padding:0;flex-shrink:0">✕</button>`
-                ) : ''}
-              </div>
-              <div class="gantt-days-cell" onclick="event.stopPropagation()">${taskCircular ? '⚠' : (isReal && isOwner
-                ? `<input type="number" min="1" value="${task.durationDays || (taskDays!==null?taskDays:'')}" placeholder="—" onchange="updateTaskDuration('${phase.id}','${room.id}','${task.id}',this.value)" onclick="event.stopPropagation()" title="Set duration directly — clears any manual Start/Finish override and drives the schedule from here">`
-                : (taskDays !== null ? taskDays+'d' : '—'))}</div>
-              <div class="gantt-date-cell gantt-start-cell" onclick="event.stopPropagation()">${taskCircular ? `<span style="color:#f87171" title="Circular dependency">⚠</span>` : (isReal && isOwner
-                ? `<input type="date" value="${task.startDate||''}" onchange="updateTaskDate('${phase.id}','${room.id}','${task.id}','startDate',this.value)" onclick="event.stopPropagation()" title="${task.startDate?'Custom date — overrides dependency/duration scheduling':(taskDepCount?'Computed from dependencies — set a date here to override':'Set a start date directly, or use Depends On for dependencies')}">`
-                : (taskStart||'—'))}
-              </div>
-              <div class="gantt-date-cell gantt-end-cell" onclick="event.stopPropagation()">${taskCircular ? '' : (isReal && isOwner
-                ? `<input type="date" value="${task.endDate||''}" onchange="updateTaskDate('${phase.id}','${room.id}','${task.id}','endDate',this.value)" onclick="event.stopPropagation()" title="${task.endDate?'Custom date — overrides dependency/duration scheduling':(taskDepCount?'Computed from dependencies — set a date here to override':'Set an end date directly, or use Depends On for dependencies')}">`
-                : (taskEnd||'—'))}
-                ${isReal && isOwner && (task.startDate || task.endDate) ? `<button onclick="event.stopPropagation();clearTaskDateOverride('${phase.id}','${room.id}','${task.id}')" title="Clear override, go back to duration/dependency-based scheduling" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.7rem;flex-shrink:0;padding:0">✕</button>` : ''}
-              </div>
-              <div class="gantt-deps-cell" onclick="event.stopPropagation();${isReal&&isOwner?`openTaskScheduleModal('${phase.id}','${room.id}','${task.id}')`:''}" title="${isReal&&isOwner ? 'Click to set dependencies' : ''}">${isReal ? formatDependsOn(task.dependsOn) : ''}</div>
-              <div class="gantt-pct-cell" onclick="event.stopPropagation()">${isReal && isOwner
-                ? `<input type="number" min="0" max="100" step="5" value="${tPct}" onchange="updateTaskPct('${phase.id}','${room.id}','${task.id}',this.value)" onclick="event.stopPropagation()" style="width:58px;background:rgba(110,145,210,.08);border:1px solid rgba(110,145,210,.25);border-radius:5px;color:${glyphColor};font-weight:700;font-size:.72rem;padding:3px 2px;text-align:center" title="0-100% complete for this task">`
-                : `<span style="color:${glyphColor}">${tPct}%</span>`}
-              </div>
-            </div>`;
+          const taskTree = buildTaskTree(displayTasks, true); // already filtered above; true = don't re-filter/prune here
+          taskTree.forEach((rootNode, i) => {
+            html += renderTaskNodeRow(rootNode, 0, phase, room, isOwner, taskTree, i);
           });
         }
       });
@@ -3490,14 +3621,27 @@ function renderGanttRight(minDate, maxDate, today) {
           '</div>';
 
         if (!roomCollapsed) {
-          displayTasks.forEach(task => {
-            const isDone = task.taskStatus === 'done';
-            const isReal = !task.fromScopeNotes;
-            const taskBarDates = isReal ? getTaskDates(task, room, phase) : { start: roomStart, end: roomEnd };
+          const taskTree = buildTaskTree(displayTasks, true);
+          const renderTaskNodeBar = (node) => {
+            const hasKids = node.children && node.children.length > 0;
+            const collapsed = _ganttCollapsed[node.id];
+            const isReal = !node.fromScopeNotes;
+            let barStart, barEnd, isDone;
+            if (hasKids) {
+              const d = getTaskNodeDates(node, room, phase);
+              barStart = d.start; barEnd = d.end;
+              isDone = getTaskNodePct(node) === 100;
+            } else {
+              const d = isReal ? getTaskDates(node, room, phase) : { start: roomStart, end: roomEnd };
+              barStart = d.start; barEnd = d.end;
+              isDone = node.taskStatus === 'done';
+            }
             barsHtml += barRow() +
-              bar(taskBarDates.start || roomStart, taskBarDates.end || roomEnd, `background:${isDone?'#10b981':'#334155'};border-radius:2px;position:absolute;height:8px;top:14px`, isDone?100:0, '', '') +
+              bar(barStart || roomStart, barEnd || roomEnd, `background:${isDone?'#10b981':(hasKids?'#475569':'#334155')};border-radius:2px;position:absolute;height:8px;top:14px`, isDone?100:0, '', '') +
               '</div>';
-          });
+            if (hasKids && !collapsed) node.children.forEach(renderTaskNodeBar);
+          };
+          taskTree.forEach(renderTaskNodeBar);
         }
       });
     }
@@ -3681,6 +3825,68 @@ function getDisplayTasks(room, tasks) {
   return _ganttShowExcluded ? dt : dt.filter(t => !t.excludeFromSchedule);
 }
 
+// Arbitrary-depth task nesting. Tasks live in the SAME flat array as
+// always (parentTaskId is just a pointer, not real nested storage —
+// this is why findScheduleItemAnywhere needed zero changes to keep
+// resolving dependencies correctly at any depth). This builds the
+// actual tree for rendering. Excluding a task (excludeFromSchedule)
+// takes its whole subtree with it — hiding a summary hides its
+// details too, not a set of orphaned children re-parented to nothing.
+function buildTaskTree(flatTasks, includeExcluded) {
+  const byId = {};
+  flatTasks.forEach(t => { byId[t.id] = Object.assign({}, t, { children: [] }); });
+  const roots = [];
+  flatTasks.forEach(t => {
+    const node = byId[t.id];
+    if (t.parentTaskId && byId[t.parentTaskId]) {
+      byId[t.parentTaskId].children.push(node);
+    } else {
+      roots.push(node);
+    }
+  });
+  const sortTree = nodes => {
+    nodes.sort((a, b) => (a.order || 0) - (b.order || 0));
+    nodes.forEach(n => sortTree(n.children));
+  };
+  sortTree(roots);
+  if (includeExcluded) return roots;
+  const prune = nodes => nodes.filter(n => !n.excludeFromSchedule).map(n => { n.children = prune(n.children); return n; });
+  return prune(roots);
+}
+window.buildTaskTree = buildTaskTree;
+
+// A task with children is a SUMMARY task — its duration/dates/percent
+// are a rollup of its children (same rule Room already follows for
+// its tasks, and Phase follows for its rooms), never independently
+// tracked. This is what keeps a room's overall percentage from
+// double-counting effort: a parent task's own weight is excluded from
+// the room's weighted sum below (calcRoomPct/taskWeight), since its
+// contribution is already fully represented via its children.
+function getTaskNodeDates(node, room, phase, _visiting) {
+  if (!node.children.length) return getTaskDates(node, room, phase, _visiting);
+  let earliestStart = null, latestEnd = null, anyCircular = false;
+  node.children.forEach(child => {
+    const cd = getTaskNodeDates(child, room, phase, _visiting);
+    if (cd.circular) { anyCircular = true; return; }
+    if (cd.start && (!earliestStart || cd.start < earliestStart)) earliestStart = cd.start;
+    if (cd.end && (!latestEnd || cd.end > latestEnd)) latestEnd = cd.end;
+  });
+  return { start: earliestStart, end: latestEnd, circular: anyCircular };
+}
+
+// Weighted-by-duration average of a summary task's children, same
+// math calcRoomPct/calcPhasePct/calcJobPct already use one level up.
+function getTaskNodePct(node) {
+  if (!node.children.length) return getTaskPct(node);
+  let total = 0, done = 0;
+  node.children.forEach(child => {
+    const w = taskWeight(child);
+    total += w;
+    done += w * (getTaskNodePct(child) / 100);
+  });
+  return total ? Math.round(done / total * 100) : 0;
+}
+
 function calcPhasePct(rooms) {
   let total = 0, done = 0;
   rooms.forEach(({ room, tasks }) => {
@@ -3697,8 +3903,14 @@ function calcPhasePct(rooms) {
 function calcRoomPct(room, tasks) {
   const dt = getDisplayTasks(room, tasks);
   if (!dt.length) return 0;
+  // Parent tasks (anything with children among this room's tasks) are
+  // excluded from the sum -- their own progress is a rollup already
+  // fully represented by their children's individual weights here.
+  // Counting the parent too would double the effort it represents.
+  const hasChildren = id => dt.some(t => t.parentTaskId === id);
   let total = 0, done = 0;
   dt.forEach(t => {
+    if (hasChildren(t.id)) return; // summary task -- skip, children already counted
     const w = taskWeight(t);
     total += w;
     done += w * (getTaskPct(t) / 100);
@@ -8391,7 +8603,9 @@ async function renderMasterSchedulePage() {
         const tl = (room.scopeNotes && room.scopeNotes.trim())
           ? room.scopeNotes.split('\n').map(l=>l.trim()).filter(Boolean).map((ln,i)=>({taskStatus:sm['scope_'+room.id+'_'+i]||'todo'}))
           : (_ganttShowExcluded ? (room.tasks||[]) : (room.tasks||[]).filter(t=>!t.excludeFromSchedule));
+        const hasChildTasks = id => tl.some(x => x.parentTaskId === id);
         tl.forEach(t => {
+          if (hasChildTasks(t.id)) return; // summary task -- children already counted, skip to avoid double-counting
           const w = taskWeight(t);
           _jobTotal += w;
           _jobDone += w * (getTaskPct(t) / 100);
@@ -8429,7 +8643,9 @@ async function renderMasterSchedulePage() {
           const tl = (room.scopeNotes&&room.scopeNotes.trim())
             ? room.scopeNotes.split('\n').map(l=>l.trim()).filter(Boolean).map((ln,i)=>({taskStatus:sm['scope_'+room.id+'_'+i]||'todo'}))
             : (_ganttShowExcluded ? (room.tasks||[]) : (room.tasks||[]).filter(t=>!t.excludeFromSchedule));
+          const hasChildTasks2 = id => tl.some(x => x.parentTaskId === id);
           tl.forEach(t => {
+            if (hasChildTasks2(t.id)) return; // summary task -- skip to avoid double-counting
             const w = taskWeight(t);
             phaseTotal += w;
             phaseDone += w * (getTaskPct(t) / 100);
@@ -8454,7 +8670,8 @@ async function renderMasterSchedulePage() {
               ? room.scopeNotes.split('\n').map(l=>l.trim()).filter(Boolean).map((line,i)=>({id:'scope_'+room.id+'_'+i,name:line,taskStatus:sm['scope_'+room.id+'_'+i]||'todo'}))
               : getDisplayTasks(room, room.tasks||[]);
             let _roomW = 0, _roomDone = 0;
-            displayTasks.forEach(t => { const w = taskWeight(t); _roomW += w; _roomDone += w * (getTaskPct(t) / 100); });
+            const hasChildTasks3 = id => displayTasks.some(x => x.parentTaskId === id);
+            displayTasks.forEach(t => { if (hasChildTasks3(t.id)) return; const w = taskWeight(t); _roomW += w; _roomDone += w * (getTaskPct(t) / 100); });
             const doneTasks = displayTasks.filter(t=>getTaskPct(t)===100).length;
             const pct = _roomW ? Math.round(_roomDone/_roomW*100) : 0;
             const roomColor = pct===100 ? 'background:#10b981'
@@ -25552,7 +25769,7 @@ function loadEpicTree(jobId) {
           const itemSnap = await jobRef.collection('estimateGroups').doc(groupDoc.id)
             .collection('subgroups').doc(subDoc.id).collection('items').get();
 
-          itemSnap.forEach(itemDoc => {
+          itemSnap.forEach((itemDoc, idx) => {
             const t = itemDoc.data();
             feature.tasks.push({
               id: itemDoc.id,
@@ -25576,6 +25793,15 @@ function loadEpicTree(jobId) {
               // Gantt schedule view only; the Estimate tab is
               // completely unaffected.
               excludeFromSchedule: !!t.excludeFromSchedule,
+              // Arbitrary-depth task nesting (true indent/outdent,
+              // not just Phase->Room->Task): parentTaskId points at
+              // another task in the SAME room. null/undefined means
+              // top-level under the room, same as every task before
+              // this existed. order (falling back to Firestore's own
+              // snapshot order via idx) is what "indent under the
+              // task above" and "outdent" actually reorder.
+              parentTaskId: t.parentTaskId || null,
+              order: (t.order != null) ? t.order : idx,
             });
           });
 
