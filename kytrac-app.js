@@ -3934,7 +3934,7 @@ function initGanttResize() {
     document.addEventListener('mouseup', () => document.removeEventListener('mousemove', onMove), { once: true });
   });
   function onMove(e) {
-    const newW = Math.max(300, Math.min(800, startW + e.clientX - startX));
+    const newW = Math.max(450, Math.min(1100, startW + e.clientX - startX));
     left.style.width = newW + 'px';
   }
 }
