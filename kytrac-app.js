@@ -3323,19 +3323,26 @@ function renderGanttLeft(jobId, job) {
               }));
           }
           displayTasks.forEach(task => {
-            const isDone = task.taskStatus === 'done';
             const isReal = !task.fromScopeNotes;
+            const tPct = isReal ? getTaskPct(task) : (task.taskStatus === 'done' ? 100 : 0);
+            const isDone = tPct === 100;
             const { start: taskStart, end: taskEnd, circular: taskCircular } = isReal
               ? getTaskDates(task, room, phase)
               : { start: roomStart, end: roomEnd, circular: false };
             const taskDays = isReal ? dateDiff(taskStart, taskEnd) : 1;
             const taskDepCount = isReal ? (task.dependsOn || []).length : 0;
+            // Status glyph reflects the real percent now, not just a
+            // plain checkbox that's either blank or checked regardless
+            // of partial progress: green check only at 100%, the
+            // number itself in blue for any partial amount, a plain
+            // empty box at 0 — same glyph language as Master Schedule's
+            // task rows, so the two views read consistently even before
+            // they share one real component.
+            const glyph = isDone ? '☑' : (tPct > 0 ? tPct : '☐');
+            const glyphColor = isDone ? '#10b981' : (tPct > 0 ? '#60a5fa' : 'var(--muted)');
             html += `<div class="gantt-left-row task-row">
               <div class="gantt-name-cell" style="padding-left:44px;color:${isDone?'var(--muted)':'#cbd5e1'}">
-                <input type="checkbox" ${isDone?'checked':''} 
-                  onchange="toggleGanttTask('${phase.id}','${room.id}','${task.id}',this.checked)"
-                  style="margin-right:6px;cursor:pointer;accent-color:var(--amber)"
-                  onclick="event.stopPropagation()">
+                <span title="${isDone?'Complete':tPct>0?tPct+'% complete':'Not started'}" style="display:inline-block;min-width:18px;text-align:center;font-size:.72rem;font-weight:700;color:${glyphColor};margin-right:6px;flex-shrink:0">${glyph}</span>
                 ${isReal ? `<span style="color:var(--muted);font-size:.68rem;margin-right:4px" title="Task #${task._ganttNum} — reference this number when setting dependencies elsewhere">#${task._ganttNum}</span>` : ''}
                 <span style="${isDone?'text-decoration:line-through;opacity:.5':''}">${esc(task.name)}</span>
                 ${isReal ? `<button onclick="event.stopPropagation();openTaskScheduleModal('${phase.id}','${room.id}','${task.id}')" title="${taskDepCount ? taskDepCount+' dependenc'+(taskDepCount===1?'y':'ies')+' set' : 'Set duration and dependencies'}" style="background:none;border:1px solid rgba(110,145,210,.25);border-radius:6px;color:${taskDepCount?'var(--amber)':'var(--muted)'};cursor:pointer;font-size:.65rem;margin-left:6px;padding:0 4px;flex-shrink:0">🔗${taskDepCount?' '+taskDepCount:''}</button>` : ''}
@@ -3350,7 +3357,10 @@ function renderGanttLeft(jobId, job) {
                 : (taskEnd||'—'))}
                 ${isReal && isOwner && (task.startDate || task.endDate) ? `<button onclick="event.stopPropagation();clearTaskDateOverride('${phase.id}','${room.id}','${task.id}')" title="Clear override, go back to duration/dependency-based scheduling" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.7rem;flex-shrink:0;padding:0">✕</button>` : ''}
               </div>
-              <div class="gantt-pct-cell" style="color:${isDone?'#10b981':'var(--muted)'}">${isDone?'100':'0'}%</div>
+              <div class="gantt-pct-cell" onclick="event.stopPropagation()">${isReal && isOwner
+                ? `<input type="number" min="0" max="100" step="5" value="${tPct}" onchange="updateTaskPct('${phase.id}','${room.id}','${task.id}',this.value)" onclick="event.stopPropagation()" style="width:58px;background:rgba(110,145,210,.08);border:1px solid rgba(110,145,210,.25);border-radius:5px;color:${glyphColor};font-weight:700;font-size:.72rem;padding:3px 2px;text-align:center" title="0-100% complete for this task">`
+                : `<span style="color:${glyphColor}">${tPct}%</span>`}
+              </div>
             </div>`;
           });
 
@@ -3562,6 +3572,20 @@ function taskWeight(t) {
   return (d && d > 0) ? d : 1;
 }
 
+// A task's real completion is now a 0-100 number (task.pctDone), not
+// binary done/todo — but pctDone is never required to exist. Any task
+// missing it (every task created before this field existed) derives a
+// correct value from the OLD taskStatus field instead: 100 if it was
+// already marked done, 0 otherwise. This means every existing job's
+// numbers stay exactly correct the instant this ships, with no
+// migration or backfill required for correctness — writes that set
+// pctDone going forward (updateTaskPct) also keep taskStatus in sync
+// automatically, so nothing else reading the old binary field breaks.
+function getTaskPct(t) {
+  if (t.pctDone != null) return Math.max(0, Math.min(100, Number(t.pctDone) || 0));
+  return t.taskStatus === 'done' ? 100 : 0;
+}
+
 function calcJobPct() {
   let total = 0, done = 0;
   _ganttData.forEach(({ rooms }) => {
@@ -3570,7 +3594,7 @@ function calcJobPct() {
       displayTasks.forEach(t => {
         const w = taskWeight(t);
         total += w;
-        if (t.taskStatus === 'done') done += w;
+        done += w * (getTaskPct(t) / 100);
       });
     });
   });
@@ -3599,7 +3623,7 @@ function calcPhasePct(rooms) {
     dt.forEach(t => {
       const w = taskWeight(t);
       total += w;
-      if (t.taskStatus === 'done') done += w;
+      done += w * (getTaskPct(t) / 100);
     });
   });
   return total ? Math.round(done / total * 100) : 0;
@@ -3612,7 +3636,7 @@ function calcRoomPct(room, tasks) {
   dt.forEach(t => {
     const w = taskWeight(t);
     total += w;
-    if (t.taskStatus === 'done') done += w;
+    done += w * (getTaskPct(t) / 100);
   });
   return total ? Math.round(done / total * 100) : 0;
 }
@@ -4261,7 +4285,7 @@ async function toggleGanttTask(phaseId, roomId, taskId, checked) {
         .collection('estimateGroups').doc(phaseId)
         .collection('subgroups').doc(roomId)
         .collection('items').doc(taskId)
-        .update({ taskStatus: checked ? 'done' : 'todo' });
+        .update({ taskStatus: checked ? 'done' : 'todo', pctDone: checked ? 100 : 0 });
     } catch(e) {
       console.warn('Could not save task status:', e.message);
     }
@@ -4271,7 +4295,7 @@ async function toggleGanttTask(phaseId, roomId, taskId, checked) {
       const roomEntry = entry.rooms.find(r => r.room.id === roomId);
       if (roomEntry) {
         const task = roomEntry.tasks.find(t => t.id === taskId);
-        if (task) task.taskStatus = checked ? 'done' : 'todo';
+        if (task) { task.taskStatus = checked ? 'done' : 'todo'; task.pctDone = checked ? 100 : 0; }
 
         // Sync the ROOM's own status from its tasks -- this is the
         // actual missing link between "checked off every task" and
@@ -4284,19 +4308,7 @@ async function toggleGanttTask(phaseId, roomId, taskId, checked) {
         // else). Unchecking a task after full completion moves the
         // room back to in-progress rather than all the way to
         // not-started -- some real work clearly still happened.
-        const realTasks = roomEntry.tasks.filter(t => !t.fromScopeNotes);
-        if (realTasks.length) {
-          const allDone = realTasks.every(t => t.taskStatus === 'done');
-          const newStatus = allDone ? 'complete' : 'in-progress';
-          if (roomEntry.room.status !== newStatus) {
-            roomEntry.room.status = newStatus;
-            coll('jobs').doc(_ganttJobId)
-              .collection('estimateGroups').doc(phaseId)
-              .collection('subgroups').doc(roomId)
-              .update({ status: newStatus })
-              .catch(e => console.warn('Could not sync room status:', e.message));
-          }
-        }
+        syncRoomStatusFromTasks(phaseId, roomEntry);
       }
     }
   }
@@ -4304,6 +4316,61 @@ async function toggleGanttTask(phaseId, roomId, taskId, checked) {
   renderGanttFromCache();
 }
 window.toggleGanttTask = toggleGanttTask;
+
+// Shared by toggleGanttTask (binary checkbox path) and updateTaskPct
+// (0-100 stepper path) below — both need the same "does this room
+// count as complete now" recheck after a task's status changes.
+function syncRoomStatusFromTasks(phaseId, roomEntry) {
+  const realTasks = roomEntry.tasks.filter(t => !t.fromScopeNotes);
+  if (!realTasks.length) return;
+  const allDone = realTasks.every(t => t.taskStatus === 'done');
+  const newStatus = allDone ? 'complete' : 'in-progress';
+  if (roomEntry.room.status !== newStatus) {
+    roomEntry.room.status = newStatus;
+    coll('jobs').doc(_ganttJobId)
+      .collection('estimateGroups').doc(phaseId)
+      .collection('subgroups').doc(roomEntry.room.id)
+      .update({ status: newStatus })
+      .catch(e => console.warn('Could not sync room status:', e.message));
+  }
+}
+
+// Real 0-100 completion per task, replacing the binary checkbox.
+// Keeps taskStatus in sync automatically (100 -> 'done', anything
+// else -> 'todo') so every other consumer of the old binary field
+// (portal task toggle, dashboard summaries, room-status sync above,
+// the invoice-paid backfill) keeps working without being rewritten --
+// pctDone is the new source of truth, taskStatus becomes a derived
+// convenience field going forward instead of the primary one.
+async function updateTaskPct(phaseId, roomId, taskId, pct) {
+  if (!_ganttJobId || !conDb) return;
+  pct = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+  const newStatus = pct === 100 ? 'done' : 'todo';
+
+  try {
+    await coll('jobs').doc(_ganttJobId)
+      .collection('estimateGroups').doc(phaseId)
+      .collection('subgroups').doc(roomId)
+      .collection('items').doc(taskId)
+      .update({ pctDone: pct, taskStatus: newStatus, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+  } catch(e) {
+    console.warn('Could not save task percent:', e.message);
+    alert('Could not save: ' + e.message);
+    return;
+  }
+
+  const entry = _ganttData.find(p => p.phase.id === phaseId);
+  if (entry) {
+    const roomEntry = entry.rooms.find(r => r.room.id === roomId);
+    if (roomEntry) {
+      const task = roomEntry.tasks.find(t => t.id === taskId);
+      if (task) { task.pctDone = pct; task.taskStatus = newStatus; }
+      syncRoomStatusFromTasks(phaseId, roomEntry);
+    }
+  }
+  renderGanttFromCache();
+}
+window.updateTaskPct = updateTaskPct;
 
 async function addGanttTask(phaseId, roomId) {
   const name = prompt('Task name:');
@@ -8109,8 +8176,11 @@ async function renderMasterSchedulePage() {
         const tl = (room.scopeNotes && room.scopeNotes.trim())
           ? room.scopeNotes.split('\n').map(l=>l.trim()).filter(Boolean).map((ln,i)=>({taskStatus:sm['scope_'+room.id+'_'+i]||'todo'}))
           : (room.tasks||[]);
-        _jobTotal += tl.length;
-        _jobDone += tl.filter(t=>t.taskStatus==='done').length;
+        tl.forEach(t => {
+          const w = taskWeight(t);
+          _jobTotal += w;
+          _jobDone += w * (getTaskPct(t) / 100);
+        });
       });
     });
     const _jobPct = _jobTotal ? Math.round(_jobDone / _jobTotal * 100) : 0;
@@ -8144,8 +8214,11 @@ async function renderMasterSchedulePage() {
           const tl = (room.scopeNotes&&room.scopeNotes.trim())
             ? room.scopeNotes.split('\n').map(l=>l.trim()).filter(Boolean).map((ln,i)=>({taskStatus:sm['scope_'+room.id+'_'+i]||'todo'}))
             : (room.tasks||[]);
-          phaseTotal += tl.length;
-          phaseDone += tl.filter(t=>t.taskStatus==='done').length;
+          tl.forEach(t => {
+            const w = taskWeight(t);
+            phaseTotal += w;
+            phaseDone += w * (getTaskPct(t) / 100);
+          });
         });
         const phasePct = phaseTotal ? Math.round(phaseDone/phaseTotal*100) : 0;
 
@@ -8165,8 +8238,10 @@ async function renderMasterSchedulePage() {
             const displayTasks = (room.scopeNotes&&room.scopeNotes.trim())
               ? room.scopeNotes.split('\n').map(l=>l.trim()).filter(Boolean).map((line,i)=>({id:'scope_'+room.id+'_'+i,name:line,taskStatus:sm['scope_'+room.id+'_'+i]||'todo'}))
               : getDisplayTasks(room, room.tasks||[]);
-            const doneTasks = displayTasks.filter(t=>t.taskStatus==='done').length;
-            const pct = displayTasks.length ? Math.round(doneTasks/displayTasks.length*100) : 0;
+            let _roomW = 0, _roomDone = 0;
+            displayTasks.forEach(t => { const w = taskWeight(t); _roomW += w; _roomDone += w * (getTaskPct(t) / 100); });
+            const doneTasks = displayTasks.filter(t=>getTaskPct(t)===100).length;
+            const pct = _roomW ? Math.round(_roomDone/_roomW*100) : 0;
             const roomColor = pct===100 ? 'background:#10b981'
               : room.endDate && new Date(room.endDate)<today ? 'background:#ef4444'
               : 'background:linear-gradient(90deg,#0d9488,#14b8a6)';
@@ -8182,10 +8257,12 @@ async function renderMasterSchedulePage() {
 
             if (!roomCollapsed) {
               displayTasks.forEach((task, ti) => {
-                const isDone = task.taskStatus==='done';
+                const tPct = getTaskPct(task);
+                const isDone = tPct === 100;
+                const glyph = isDone ? '☑' : (tPct > 0 ? tPct + '%' : '☐');
                 rowsHtml += `<div data-master-row="task" data-task-idx="${ti}" data-parent-room="${room.id}" data-parent-phase="${phase.id}" data-parent-job="${job.id}" style="display:flex;align-items:center;min-height:${TASK_H}px;border-bottom:1px solid rgba(110,145,210,.03);background:rgba(8,19,37,.08)">
                   <div class="ms-label" style="width:${LABEL_W}px;flex-shrink:0;padding:2px 10px 2px 52px;border-right:1px solid rgba(110,145,210,.06);overflow:hidden;display:flex;align-items:center;gap:5px">
-                    <span style="font-size:.72rem;color:${isDone?'#10b981':'var(--muted)'};flex-shrink:0">${isDone?'☑':'☐'}</span>
+                    <span style="font-size:.68rem;font-weight:${isDone?'400':'700'};color:${isDone?'#10b981':tPct>0?'#60a5fa':'var(--muted)'};flex-shrink:0;min-width:16px;text-align:center">${glyph}</span>
                     <span style="font-size:.67rem;color:${isDone?'#10b981':'#64748b'};text-decoration:${isDone?'line-through':'none'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(task.name)}</span>
                   </div>
                   <div style="flex:1;min-width:${totalWidth}px"></div>
@@ -25273,6 +25350,13 @@ function loadEpicTree(jobId) {
               endDate: t.endDate || null,
               durationDays: t.durationDays || null,
               dependsOn: t.dependsOn || [],
+              // pctDone deliberately left as t.pctDone with NO fallback
+              // to 0 here -- getTaskPct() derives the right value from
+              // taskStatus when pctDone is undefined (null would break
+              // that "!= null" check). Adding a fallback here would
+              // have been the exact same silent-discard mistake just
+              // fixed above, just for a field that doesn't exist yet.
+              pctDone: t.pctDone,
             });
           });
 
