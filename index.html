@@ -470,23 +470,25 @@
     #ganttRight { overflow: auto; flex: 1; min-width: 0; }
     #ganttResizer { width: 6px; background: rgba(110,145,210,.2); cursor: col-resize; flex-shrink:0; transition: background .15s; }
     #ganttResizer:hover { background: var(--amber); }
-    #ganttLeft { --gc-days:64px; --gc-start:150px; --gc-end:150px; --gc-pct:66px; }
+    /* Fixed pixel widths, deliberately not user-resizable anymore —
+       the drag-to-resize mechanism (CSS custom properties + drag
+       handles) is removed entirely. These are the final widths. */
     .gantt-left-row { display:flex; align-items:center; border-bottom:1px solid rgba(110,145,210,.07); min-height:36px; cursor:pointer; transition:background .1s; }
     .gantt-left-row:hover { background:rgba(245,158,11,.05); }
     .gantt-left-row.phase-row { background:rgba(8,19,37,.6); font-weight:800; }
     .gantt-left-row.room-row { background:rgba(8,19,37,.3); }
     .gantt-left-row.task-row { background:transparent; }
     .gantt-left-row.task-row:hover { background:rgba(245,158,11,.05); }
-    .gantt-name-cell { flex:1; min-width:0; padding:6px 10px; font-size:.8rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border-right:1px solid rgba(110,145,210,.1); display:flex; align-items:center; gap:6px; text-align:left; }
-    .gantt-days-cell { width:var(--gc-days); flex-shrink:0; padding:4px; font-size:.75rem; color:var(--muted); text-align:center; border-right:1px solid rgba(110,145,210,.1); }
+    .gantt-name-cell { width:340px; flex-shrink:0; min-width:0; padding:6px 10px; font-size:.8rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border-right:1px solid rgba(110,145,210,.1); display:flex; align-items:center; gap:6px; text-align:left; }
+    .gantt-days-cell { width:70px; flex-shrink:0; padding:4px; font-size:.75rem; color:var(--muted); text-align:center; border-right:1px solid rgba(110,145,210,.1); }
     .gantt-date-cell { flex-shrink:0; padding:3px 6px; font-size:.72rem; color:var(--muted); border-right:1px solid rgba(110,145,210,.1); display:flex; align-items:center; gap:3px; }
-    .gantt-start-cell { width:var(--gc-start); }
-    .gantt-end-cell { width:var(--gc-end); }
+    .gantt-start-cell { width:125px; }
+    .gantt-end-cell { width:125px; }
     .gantt-date-cell input { background:rgba(110,145,210,.08); border:1px solid rgba(110,145,210,.25); border-radius:5px; color:var(--text); font-size:.72rem; flex:1; min-width:0; padding:4px 5px; cursor:pointer; min-height:26px; }
     .gantt-date-cell input:focus { outline:1px solid var(--amber); border-radius:3px; background:rgba(245,158,11,.08); }
-    .gantt-pct-cell { width:var(--gc-pct); flex-shrink:0; padding:4px; font-size:.75rem; text-align:center; }
-    .gantt-col-resizer { width:5px; flex-shrink:0; cursor:col-resize; align-self:stretch; position:relative; z-index:5; }
-    .gantt-col-resizer:hover, .gantt-col-resizer.resizing { background:var(--amber); }
+    .gantt-deps-cell { width:130px; flex-shrink:0; padding:4px 6px; font-size:.72rem; color:var(--muted); border-right:1px solid rgba(110,145,210,.1); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+    .gantt-deps-cell:hover { color:var(--amber); text-decoration:underline; }
+    .gantt-pct-cell { width:70px; flex-shrink:0; padding:4px; font-size:.75rem; text-align:center; }
     .gantt-bar-row { border-bottom:1px solid rgba(110,145,210,.07); min-height:36px; position:relative; display:flex; align-items:center; }
     .gantt-bar-phase { height:20px; background:linear-gradient(90deg,#1d4ed8,#3b82f6); border-radius:3px; position:absolute; display:flex; align-items:center; overflow:hidden; }
     .gantt-bar-room { height:16px; background:linear-gradient(90deg,#0d9488,#14b8a6); border-radius:3px; position:absolute; display:flex; align-items:center; overflow:hidden; }
@@ -4479,23 +4481,21 @@
             </button>
 
             <!-- LEFT PANEL: hierarchical task list -->
-            <div id="ganttLeft" style="width:680px;flex-shrink:0;overflow-y:auto;border-right:2px solid rgba(110,145,210,.2)">
-              <!-- Column headers -->
+            <div id="ganttLeft" style="width:860px;flex-shrink:0;overflow-y:auto;border-right:2px solid rgba(110,145,210,.2)">
+              <!-- Column headers — fixed widths, matches .gantt-*-cell CSS exactly. No drag-resize. -->
               <div style="display:flex;align-items:center;background:rgba(8,19,37,.8);border-bottom:2px solid rgba(110,145,210,.2);position:sticky;top:0;z-index:10;height:56px">
-                <div style="flex:1;min-width:0;padding:8px 10px;font-size:.72rem;font-weight:800;color:var(--muted);border-right:1px solid rgba(110,145,210,.1)">TASK NAME</div>
-                <div style="width:var(--gc-days,64px);flex-shrink:0;padding:8px 4px;font-size:.72rem;font-weight:800;color:var(--muted);text-align:center;border-right:1px solid rgba(110,145,210,.1)">DAYS</div>
-                <div class="gantt-col-resizer" data-col="days" title="Drag to resize"></div>
-                <div style="width:var(--gc-start,150px);flex-shrink:0;padding:8px 6px;font-size:.72rem;font-weight:800;color:var(--muted);border-right:1px solid rgba(110,145,210,.1)">START</div>
-                <div class="gantt-col-resizer" data-col="start" title="Drag to resize"></div>
-                <div style="width:var(--gc-end,150px);flex-shrink:0;padding:8px 6px;font-size:.72rem;font-weight:800;color:var(--muted);border-right:1px solid rgba(110,145,210,.1)">FINISH</div>
-                <div class="gantt-col-resizer" data-col="end" title="Drag to resize"></div>
-                <div style="width:var(--gc-pct,66px);flex-shrink:0;padding:8px 4px;font-size:.72rem;font-weight:800;color:var(--muted);text-align:center">% DONE</div>
+                <div style="width:340px;flex-shrink:0;padding:8px 10px;font-size:.72rem;font-weight:800;color:var(--muted);border-right:1px solid rgba(110,145,210,.1)">TASK NAME</div>
+                <div style="width:70px;flex-shrink:0;padding:8px 4px;font-size:.72rem;font-weight:800;color:var(--muted);text-align:center;border-right:1px solid rgba(110,145,210,.1)">DAYS</div>
+                <div style="width:125px;flex-shrink:0;padding:8px 6px;font-size:.72rem;font-weight:800;color:var(--muted);border-right:1px solid rgba(110,145,210,.1)">START</div>
+                <div style="width:125px;flex-shrink:0;padding:8px 6px;font-size:.72rem;font-weight:800;color:var(--muted);border-right:1px solid rgba(110,145,210,.1)">FINISH</div>
+                <div style="width:130px;flex-shrink:0;padding:8px 6px;font-size:.72rem;font-weight:800;color:var(--muted);border-right:1px solid rgba(110,145,210,.1)">DEPENDS ON</div>
+                <div style="width:70px;flex-shrink:0;padding:8px 4px;font-size:.72rem;font-weight:800;color:var(--muted);text-align:center">% DONE</div>
               </div>
               <div id="ganttLeftRows"></div>
             </div>
 
             <!-- Resize handle -->
-            <div id="ganttResizer"></div>
+            <div id="ganttResizer" style="display:none"></div>
 
             <!-- RIGHT PANEL: timeline bars -->
             <div id="ganttRight" style="flex:1;overflow:auto">
@@ -4743,7 +4743,7 @@
 
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
-<script src="kytrac-app.js?v=202608081939"></script>
+<script src="kytrac-app.js?v=202608081952"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW

@@ -3215,7 +3215,6 @@ async function renderJobGantt(jobId) {
   renderGanttRight(minDate, maxDate, today);
   syncGanttScroll();
   initGanttResize();
-  initGanttColumnResize();
 }
 window.renderJobGantt = renderJobGantt;
 
@@ -3242,6 +3241,7 @@ function renderGanttLeft(jobId, job) {
       ? `<input type="date" value="${job?.endDate||''}" onchange="updateJobDate('endDate',this.value)" onclick="event.stopPropagation()">`
       : (job?.endDate||'—')}
     </div>
+    <div class="gantt-deps-cell"></div>
     <div class="gantt-pct-cell" style="color:${pctColor(jobPct)};font-weight:800">${jobPct}%</div>
   </div>`;
 
@@ -3266,6 +3266,7 @@ function renderGanttLeft(jobId, job) {
         ? `<input type="date" value="${phase.endDate||''}" onchange="updatePhaseDate('${phase.id}','endDate',this.value)" onclick="event.stopPropagation()">`
         : (phase.endDate||'—')}
       </div>
+      <div class="gantt-deps-cell"></div>
       <div class="gantt-pct-cell" style="color:${pctColor(phasePct)};font-weight:700">${phasePct}%</div>
     </div>`;
 
@@ -3292,7 +3293,7 @@ function renderGanttLeft(jobId, job) {
             <span class="gantt-collapse-btn">${roomCollapsed ? '▶' : '▼'}</span>
             <span style="color:var(--muted);font-size:.68rem;margin-right:4px" title="Room #${room._ganttNum} — reference this number when setting dependencies elsewhere">#${room._ganttNum}</span>
             ${esc(room.name)}
-            ${isOwner ? `<button onclick="event.stopPropagation();openRoomScheduleModal('${phase.id}','${room.id}')" title="${depCount ? depCount+' dependenc'+(depCount===1?'y':'ies')+' set' : 'Set duration and dependencies'}" style="background:none;border:1px solid rgba(110,145,210,.25);border-radius:6px;color:${depCount?'var(--amber)':'var(--muted)'};cursor:pointer;font-size:.68rem;margin-left:6px;padding:1px 5px;flex-shrink:0">🔗${depCount?' '+depCount:''}</button>` : ''}
+            ${isOwner ? `<button onclick="event.stopPropagation();addGanttTask('${phase.id}','${room.id}')" title="Add a task to this room" style="background:none;border:1px dashed rgba(110,145,210,.3);border-radius:4px;color:var(--muted);cursor:pointer;font-size:.68rem;margin-left:6px;padding:0 5px;flex-shrink:0">+ task</button>` : ''}
             ${statusWarning ? `<span title="${esc(statusWarning)}" style="margin-left:6px;font-size:.72rem;color:#f59e0b;cursor:help">⚠</span>` : ''}
           </div>
           <div class="gantt-days-cell" onclick="event.stopPropagation()">${circular ? '⚠' : (isOwner
@@ -3307,6 +3308,7 @@ function renderGanttLeft(jobId, job) {
             : (roomEnd||'—'))}
             ${isOwner && (room.startDate || room.endDate) ? `<button onclick="event.stopPropagation();clearRoomDateOverride('${phase.id}','${room.id}')" title="Clear override, go back to duration/dependency-based or auto-scheduling" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.7rem;flex-shrink:0;padding:0">✕</button>` : ''}
           </div>
+          <div class="gantt-deps-cell" onclick="event.stopPropagation();${isOwner?`openRoomScheduleModal('${phase.id}','${room.id}')`:''}" title="${isOwner ? 'Click to set dependencies' : ''}">${formatDependsOn(room.dependsOn)}</div>
           <div class="gantt-pct-cell" style="color:${pctColor(roomPct)}">${roomPct}%</div>
         </div>`;
 
@@ -3333,54 +3335,31 @@ function renderGanttLeft(jobId, job) {
               : { start: roomStart, end: roomEnd, circular: false };
             const taskDays = isReal ? dateDiff(taskStart, taskEnd) : 1;
             const taskDepCount = isReal ? (task.dependsOn || []).length : 0;
-            // Status glyph reflects the real percent now, not just a
-            // plain checkbox that's either blank or checked regardless
-            // of partial progress: green check only at 100%, the
-            // number itself in blue for any partial amount, a plain
-            // empty box at 0 — same glyph language as Master Schedule's
-            // task rows, so the two views read consistently even before
-            // they share one real component.
-            const glyph = isDone ? '☑' : (tPct > 0 ? tPct : '☐');
             const glyphColor = isDone ? '#10b981' : (tPct > 0 ? '#60a5fa' : 'var(--muted)');
             html += `<div class="gantt-left-row task-row">
               <div class="gantt-name-cell" style="padding-left:44px;color:${isDone?'var(--muted)':'#cbd5e1'}">
-                <span title="${isDone?'Complete':tPct>0?tPct+'% complete':'Not started'}" style="display:inline-block;min-width:18px;text-align:center;font-size:.72rem;font-weight:700;color:${glyphColor};margin-right:6px;flex-shrink:0">${glyph}</span>
                 ${isReal ? `<span style="color:var(--muted);font-size:.68rem;margin-right:4px" title="Task #${task._ganttNum} — reference this number when setting dependencies elsewhere">#${task._ganttNum}</span>` : ''}
                 <span style="${isDone?'text-decoration:line-through;opacity:.5':''}">${esc(task.name)}</span>
-                ${isReal ? `<button onclick="event.stopPropagation();openTaskScheduleModal('${phase.id}','${room.id}','${task.id}')" title="${taskDepCount ? taskDepCount+' dependenc'+(taskDepCount===1?'y':'ies')+' set' : 'Set duration and dependencies'}" style="background:none;border:1px solid rgba(110,145,210,.25);border-radius:6px;color:${taskDepCount?'var(--amber)':'var(--muted)'};cursor:pointer;font-size:.65rem;margin-left:6px;padding:0 4px;flex-shrink:0">🔗${taskDepCount?' '+taskDepCount:''}</button>` : ''}
               </div>
               <div class="gantt-days-cell" onclick="event.stopPropagation()">${taskCircular ? '⚠' : (isReal && isOwner
                 ? `<input type="number" min="1" value="${task.durationDays || (taskDays!==null?taskDays:'')}" placeholder="—" onchange="updateTaskDuration('${phase.id}','${room.id}','${task.id}',this.value)" onclick="event.stopPropagation()" title="Set duration directly — clears any manual Start/Finish override and drives the schedule from here">`
                 : (taskDays !== null ? taskDays+'d' : '—'))}</div>
               <div class="gantt-date-cell gantt-start-cell" onclick="event.stopPropagation()">${taskCircular ? `<span style="color:#f87171" title="Circular dependency">⚠</span>` : (isReal && isOwner
-                ? `<input type="date" value="${task.startDate||''}" onchange="updateTaskDate('${phase.id}','${room.id}','${task.id}','startDate',this.value)" onclick="event.stopPropagation()" title="${task.startDate?'Custom date — overrides dependency/duration scheduling':(taskDepCount?'Computed from dependencies — set a date here to override':'Set a start date directly, or use 🔗 for duration/dependencies')}">`
+                ? `<input type="date" value="${task.startDate||''}" onchange="updateTaskDate('${phase.id}','${room.id}','${task.id}','startDate',this.value)" onclick="event.stopPropagation()" title="${task.startDate?'Custom date — overrides dependency/duration scheduling':(taskDepCount?'Computed from dependencies — set a date here to override':'Set a start date directly, or use Depends On for dependencies')}">`
                 : (taskStart||'—'))}
               </div>
               <div class="gantt-date-cell gantt-end-cell" onclick="event.stopPropagation()">${taskCircular ? '' : (isReal && isOwner
-                ? `<input type="date" value="${task.endDate||''}" onchange="updateTaskDate('${phase.id}','${room.id}','${task.id}','endDate',this.value)" onclick="event.stopPropagation()" title="${task.endDate?'Custom date — overrides dependency/duration scheduling':(taskDepCount?'Computed from dependencies — set a date here to override':'Set an end date directly, or use 🔗 for duration/dependencies')}">`
+                ? `<input type="date" value="${task.endDate||''}" onchange="updateTaskDate('${phase.id}','${room.id}','${task.id}','endDate',this.value)" onclick="event.stopPropagation()" title="${task.endDate?'Custom date — overrides dependency/duration scheduling':(taskDepCount?'Computed from dependencies — set a date here to override':'Set an end date directly, or use Depends On for dependencies')}">`
                 : (taskEnd||'—'))}
                 ${isReal && isOwner && (task.startDate || task.endDate) ? `<button onclick="event.stopPropagation();clearTaskDateOverride('${phase.id}','${room.id}','${task.id}')" title="Clear override, go back to duration/dependency-based scheduling" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.7rem;flex-shrink:0;padding:0">✕</button>` : ''}
               </div>
+              <div class="gantt-deps-cell" onclick="event.stopPropagation();${isReal&&isOwner?`openTaskScheduleModal('${phase.id}','${room.id}','${task.id}')`:''}" title="${isReal&&isOwner ? 'Click to set dependencies' : ''}">${isReal ? formatDependsOn(task.dependsOn) : ''}</div>
               <div class="gantt-pct-cell" onclick="event.stopPropagation()">${isReal && isOwner
                 ? `<input type="number" min="0" max="100" step="5" value="${tPct}" onchange="updateTaskPct('${phase.id}','${room.id}','${task.id}',this.value)" onclick="event.stopPropagation()" style="width:58px;background:rgba(110,145,210,.08);border:1px solid rgba(110,145,210,.25);border-radius:5px;color:${glyphColor};font-weight:700;font-size:.72rem;padding:3px 2px;text-align:center" title="0-100% complete for this task">`
                 : `<span style="color:${glyphColor}">${tPct}%</span>`}
               </div>
             </div>`;
           });
-
-          // Add task button
-          html += `<div class="gantt-left-row task-row" style="opacity:.6">
-            <div class="gantt-name-cell" style="padding-left:44px">
-              <button onclick="addGanttTask('${phase.id}','${room.id}')" 
-                style="background:none;border:1px dashed rgba(110,145,210,.3);border-radius:4px;color:var(--muted);font-size:.7rem;padding:2px 8px;cursor:pointer">
-                + Add task
-              </button>
-            </div>
-            <div class="gantt-days-cell"></div>
-            <div class="gantt-date-cell gantt-start-cell"></div>
-            <div class="gantt-date-cell gantt-end-cell"></div>
-            <div class="gantt-pct-cell"></div>
-          </div>`;
         }
       });
     }
@@ -3396,6 +3375,7 @@ function renderGanttLeft(jobId, job) {
           <div class="gantt-days-cell"></div>
           <div class="gantt-date-cell gantt-start-cell"></div>
           <div class="gantt-date-cell gantt-end-cell"></div>
+          <div class="gantt-deps-cell"></div>
           <div class="gantt-pct-cell"></div>
         </div>`;
       }
@@ -3511,8 +3491,6 @@ function renderGanttRight(minDate, maxDate, today) {
               bar(taskBarDates.start || roomStart, taskBarDates.end || roomEnd, `background:${isDone?'#10b981':'#334155'};border-radius:2px;position:absolute;height:8px;top:14px`, isDone?100:0, '', '') +
               '</div>';
           });
-          // Add task button row
-          barsHtml += `<div class="gantt-bar-row" style="height:${rowH}px"></div>`;
         }
       });
     }
@@ -3688,6 +3666,17 @@ function findScheduleItemAnywhere(id) {
   return null;
 }
 window.findScheduleItemAnywhere = findScheduleItemAnywhere;
+
+// Renders a dependsOn array as "#2, #5" using each dependency's real
+// reference number, for the dedicated Depends On column — this is the
+// column that replaces the small buried 🔗 icon inside the Name cell.
+function formatDependsOn(dependsOnIds) {
+  if (!dependsOnIds || !dependsOnIds.length) return '—';
+  return dependsOnIds.map(id => {
+    const found = findScheduleItemAnywhere(id);
+    return found ? '#' + found.item._ganttNum : '?';
+  }).join(', ');
+}
 
 // Same room-only lookup kept for the existing room-level code paths
 // that specifically need a room (findRoomAnywhere stays room-only;
@@ -3957,84 +3946,23 @@ async function updateJobDate(field, value) {
 }
 window.updateJobDate = updateJobDate;
 
-// Gantt panel resize
+// Gantt panel resize — disabled. #ganttLeft is now a fixed 860px
+// (sum of every .gantt-*-cell's fixed width), matching the "no more
+// resizable columns, ever" direction. Left draggable, this could pull
+// the panel wider/narrower than that 860px sum and either leave a
+// blank gap or clip content, since Name is a fixed width now too, not
+// flex:1 absorbing the difference the way it used to.
 function initGanttResize() {
-  const resizer = document.getElementById('ganttResizer');
   const left = document.getElementById('ganttLeft');
-  if (!resizer || !left) return;
-  let startX, startW;
-  resizer.addEventListener('mousedown', e => {
-    startX = e.clientX;
-    startW = left.offsetWidth;
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', () => document.removeEventListener('mousemove', onMove), { once: true });
-  });
-  function onMove(e) {
-    const newW = Math.max(450, Math.min(1100, startW + e.clientX - startX));
-    left.style.width = newW + 'px';
-  }
+  if (left) left.style.width = '860px';
 }
 window.initGanttResize = initGanttResize;
 
-// Per-column resize for the Gantt left panel (Days/Start/Finish),
-// same drag technique as the whole-panel resizer above, just targeting
-// a CSS custom property on #ganttLeft per column instead of the
-// panel's own width. Widths persist in localStorage per-browser (a
-// personal display preference, not company data) so they don't reset
-// on every reload.
-const GANTT_COL_MIN = { days: 46, start: 90, end: 90 };
-const GANTT_COL_MAX = { days: 140, start: 320, end: 320 };
-const GANTT_COL_DEFAULT = { days: 64, start: 150, end: 150 };
-const GANTT_COL_STORAGE_KEY = 'jobsmetrix_gantt_col_widths';
-
-function applyStoredGanttColumnWidths() {
-  const left = document.getElementById('ganttLeft');
-  if (!left) return;
-  let saved = {};
-  try { saved = JSON.parse(localStorage.getItem(GANTT_COL_STORAGE_KEY) || '{}'); } catch(e) {}
-  ['days','start','end'].forEach(col => {
-    const w = saved[col] || GANTT_COL_DEFAULT[col];
-    left.style.setProperty('--gc-' + col, w + 'px');
-  });
-}
-window.applyStoredGanttColumnWidths = applyStoredGanttColumnWidths;
-
-function initGanttColumnResize() {
-  const left = document.getElementById('ganttLeft');
-  if (!left) return;
-  applyStoredGanttColumnWidths();
-
-  document.querySelectorAll('.gantt-col-resizer').forEach(handle => {
-    // Avoid double-binding if this gets called more than once per page load.
-    if (handle.dataset.bound) return;
-    handle.dataset.bound = '1';
-    const col = handle.dataset.col;
-
-    handle.addEventListener('mousedown', e => {
-      e.preventDefault();
-      const startX = e.clientX;
-      const startW = parseInt(getComputedStyle(left).getPropertyValue('--gc-' + col)) || GANTT_COL_DEFAULT[col];
-      handle.classList.add('resizing');
-
-      function onMove(ev) {
-        const newW = Math.max(GANTT_COL_MIN[col], Math.min(GANTT_COL_MAX[col], startW + ev.clientX - startX));
-        left.style.setProperty('--gc-' + col, newW + 'px');
-      }
-      function onUp() {
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
-        handle.classList.remove('resizing');
-        let saved = {};
-        try { saved = JSON.parse(localStorage.getItem(GANTT_COL_STORAGE_KEY) || '{}'); } catch(e) {}
-        saved[col] = parseInt(getComputedStyle(left).getPropertyValue('--gc-' + col)) || GANTT_COL_DEFAULT[col];
-        localStorage.setItem(GANTT_COL_STORAGE_KEY, JSON.stringify(saved));
-      }
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-    });
-  });
-}
-window.initGanttColumnResize = initGanttColumnResize;
+// Per-column resize was removed entirely per explicit direction:
+// every Gantt column is now a fixed pixel width (see .gantt-*-cell
+// CSS), not user-draggable. This eliminates an entire class of
+// "why is the width wrong" issues that came from stored/dragged
+// widths interacting unpredictably with content across sessions.
 
 async function updatePhaseDate(phaseId, field, value) {
   if (!_ganttJobId || !conDb) return;
