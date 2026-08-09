@@ -4023,7 +4023,7 @@
     </div>
 
     <!-- Financial Summary Bar -->
-    <div id="jobFinBar" style="flex-shrink:0;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:0;background:var(--surface);border-top:1px solid rgba(110,145,210,.12);border-bottom:1px solid rgba(110,145,210,.12)">
+    <div id="jobFinBar" style="flex-shrink:0;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:0;background:var(--surface);border-top:1px solid rgba(110,145,210,.12);border-bottom:1px solid rgba(110,145,210,.12)">
       <div class="fin-bar-cell" style="border-right:1px solid rgba(110,145,210,.1)">
         <div class="fin-bar-label">Approved Price</div>
         <div class="fin-bar-val" id="fbarApproved" style="color:#a3f2d2">—</div>
@@ -4039,6 +4039,10 @@
       <div class="fin-bar-cell" style="border-right:1px solid rgba(110,145,210,.1)">
         <div class="fin-bar-label">Cost to Complete</div>
         <div class="fin-bar-val" id="fbarCostComplete">—</div>
+      </div>
+      <div class="fin-bar-cell" style="border-right:1px solid rgba(110,145,210,.1)">
+        <div class="fin-bar-label" title="Real cash actually paid out so far — vendor bills, materials purchases, and Paid-status subcontractor payments. Different from Cost to Complete, which is the total real cost regardless of payment timing.">Spent to Date</div>
+        <div class="fin-bar-val" id="fbarSpentToDate" style="color:#f59e0b">—</div>
       </div>
       <div class="fin-bar-cell" style="border-right:1px solid rgba(110,145,210,.1)">
         <div class="fin-bar-label">Projected Profit</div>
@@ -4751,7 +4755,7 @@
 
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
-<script src="kytrac-app.js?v=202608092302"></script>
+<script src="kytrac-app.js?v=202608092307"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW

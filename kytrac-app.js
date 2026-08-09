@@ -2716,6 +2716,7 @@ function applyJobFinancialsDisplay(job, acOverride, realCostOverride) {
   setFin('fbarCollected', collected);
   setFin('fbarBalance', balance);
   setFin('fbarCostComplete', costToComplete);
+  setFin('fbarSpentToDate', ac);
   // fbarProfit's color was hardcoded green (#a3f2d2) directly in the
   // HTML template and never touched again -- setFin() only ever set
   // .textContent. A genuine loss (e.g. -$60,011 on a job with no
