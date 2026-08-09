@@ -5893,6 +5893,7 @@ function renderFinancialsHub(jobId) {
 
   // Owner-only COO budget breakdown
   renderCOOBudgetBreakdown();
+  renderLaborBudget();
 
   fhRenderEva();
 }
@@ -19001,6 +19002,71 @@ function calcGroupTotals(items) {
 // Reversible: the pre-discount values are snapshotted onto the job doc
 // before any line item is touched, so "Remove Discount" can restore
 // exact original pricing.
+
+// ── Labor Budget (planning ceiling, NOT actual cost tracking) ──────
+// This answers a genuinely different question than the COO Budget
+// Breakdown below: "how much CAN this job afford to pay a
+// subcontractor" -- available the moment a proposal is signed, with
+// zero dependency on a subcontractor being chosen, negotiated with,
+// or paid. The COO Budget Breakdown's Labor line is the opposite: it
+// tracks what's ACTUALLY been committed/paid once real subcontractor
+// payment records exist, and shows a placeholder until they do.
+// Deliberately uses the ORIGINAL fixed-%-of-REVENUE model (the same
+// COO_BUDGET_PCTS weights, just applied as targets-of-revenue here
+// instead of ratios-of-real-gross-margin) -- for a planning ceiling
+// computed BEFORE real cost is known, targets are the only thing that
+// can be solved from, there's no "real" cost yet to ratio against.
+async function computeLaborBudget(job) {
+  const { materials: billedMaterials } = await fetchEstimateCostSplitFresh(job.id);
+  const trueMaterials = billedMaterials / 1.15;
+  const revenue = getJobValue(job) || 0;
+  const overheadTarget = revenue * COO_BUDGET_PCTS.overhead;
+  const profitTarget = revenue * COO_BUDGET_PCTS.profit;
+  const marketingTarget = revenue * COO_BUDGET_PCTS.marketing;
+  const laborBudget = revenue - trueMaterials - overheadTarget - profitTarget - marketingTarget;
+  return {
+    revenue: Math.round(revenue * 100) / 100,
+    trueMaterials: Math.round(trueMaterials * 100) / 100,
+    overheadTarget: Math.round(overheadTarget * 100) / 100,
+    profitTarget: Math.round(profitTarget * 100) / 100,
+    marketingTarget: Math.round(marketingTarget * 100) / 100,
+    laborBudget: Math.round(Math.max(0, laborBudget) * 100) / 100,
+    isNegative: laborBudget < 0, // job can't hit full targets even with zero labor cost
+  };
+}
+
+async function renderLaborBudget() {
+  const wrap = document.getElementById('fhLaborBudgetWrap');
+  if (!wrap) return;
+  if (currentUserRole !== 'Owner') { wrap.style.display = 'none'; return; }
+  const job = conJobs.find(j => j.id === conCurrentJobId);
+  if (!job) { wrap.style.display = 'none'; return; }
+  wrap.style.display = '';
+  wrap.innerHTML = `<div class="finhub-sec-head" style="cursor:default"><span>🎯 Labor Budget <span class="small muted">(Owner only) — max subcontractor pay at target margins</span></span></div>
+    <div class="finhub-sec-body"><div class="finhub-empty">Calculating…</div></div>`;
+  try {
+    const b = await computeLaborBudget(job);
+    const fmt = v => '$' + v.toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0});
+    const body = document.querySelector('#fhLaborBudgetWrap .finhub-sec-body');
+    if (!body) return;
+    body.innerHTML = `
+      <div class="finhub-line"><div class="finhub-line-title" style="color:#a78bfa;font-weight:800">Labor Budget</div><div class="finhub-line-amt" style="font-weight:800;font-size:1.05rem">${fmt(b.laborBudget)}</div></div>
+      ${b.isNegative ? `<div class="small" style="color:#fca5a5;padding:4px 0">⚠ This job can't hit full target margins even at $0 labor cost — signed price is under what your targets need.</div>` : ''}
+      <div class="small muted" style="padding:6px 0;line-height:1.6">
+        Signed price: ${fmt(b.revenue)}<br>
+        − True materials: ${fmt(b.trueMaterials)}<br>
+        − Overhead target (${(COO_BUDGET_PCTS.overhead*100).toFixed(0)}%): ${fmt(b.overheadTarget)}<br>
+        − Profit target (${(COO_BUDGET_PCTS.profit*100).toFixed(0)}%): ${fmt(b.profitTarget)}<br>
+        − Marketing target (${(COO_BUDGET_PCTS.marketing*100).toFixed(0)}%): ${fmt(b.marketingTarget)}<br>
+        <span style="color:#cbd5e1">= Labor Budget: ${fmt(b.laborBudget)}</span>
+      </div>
+      <div class="small muted" style="font-style:italic;padding-top:4px;border-top:1px solid rgba(110,145,210,.1)">This is a planning ceiling from the signed price, not what's actually been committed to a sub — see COO Budget Breakdown below for real tracked cost once subcontractor payments are logged.</div>`;
+  } catch (e) {
+    const body = document.querySelector('#fhLaborBudgetWrap .finhub-sec-body');
+    if (body) body.innerHTML = `<div class="finhub-empty">Could not calculate: ${esc(e.message)}</div>`;
+  }
+}
+window.renderLaborBudget = renderLaborBudget;
 
 // ── COO Budget Breakdown ──────────────────────────────────────────
 // Splits a job's estimate into a category breakdown: Materials and
