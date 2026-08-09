@@ -19003,35 +19003,24 @@ function calcGroupTotals(items) {
 // before any line item is touched, so "Remove Discount" can restore
 // exact original pricing.
 
-// ── Labor Budget (planning ceiling, NOT actual cost tracking) ──────
-// This answers a genuinely different question than the COO Budget
-// Breakdown below: "how much CAN this job afford to pay a
-// subcontractor" -- available the moment a proposal is signed, with
-// zero dependency on a subcontractor being chosen, negotiated with,
-// or paid. The COO Budget Breakdown's Labor line is the opposite: it
-// tracks what's ACTUALLY been committed/paid once real subcontractor
-// payment records exist, and shows a placeholder until they do.
-// Deliberately uses the ORIGINAL fixed-%-of-REVENUE model (the same
-// COO_BUDGET_PCTS weights, just applied as targets-of-revenue here
-// instead of ratios-of-real-gross-margin) -- for a planning ceiling
-// computed BEFORE real cost is known, targets are the only thing that
-// can be solved from, there's no "real" cost yet to ratio against.
-async function computeLaborBudget(job) {
+// The full 6-bucket ESTIMATED breakdown, known instantly once a
+// proposal is signed -- extends the Labor Budget math above (Labor is
+// literally "whatever's left after Materials and the three targets")
+// to all six buckets, so every one of them has both an Estimated and
+// an Actual figure to compare from day one.
+async function computeEstimatedBreakdown(job) {
   const { materials: billedMaterials } = await fetchEstimateCostSplitFresh(job.id);
   const trueMaterials = billedMaterials / 1.15;
   const revenue = getJobValue(job) || 0;
-  const overheadTarget = revenue * COO_BUDGET_PCTS.overhead;
-  const profitTarget = revenue * COO_BUDGET_PCTS.profit;
-  const marketingTarget = revenue * COO_BUDGET_PCTS.marketing;
-  const laborBudget = revenue - trueMaterials - overheadTarget - profitTarget - marketingTarget;
+  const overhead = revenue * COO_BUDGET_PCTS.overhead;
+  const profit = revenue * COO_BUDGET_PCTS.profit;
+  const marketing = revenue * COO_BUDGET_PCTS.marketing;
+  const labor = Math.max(0, revenue - trueMaterials - overhead - profit - marketing);
+  const taxes = profit * COO_BUDGET_TAX_RATE;
+  const r = v => Math.round(v * 100) / 100;
   return {
-    revenue: Math.round(revenue * 100) / 100,
-    trueMaterials: Math.round(trueMaterials * 100) / 100,
-    overheadTarget: Math.round(overheadTarget * 100) / 100,
-    profitTarget: Math.round(profitTarget * 100) / 100,
-    marketingTarget: Math.round(marketingTarget * 100) / 100,
-    laborBudget: Math.round(Math.max(0, laborBudget) * 100) / 100,
-    isNegative: laborBudget < 0, // job can't hit full targets even with zero labor cost
+    revenue: r(revenue), materials: r(trueMaterials), labor: r(labor),
+    overhead: r(overhead), profit: r(profit), marketing: r(marketing), taxes: r(taxes),
   };
 }
 
@@ -19042,31 +19031,59 @@ async function renderLaborBudget() {
   const job = conJobs.find(j => j.id === conCurrentJobId);
   if (!job) { wrap.style.display = 'none'; return; }
   wrap.style.display = '';
-  wrap.innerHTML = `<div class="finhub-sec-head" style="cursor:default"><span>🎯 Labor Budget <span class="small muted">(Owner only) — max subcontractor pay at target margins</span></span></div>
+  wrap.innerHTML = `<div class="finhub-sec-head" style="cursor:default"><span>🎯 Budget: Estimated vs Actual <span class="small muted">(Owner only)</span></span></div>
     <div class="finhub-sec-body"><div class="finhub-empty">Calculating…</div></div>`;
   try {
-    const b = await computeLaborBudget(job);
+    const [est, act] = await Promise.all([computeEstimatedBreakdown(job), computeCOOBudgetBreakdown(job)]);
     const fmt = v => '$' + v.toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0});
     const body = document.querySelector('#fhLaborBudgetWrap .finhub-sec-body');
     if (!body) return;
+
+    // Cost buckets: over-estimate is bad (red). Value buckets: under-
+    // target is bad (red) -- a real consequence of cost running hot,
+    // not something separately controlled, but still worth flagging.
+    const costBuckets = ['materials', 'labor'];
+    const rows = [
+      ['Materials', 'materials'], ['Labor', 'labor'], ['Overhead', 'overhead'],
+      ['Retained Earnings', 'profit'], ['Marketing', 'marketing'], ['Taxes', 'taxes'],
+    ];
+    const rowsHtml = rows.map(([label, key]) => {
+      const e = est[key], a = act[key];
+      const variance = a - e;
+      const isCost = costBuckets.includes(key);
+      const isBad = isCost ? variance > 0 : variance < 0;
+      const vColor = Math.abs(variance) < 1 ? 'var(--muted)' : (isBad ? '#fca5a5' : '#86efac');
+      const vSign = variance > 0 ? '+' : '';
+      return `<div class="finhub-line">
+        <div class="finhub-line-title">${label}</div>
+        <div class="small muted" style="width:90px;text-align:right">${fmt(e)}</div>
+        <div class="finhub-line-amt" style="width:90px">${fmt(a)}</div>
+        <div class="small" style="width:90px;text-align:right;color:${vColor};font-weight:700">${vSign}${fmt(variance)}</div>
+      </div>`;
+    }).join('');
+
+    const materialsFlag = act.materialsSource && act.materialsSource.startsWith('estimate-derived')
+      ? `<div class="small muted" style="font-style:italic">⚠ Actual Materials still estimate-derived — no vendor bills/expenses logged against this job yet.</div>` : '';
+    const laborFlag = act.costSource && act.costSource.startsWith('PLACEHOLDER')
+      ? `<div class="small muted" style="font-style:italic">⚠ Actual Labor still a placeholder — no subcontractor payments logged yet.</div>` : '';
+
     body.innerHTML = `
-      <div class="finhub-line"><div class="finhub-line-title" style="color:#a78bfa;font-weight:800">Labor Budget</div><div class="finhub-line-amt" style="font-weight:800;font-size:1.05rem">${fmt(b.laborBudget)}</div></div>
-      ${b.isNegative ? `<div class="small" style="color:#fca5a5;padding:4px 0">⚠ This job can't hit full target margins even at $0 labor cost — signed price is under what your targets need.</div>` : ''}
-      <div class="small muted" style="padding:6px 0;line-height:1.6">
-        Signed price: ${fmt(b.revenue)}<br>
-        − True materials: ${fmt(b.trueMaterials)}<br>
-        − Overhead target (${(COO_BUDGET_PCTS.overhead*100).toFixed(0)}%): ${fmt(b.overheadTarget)}<br>
-        − Profit target (${(COO_BUDGET_PCTS.profit*100).toFixed(0)}%): ${fmt(b.profitTarget)}<br>
-        − Marketing target (${(COO_BUDGET_PCTS.marketing*100).toFixed(0)}%): ${fmt(b.marketingTarget)}<br>
-        <span style="color:#cbd5e1">= Labor Budget: ${fmt(b.laborBudget)}</span>
+      <div class="finhub-line" style="font-weight:800;border-bottom:1px solid rgba(110,145,210,.15);padding-bottom:6px;margin-bottom:2px">
+        <div class="finhub-line-title small muted">BUCKET</div>
+        <div class="small muted" style="width:90px;text-align:right">ESTIMATED</div>
+        <div class="small muted" style="width:90px">ACTUAL</div>
+        <div class="small muted" style="width:90px;text-align:right">VARIANCE</div>
       </div>
-      <div class="small muted" style="font-style:italic;padding-top:4px;border-top:1px solid rgba(110,145,210,.1)">This is a planning ceiling from the signed price, not what's actually been committed to a sub — see COO Budget Breakdown below for real tracked cost once subcontractor payments are logged.</div>`;
+      ${rowsHtml}
+      ${materialsFlag}${laborFlag}
+      <div class="small muted" style="font-style:italic;padding-top:6px;border-top:1px solid rgba(110,145,210,.1);margin-top:4px">Estimated = known from the signed price the moment it's signed, no subcontractor or purchase needed. Actual = real cost as it comes in. Red variance means a cost bucket ran over or a value bucket is falling short of target.</div>`;
   } catch (e) {
     const body = document.querySelector('#fhLaborBudgetWrap .finhub-sec-body');
     if (body) body.innerHTML = `<div class="finhub-empty">Could not calculate: ${esc(e.message)}</div>`;
   }
 }
 window.renderLaborBudget = renderLaborBudget;
+window.computeEstimatedBreakdown = computeEstimatedBreakdown;
 
 // ── COO Budget Breakdown ──────────────────────────────────────────
 // Splits a job's estimate into a category breakdown: Materials and
@@ -19117,10 +19134,35 @@ function getEstimateCostSplit() {
   return { materials, laborAndOther };
 }
 
+// Real materials cost — paid vendor bills for this job + logged job
+// expenses (materials purchases), same sources refreshJobFinancials
+// already sums for the dashboard header. Falls back to null (caller
+// uses the estimate-derived True Materials figure instead) if nothing
+// real has been logged yet — same fallback philosophy as labor below.
+async function computeRealMaterialsActual(jobId) {
+  let billsPaid = 0, expensesTotal = 0;
+  try {
+    const vSnap = await coll('vendors').get();
+    await Promise.all(vSnap.docs.map(vDoc =>
+      vDoc.ref.collection('bills').where('jobId', '==', jobId).get()
+        .then(bSnap => bSnap.forEach(bDoc => { billsPaid += (bDoc.data().amtPaid || 0); }))
+        .catch(() => {})
+    ));
+  } catch (e) { /* fall through */ }
+  try {
+    const eSnap = await coll('jobs').doc(jobId).collection('expenses').get();
+    eSnap.forEach(eDoc => { expensesTotal += (eDoc.data().amount || 0); });
+  } catch (e) { /* fall through */ }
+  const total = billsPaid + expensesTotal;
+  return total > 0 ? total : null;
+}
+
 // Real cost for a job — Materials and Labor — in priority order from
 // most to least trustworthy, never catalog placeholder rates:
-//   Materials: billed materials ÷ 1.15 (backs out the established 15%
-//     markup — same formula validated by hand all session).
+//   Materials: real paid vendor bills + logged expenses for this job,
+//     if any exist; otherwise billed materials ÷ 1.15 (backs out the
+//     established 15% markup — same formula validated by hand all
+//     session), flagged as estimate-derived rather than real spend.
 //   Labor, in order:
 //     1. Real subcontractor payments actually logged on this job
 //        (jobs/{jobId}/subcontractorPayments) — real committed dollars.
@@ -19133,13 +19175,16 @@ function getEstimateCostSplit() {
 //        flagged as a placeholder — no real cost data exists yet.
 async function computeRealJobCost(jobId) {
   const { materials: billedMaterials, laborAndOther: billedLabor } = await fetchEstimateCostSplitFresh(jobId);
-  const realMaterials = billedMaterials / 1.15;
+  const estimateDerivedMaterials = billedMaterials / 1.15;
+  const realMaterialsActual = await computeRealMaterialsActual(jobId);
+  const materials = realMaterialsActual != null ? realMaterialsActual : estimateDerivedMaterials;
+  const materialsSource = realMaterialsActual != null ? 'actual vendor bills + expenses' : 'estimate-derived (billed ÷ 1.15) — no real purchases logged yet';
 
   const paySnap = await coll('jobs').doc(jobId).collection('subcontractorPayments').get();
   let loggedLabor = 0;
   paySnap.forEach(d => { const p = d.data(); if (p.status !== 'Voided') loggedLabor += (p.amount || 0); });
   if (loggedLabor > 0) {
-    return { materials: realMaterials, labor: loggedLabor, source: 'actual subcontractor payments' };
+    return { materials, materialsSource, labor: loggedLabor, source: 'actual subcontractor payments' };
   }
 
   const contractorsOnJob = (allContractors || []).filter(c => (c.crewMemberEmails||[]).length);
@@ -19161,11 +19206,11 @@ async function computeRealJobCost(jobId) {
           if (h > 0) { anyHours = true; estimatedLabor += h * rate; }
         });
       });
-      if (anyHours) return { materials: realMaterials, labor: estimatedLabor, source: 'estimated from clocked hours × contractor rate' };
+      if (anyHours) return { materials, materialsSource, labor: estimatedLabor, source: 'estimated from clocked hours × contractor rate' };
     } catch (e) { /* fall through to placeholder */ }
   }
 
-  return { materials: realMaterials, labor: billedLabor, source: 'PLACEHOLDER — billed labor, no real subcontractor cost data logged yet' };
+  return { materials, materialsSource, labor: billedLabor, source: 'PLACEHOLDER — billed labor, no real subcontractor cost data logged yet' };
 }
 
 async function computeCOOBudgetBreakdown(job) {
@@ -19200,6 +19245,7 @@ async function computeCOOBudgetBreakdown(job) {
     taxes: Math.round(taxes * 100) / 100,
     grossMarginDollar: Math.round(grossMarginDollar * 100) / 100,
     costSource: realCost.source,
+    materialsSource: realCost.materialsSource,
     generatedAt: new Date().toISOString(),
   };
 }
