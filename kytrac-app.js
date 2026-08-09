@@ -2698,16 +2698,15 @@ function applyJobFinancialsDisplay(job, acOverride, realCostOverride) {
   const inAppCollected = jobInvs.reduce((s,i) => s + (i.amtPaid||0), 0);
   const collected = (typeof job.collected === 'number') ? job.collected : inAppCollected;
   const balance = cv - collected;
-  // Cost to Complete = estimated cost minus what's actually been spent
-  // so far. Previously hardcoded to $0 whenever hasRealActual was true,
-  // under the assumption that actualCost only ever arrived as a
-  // one-time CSV import representing a FINISHED job's final total cost
-  // — in which case "nothing left to complete" was correct. Now that ac
-  // is live/incremental (updates as bills and materials purchases come
-  // in throughout the job), that assumption breaks: a job that's spent
-  // $272 of an estimated $2,000 is very much not "done," and should
-  // show ~$1,728 left to complete, not $0.
-  const costToComplete = Math.max(0, ec - ac);
+  // Cost to Complete = total real cost to JTXD for this job, full
+  // stop -- per Travis's direct correction, this is NOT "remaining to
+  // be spent" (ec - ac). It should never read $0 just because a
+  // deposit's been paid or the job's fully wrapped; it always answers
+  // "what does this job cost, total," same number whether the job
+  // hasn't started or is completely paid off. If a separate "how much
+  // is still owed to subs/vendors" figure is ever wanted, that needs
+  // its own metric -- this field doesn't track that anymore.
+  const costToComplete = ec;
   const projProfit = profit;
   const projMargin = margin;
 
