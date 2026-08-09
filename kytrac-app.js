@@ -2605,13 +2605,20 @@ function refreshJobFinancials(job) {
   coll('jobs').doc(jobId).collection('expenses').get()
     .then(eSnap => { eSnap.forEach(eDoc => { materialsTotal += (eDoc.data().amount || 0); }); maybeApplyLive(); })
     .catch(maybeApplyLive);
-  // Subcontractor payments — ALL statuses count here (Agreed or Paid),
-  // since a committed flat-rate job price is real cost the moment it's
-  // agreed, regardless of whether cash has moved yet. (Net Cash
-  // Position in the Financials tab is the cash-timing view — this is
-  // the true-cost view, a deliberately different question.)
+  // Subcontractor payments — PAID ONLY here, deliberately different
+  // from computeRealJobCost's own subcontractorPayments query (leg 5
+  // below, which correctly counts Agreed too, since TOTAL real cost
+  // includes committed-but-unpaid obligations). This variable feeds
+  // "ac" below, which gets SUBTRACTED from total cost to compute
+  // Cost to Complete — an Agreed-but-unpaid payment is a real cost,
+  // but it hasn't actually left the bank yet, so subtracting it here
+  // would double-count it: once correctly as part of total cost, and
+  // again incorrectly as if it were already spent. Real bug found
+  // this way — an Agreed payment for the FULL labor cost made Cost to
+  // Complete drop to just Materials, since the whole labor figure got
+  // subtracted from itself.
   coll('jobs').doc(jobId).collection('subcontractorPayments').get()
-    .then(sSnap => { sSnap.forEach(sDoc => { subPayTotal += (sDoc.data().amount || 0); }); maybeApplyLive(); })
+    .then(sSnap => { sSnap.forEach(sDoc => { const p = sDoc.data(); if (p.status === 'Paid') subPayTotal += (p.amount || 0); }); maybeApplyLive(); })
     .catch(maybeApplyLive);
   // Real labor cost: hours logged on THIS job × each hourly person's
   // burdened rate. Flat-rate subcontractors are explicitly excluded —
