@@ -5918,61 +5918,77 @@ function renderFinancialsHub(jobId) {
 // have happened, and a wrong 50/50 fallback split looks like a real
 // number, not an obviously-empty one, which makes it dangerous to get
 // wrong silently.
+// Parallelized — this used to await every group's items, then its
+// subgroups, then every subgroup's items, then ITS sub-subgroups, one
+// Firestore round trip at a time — the exact same sequential-cascade
+// bug already found and fixed in loadEpicTree() earlier tonight, just
+// never applied here. For a 106-task job this took 14.5 SECONDS
+// (measured directly, not estimated) before the real Cost to Complete
+// number ever appeared — which is why it looked "stuck on the old
+// number" rather than "eventually correct but painfully slow." This
+// single function feeds nearly every real-cost feature built tonight
+// (COO Budget Breakdown, Labor Budget, Cost to Complete, the KPI
+// dashboard), so this one fix speeds up all of them at once.
 async function fetchEstimateCostSplitFresh(jobId) {
   let materials = 0, laborAndOther = 0;
   const addItem = data => {
     const price = (data.unitPrice || 0) * (data.qty || 1);
     if (data.costType === 'Materials') materials += price; else laborAndOther += price;
   };
-  const groupsSnap = await coll('jobs').doc(jobId).collection('estimateGroups').get();
-  for (const gDoc of groupsSnap.docs) {
+  const jobRef = coll('jobs').doc(jobId);
+  const groupsSnap = await jobRef.collection('estimateGroups').get();
+  await Promise.all(groupsSnap.docs.map(async gDoc => {
     const gRef = gDoc.ref;
-    const directItems = await gRef.collection('items').get();
+    const [directItems, subsSnap] = await Promise.all([
+      gRef.collection('items').get(),
+      gRef.collection('subgroups').get(),
+    ]);
     directItems.forEach(d => addItem(d.data()));
-    const subsSnap = await gRef.collection('subgroups').get();
-    for (const sDoc of subsSnap.docs) {
+    await Promise.all(subsSnap.docs.map(async sDoc => {
       const sRef = sDoc.ref;
-      const subItems = await sRef.collection('items').get();
+      const [subItems, subsubSnap] = await Promise.all([
+        sRef.collection('items').get(),
+        sRef.collection('subgroups').get(),
+      ]);
       subItems.forEach(d => addItem(d.data()));
-      const subsubSnap = await sRef.collection('subgroups').get();
-      for (const ssDoc of subsubSnap.docs) {
-        const ssItems = await ssDoc.ref.collection('items').get();
-        ssItems.forEach(d => addItem(d.data()));
-      }
-    }
-  }
+      await Promise.all(subsubSnap.docs.map(ssDoc =>
+        ssDoc.ref.collection('items').get().then(ssItems => ssItems.forEach(d => addItem(d.data())))
+      ));
+    }));
+  }));
   return { materials, laborAndOther };
 }
 
-// Same traversal, but sums unitCost (the estimate's TRUE cost basis)
-// instead of unitPrice (the billed/sell price). This is the number
-// that answers "what will this job actually cost us" — the other
-// function above answers "what does the customer see billed."
-// Conflating the two was the exact confusion behind the whole
-// billed-vs-true-cost thread running through today's session.
+// Same parallelization applied — see fetchEstimateCostSplitFresh above
+// for the full explanation. This is its twin (sums unitCost instead
+// of unitPrice) and had the identical sequential-cascade bug.
 async function fetchEstimateTrueCostSplit(jobId) {
   let materials = 0, laborAndOther = 0;
   const addItem = data => {
     const cost = (data.unitCost || 0) * (data.qty || 1);
     if (data.costType === 'Materials') materials += cost; else laborAndOther += cost;
   };
-  const groupsSnap = await coll('jobs').doc(jobId).collection('estimateGroups').get();
-  for (const gDoc of groupsSnap.docs) {
+  const jobRef = coll('jobs').doc(jobId);
+  const groupsSnap = await jobRef.collection('estimateGroups').get();
+  await Promise.all(groupsSnap.docs.map(async gDoc => {
     const gRef = gDoc.ref;
-    const directItems = await gRef.collection('items').get();
+    const [directItems, subsSnap] = await Promise.all([
+      gRef.collection('items').get(),
+      gRef.collection('subgroups').get(),
+    ]);
     directItems.forEach(d => addItem(d.data()));
-    const subsSnap = await gRef.collection('subgroups').get();
-    for (const sDoc of subsSnap.docs) {
+    await Promise.all(subsSnap.docs.map(async sDoc => {
       const sRef = sDoc.ref;
-      const subItems = await sRef.collection('items').get();
+      const [subItems, subsubSnap] = await Promise.all([
+        sRef.collection('items').get(),
+        sRef.collection('subgroups').get(),
+      ]);
       subItems.forEach(d => addItem(d.data()));
-      const subsubSnap = await sRef.collection('subgroups').get();
-      for (const ssDoc of subsubSnap.docs) {
-        const ssItems = await ssDoc.ref.collection('items').get();
-        ssItems.forEach(d => addItem(d.data()));
-      }
-    }
-  }
+      await Promise.all(subsubSnap.docs.map(ssDoc =>
+        ssDoc.ref.collection('items').get().then(ssItems => ssItems.forEach(d => addItem(d.data())))
+      ));
+    }));
+  }));
   return { materials, laborAndOther };
 }
 
