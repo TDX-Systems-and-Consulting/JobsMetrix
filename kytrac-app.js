@@ -6472,6 +6472,16 @@ async function onSubPaySelectChange() {
           ? 'No clock-in hours logged for ' + contractor.name + '\'s crew on this job yet — enter the amount manually.'
           : contractor.name + ' has no burdened rate set (Contractors) — enter the amount manually.';
       }
+      // Real bug this closes: switching FROM a contractor that had a
+      // valid suggested amount (which shows overrideWrap when the
+      // typed amount differs) TO one with no hours/rate left
+      // overrideWrap stuck visible with _subPaySuggestedAmount now
+      // null — clicking Save then crashed on null.toFixed(2), silently,
+      // with no alert and no save. onSubPayAmountInput() already
+      // guards against this correctly; this branch needs the same
+      // guard, since it changes _subPaySuggestedAmount without going
+      // through that function.
+      if (overrideWrap) overrideWrap.style.display = 'none';
       return;
     }
 
@@ -6589,8 +6599,14 @@ function saveSubcontractorPayment() {
   // If the amount was auto-suggested from logged hours × rate and the
   // person changed it, require them to say why before it saves — the
   // whole point of prepopulating is that a silent override defeats it.
+  // Guards against _subPaySuggestedAmount being null here even though
+  // overrideWrap is visible — a real, previously-reproducible state
+  // (switching subcontractors mid-modal) that used to crash this
+  // whole function silently on null.toFixed(2), with no alert and no
+  // save. Root cause fixed above too; this is the belt-and-suspenders
+  // so the save button can never go silent again this way.
   const overrideWrap = document.getElementById('subPayOverrideWrap');
-  const overrideVisible = overrideWrap && overrideWrap.style.display !== 'none';
+  const overrideVisible = overrideWrap && overrideWrap.style.display !== 'none' && _subPaySuggestedAmount !== null;
   const overrideReason = document.getElementById('subPayOverrideReason')?.value.trim() || '';
   if (overrideVisible && !overrideReason) {
     alert('This amount differs from the suggested $' + _subPaySuggestedAmount.toFixed(2) + ' (hours × rate). Enter a reason for the override before saving.');
