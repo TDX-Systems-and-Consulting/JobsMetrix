@@ -10768,6 +10768,78 @@ async function pushInvoiceToQuickBooks(jobId, invId, btnEl) {
 }
 window.pushInvoiceToQuickBooks = pushInvoiceToQuickBooks;
 
+// The REAL locked 7-bucket formula (established directly with Travis,
+// not the earlier gross-margin-ratio model computeCOOBudgetBreakdown
+// still uses elsewhere). Materials and Labor are FIXED real costs
+// pulled from computeRealJobCost, never derived from a percentage.
+// Everything else waterfalls off revenue and the remainder after each
+// prior bucket, in this exact order: Overhead -> Marketing -> Flex ->
+// Taxes -> Retained Earnings.
+async function computeLockedBucketSplit(job) {
+  const rc = await computeRealJobCost(job.id);
+  const revenue = getJobValue(job) || 0;
+  const materials = rc.materials;
+  const labor = rc.labor;
+  const overhead = revenue * 0.18;
+  const marketing = revenue * 0.015;
+  const remainAfterMOM = revenue - materials - labor - overhead - marketing;
+  const flex = remainAfterMOM * 0.20;
+  const remainAfterFlex = remainAfterMOM - flex;
+  const taxes = remainAfterFlex * 0.275;
+  const retainedEarnings = remainAfterFlex - taxes;
+  const r = v => Math.round(v * 100) / 100;
+  return {
+    revenue: r(revenue), materials: r(materials), labor: r(labor),
+    overhead: r(overhead), marketing: r(marketing), flex: r(flex),
+    taxes: r(taxes), retainedEarnings: r(retainedEarnings),
+  };
+}
+window.computeLockedBucketSplit = computeLockedBucketSplit;
+
+// Fires automatically the moment a payment is marked received (see
+// commitMarkPaid below) -- shows the five buckets Travis actually
+// moves in the bank for THIS payment specifically (Materials and Flex
+// deliberately excluded: both stay in Regular Checking as float/
+// overrun buffer by design, never get their own sub-account). Scales
+// the whole-job locked split by this payment's share of total
+// revenue, same scaling approach already used in
+// sendInvoiceSplitToPlannerXD, just against the correct formula.
+async function showPaymentBucketBreakdown(job, paymentAmount) {
+  try {
+    const full = await computeLockedBucketSplit(job);
+    const share = full.revenue > 0 ? paymentAmount / full.revenue : 0;
+    const scale = v => Math.round(v * share * 100) / 100;
+    const parts = {
+      payroll: scale(full.labor),
+      overhead: scale(full.overhead),
+      marketing: scale(full.marketing),
+      taxes: scale(full.taxes),
+      retainedEarnings: scale(full.retainedEarnings),
+    };
+    const fmt = v => '$' + v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+    const existing = document.getElementById('paymentBucketModal');
+    if (existing) existing.remove();
+    const modal = document.createElement('div');
+    modal.id = 'paymentBucketModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px';
+    modal.innerHTML = `
+      <div style="background:#0d1f35;border:1px solid var(--line);border-radius:16px;padding:28px;max-width:440px;width:100%">
+        <div style="font-size:1.1rem;font-weight:800;color:#eaf0fb;margin-bottom:4px">💰 Move to Sub-Accounts</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-bottom:20px">${fmt(paymentAmount)} received (${(share*100).toFixed(1)}% of job) — ${esc(job.address || job.name || 'Job')}</div>
+        <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px">
+          ${[['Payroll (Labor)', parts.payroll], ['Overhead', parts.overhead], ['Marketing', parts.marketing], ['Taxes', parts.taxes], ['Retained Earnings', parts.retainedEarnings]]
+            .map(([label, amt]) => `<div style="display:flex;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,.03);border-radius:8px"><span style="color:#cbd5e1;font-size:.85rem">${label}</span><span style="color:#eaf0fb;font-weight:700;font-size:.9rem">${fmt(amt)}</span></div>`).join('')}
+        </div>
+        <div style="font-size:.7rem;color:var(--muted);font-style:italic;margin-bottom:18px">Materials and Flex stay in Regular Checking — not listed here, nothing to transfer for either.</div>
+        <button onclick="document.getElementById('paymentBucketModal').remove()" class="btn-amber" style="width:100%;padding:10px;font-weight:700">Got it</button>
+      </div>`;
+    document.body.appendChild(modal);
+  } catch (e) {
+    console.error('Could not show payment bucket breakdown:', e);
+  }
+}
+window.showPaymentBucketBreakdown = showPaymentBucketBreakdown;
+
 function quickMarkPaid(jobId, invId, total) {
   // Open a small modal to capture HOW the invoice was paid. Check payments
   // additionally capture check #, date, and memo for bookkeeping.
@@ -10852,6 +10924,13 @@ async function commitMarkPaid(jobId, invId, total) {
     logInvoiceActivity(jobId, 'invoice_paid', paidNote.trim());
 
     const job = conJobs.find(j => j.id === jobId);
+
+    // 1c-early. Show the bucket breakdown immediately -- right at the
+    // moment of confirming payment, not a separate step to remember
+    // later. Fires before the rest of this function's slower work
+    // (subcontractor to-dos, estimate-tree flagging, CO line-item
+    // application) so it doesn't wait behind any of that.
+    if (job && total > 0) showPaymentBucketBreakdown(job, total);
 
     // 1c. For every subcontractor payment logged on this job that isn't
     // marked Paid yet, create a To-Do ("Pay Domingo Handyman LLC...")
