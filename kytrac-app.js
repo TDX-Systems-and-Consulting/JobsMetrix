@@ -1214,6 +1214,8 @@ function syncDashboardToPlannerXD(data) {
         activeJobs: data.activeJobs,
         outstandingInvoices: rounded,
         unprocessedCOs: data.unprocessedCOs,
+        collectedMTD: data.collectedMTD,
+        netMTD: data.netMTD,
         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
       }, { merge: true }).catch(e => console.warn('Pulse sync write error:', e));
 
@@ -1227,6 +1229,8 @@ function syncDashboardToPlannerXD(data) {
           activeJobs: data.activeJobs,
           outstandingInvoices: rounded,
           unprocessedCOs: data.unprocessedCOs,
+          collectedMTD: data.collectedMTD,
+          netMTD: data.netMTD,
           date: todayStr
         }, { merge: true }).catch(e => console.warn('Pulse history write error:', e));
       }
@@ -1311,7 +1315,7 @@ function conRenderStats() {
       setTile('statUnprocessedCO', 'statUnprocessedCOTile', unprocessed, coColor);
       setNavBadge('navCOBadge', unprocessed);
       _pulseUnprocessedCOs = unprocessed;
-      _maybeSyncPulse();
+      _maybeSyncFullPulse();
     });
   }
 
@@ -1362,18 +1366,27 @@ function conRenderStats() {
   // from amtPaid/paidDate on the invoices themselves means it's always
   // accurate regardless of whether/when anything gets pushed to QBO.
   let _pulseOutstanding = null, _pulseUnprocessedCOs = null;
-  const _maybeSyncPulse = () => {
-    if (_pulseOutstanding === null || _pulseUnprocessedCOs === null) return;
+  // Shared between all four async blocks below (invoices, vendor bills,
+  // materials, subcontractor payments) so the pulse only syncs once
+  // every real number it needs has actually resolved -- previously
+  // this fired on just two of the four (outstanding + unprocessedCOs),
+  // which is why Collected MTD and Net MTD never made it to PlannerXD
+  // even though both were already being computed correctly for the
+  // dashboard tiles right here.
+  const _mtd = { collected: null, spent: null };
+  const _maybeSyncFullPulse = () => {
+    if (_pulseOutstanding === null || _pulseUnprocessedCOs === null || _mtd.collected === null || _mtd.spent === null) return;
     syncDashboardToPlannerXD({
       activeJobs: active.length,
       outstandingInvoices: _pulseOutstanding,
-      unprocessedCOs: _pulseUnprocessedCOs
+      unprocessedCOs: _pulseUnprocessedCOs,
+      collectedMTD: Math.round(_mtd.collected),
+      netMTD: Math.round(_mtd.collected - _mtd.spent),
     });
   };
   // Shared between the two async blocks below so Net MTD can combine a
   // JOBSMETRIX-sourced Collected figure with a QBO-sourced Spent figure,
   // regardless of which one resolves first.
-  const _mtd = { collected: null, spent: null };
   const _maybeRenderNetMTD = () => {
     if (_mtd.collected === null || _mtd.spent === null) return;
     const net = _mtd.collected - _mtd.spent;
@@ -1405,8 +1418,8 @@ function conRenderStats() {
       setTile('statCollectedMTD', 'statCollectedTile',
         '$' + Math.round(collectedFromInvoices).toLocaleString(), '#1dbb87');
       _pulseOutstanding = outstanding;
-      _maybeSyncPulse();
       _mtd.collected = collectedFromInvoices;
+      _maybeSyncFullPulse();
       _maybeRenderNetMTD();
     });
   }
@@ -1469,6 +1482,7 @@ function conRenderStats() {
         '$' + Math.round(spent).toLocaleString(), '#f59e0b');
       _mtd.spent = spent;
       _maybeRenderNetMTD();
+      _maybeSyncFullPulse();
     }).catch(() => {
       const el = document.getElementById('statSpentMTD');
       if (el) el.textContent = '—';
