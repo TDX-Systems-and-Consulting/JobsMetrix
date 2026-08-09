@@ -19377,37 +19377,31 @@ async function computeRealJobCost(jobId) {
   return { materials, materialsSource, labor: billedLabor, source: 'PLACEHOLDER — billed labor, no real subcontractor cost data logged yet' };
 }
 
+// Delegates to computeLockedBucketSplit (the real formula locked
+// directly with Travis, already verified live against 707 Karon
+// tonight) instead of the earlier gross-margin-ratio model this
+// function used before that -- Overhead 18%/Marketing 1.5% of
+// REVENUE (not ratio-weighted off gross margin), Flex 20% of the
+// remainder after Materials/Labor/Overhead/Marketing, Taxes 27.5% of
+// what's left after Flex, Retained Earnings the final remainder.
+// Return shape kept identical to what callers already expect
+// (formatCOOBudgetBody, sendInvoiceSplitToPlannerXD, the Estimated vs
+// Actual table) -- "profit" is Retained Earnings by another name here
+// for backward compatibility, "flex" is a genuinely new field, purely
+// additive, nothing existing breaks by its presence.
 async function computeCOOBudgetBreakdown(job) {
-  const { materials: billedMaterials, laborAndOther: billedLabor } = await fetchEstimateCostSplitFresh(job.id);
-  // Revenue: prefer the signed contract value on the job itself
-  // (reliable regardless of what else is open); fall back to the
-  // fresh estimate total (materials + everything else) if there's no
-  // contract value yet — e.g. a job still in Estimating status.
-  const revenue = (job?.contractValue || job?.approvedOrders || (billedMaterials + billedLabor) || 0);
-
   const realCost = await computeRealJobCost(job.id);
-  const realCostTotal = realCost.materials + realCost.labor;
-  // This IS the number that flexes per job — a labor-heavy job with
-  // real subcontractor pay running hot shows a smaller gross margin
-  // dollar amount here, which then shrinks Overhead/Retained
-  // Earnings/Marketing together in the same 15:12:3 ratio, rather than
-  // those three staying fixed and silently going underfunded.
-  const grossMarginDollar = Math.max(0, revenue - realCostTotal);
-
-  const overhead = grossMarginDollar * (COO_BUDGET_PCTS.overhead / COO_BUDGET_WEIGHT_SUM);
-  const profit = grossMarginDollar * (COO_BUDGET_PCTS.profit / COO_BUDGET_WEIGHT_SUM);
-  const marketing = grossMarginDollar * (COO_BUDGET_PCTS.marketing / COO_BUDGET_WEIGHT_SUM);
-  const taxes = profit * COO_BUDGET_TAX_RATE;
-
+  const split = await computeLockedBucketSplit(job);
   return {
-    revenue: Math.round(revenue * 100) / 100,
-    materials: Math.round(realCost.materials * 100) / 100,
-    labor: Math.round(realCost.labor * 100) / 100,
-    overhead: Math.round(overhead * 100) / 100,
-    profit: Math.round(profit * 100) / 100,
-    marketing: Math.round(marketing * 100) / 100,
-    taxes: Math.round(taxes * 100) / 100,
-    grossMarginDollar: Math.round(grossMarginDollar * 100) / 100,
+    revenue: split.revenue,
+    materials: split.materials,
+    labor: split.labor,
+    overhead: split.overhead,
+    profit: split.retainedEarnings,
+    marketing: split.marketing,
+    flex: split.flex,
+    taxes: split.taxes,
+    grossMarginDollar: Math.round((split.revenue - split.materials - split.labor) * 100) / 100,
     costSource: realCost.source,
     materialsSource: realCost.materialsSource,
     generatedAt: new Date().toISOString(),
@@ -19423,9 +19417,10 @@ function formatCOOBudgetBody(b) {
     + `Materials: ${fmt(b.materials)}\n`
     + `Labor: ${fmt(b.labor)}\n`
     + `Overhead: ${fmt(b.overhead)}\n`
-    + `Retained Earnings: ${fmt(b.profit)}\n`
     + `Marketing: ${fmt(b.marketing)}\n`
-    + `Taxes (from Retained Earnings): ${fmt(b.taxes)}`
+    + `Flex: ${fmt(b.flex)}\n`
+    + `Taxes: ${fmt(b.taxes)}\n`
+    + `Retained Earnings: ${fmt(b.profit)}`
     + placeholderNote;
 }
 
