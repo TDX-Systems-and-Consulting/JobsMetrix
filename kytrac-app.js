@@ -19038,19 +19038,26 @@ function calcGroupTotals(items) {
 // literally "whatever's left after Materials and the three targets")
 // to all six buckets, so every one of them has both an Estimated and
 // an Actual figure to compare from day one.
+// Uses the LOCKED formula from the "consultant hat" session, not the
+// earlier 15/12/3-of-revenue model this function used before that —
+// Materials is raw billed (the ~15% markup is Travis's own deliberate
+// overrun float, staying IN the bucket, never backed out), Overhead
+// is 18% of revenue, Marketing is 1.5%. Labor Budget here is a
+// pre-negotiation CEILING — the whole remainder after Materials/
+// Overhead/Marketing, before Flex/Taxes/Profit are carved out of it.
+// That's a real, stated modeling choice, not an attempt to replicate
+// the full post-Labor waterfall (Flex/Taxes/RE) for a number that by
+// definition exists before Labor is chosen.
 async function computeEstimatedBreakdown(job) {
   const { materials: billedMaterials } = await fetchEstimateCostSplitFresh(job.id);
-  const trueMaterials = billedMaterials / 1.15;
   const revenue = getJobValue(job) || 0;
-  const overhead = revenue * COO_BUDGET_PCTS.overhead;
-  const profit = revenue * COO_BUDGET_PCTS.profit;
-  const marketing = revenue * COO_BUDGET_PCTS.marketing;
-  const labor = Math.max(0, revenue - trueMaterials - overhead - profit - marketing);
-  const taxes = profit * COO_BUDGET_TAX_RATE;
+  const overhead = revenue * 0.18;
+  const marketing = revenue * 0.015;
+  const labor = Math.max(0, revenue - billedMaterials - overhead - marketing);
   const r = v => Math.round(v * 100) / 100;
   return {
-    revenue: r(revenue), materials: r(trueMaterials), labor: r(labor),
-    overhead: r(overhead), profit: r(profit), marketing: r(marketing), taxes: r(taxes),
+    revenue: r(revenue), materials: r(billedMaterials), labor: r(labor),
+    overhead: r(overhead), marketing: r(marketing),
   };
 }
 
@@ -19072,10 +19079,15 @@ async function renderLaborBudget() {
     // Cost buckets: over-estimate is bad (red). Value buckets: under-
     // target is bad (red) -- a real consequence of cost running hot,
     // not something separately controlled, but still worth flagging.
+    // Retained Earnings/Taxes are deliberately NOT compared here --
+    // computeEstimatedBreakdown's Labor Budget is a pre-negotiation
+    // ceiling (the whole remainder after Materials/Overhead/Marketing),
+    // so there's no meaningful "Estimated" Retained Earnings/Taxes
+    // figure to compare against until Labor is actually chosen -- those
+    // only exist downstream of Labor in the locked waterfall.
     const costBuckets = ['materials', 'labor'];
     const rows = [
-      ['Materials', 'materials'], ['Labor', 'labor'], ['Overhead', 'overhead'],
-      ['Retained Earnings', 'profit'], ['Marketing', 'marketing'], ['Taxes', 'taxes'],
+      ['Materials', 'materials'], ['Labor', 'labor'], ['Overhead', 'overhead'], ['Marketing', 'marketing'],
     ];
     const rowsHtml = rows.map(([label, key]) => {
       const e = est[key], a = act[key];
@@ -19204,11 +19216,13 @@ async function computeRealMaterialsActual(jobId) {
 //     3. Last resort: billed labor from the estimate itself, clearly
 //        flagged as a placeholder — no real cost data exists yet.
 async function computeRealJobCost(jobId) {
-  const { materials: billedMaterials, laborAndOther: billedLabor } = await fetchEstimateCostSplitFresh(jobId);
-  const estimateDerivedMaterials = billedMaterials / 1.15;
+  const { materials: billedMaterials } = await fetchEstimateCostSplitFresh(jobId);
   const realMaterialsActual = await computeRealMaterialsActual(jobId);
-  const materials = realMaterialsActual != null ? realMaterialsActual : estimateDerivedMaterials;
-  const materialsSource = realMaterialsActual != null ? 'actual vendor bills + expenses' : 'estimate-derived (billed ÷ 1.15) — no real purchases logged yet';
+  // Materials fallback is raw billed, not billed÷1.15 -- per the
+  // locked formula, the ~15% markup is Travis's own deliberate
+  // overrun float and stays IN the Materials bucket, never backed out.
+  const materials = realMaterialsActual != null ? realMaterialsActual : billedMaterials;
+  const materialsSource = realMaterialsActual != null ? 'actual vendor bills + expenses' : 'estimate-derived (raw billed) — no real purchases logged yet';
 
   const paySnap = await coll('jobs').doc(jobId).collection('subcontractorPayments').get();
   let loggedLabor = 0;
@@ -19240,6 +19254,18 @@ async function computeRealJobCost(jobId) {
     } catch (e) { /* fall through to placeholder */ }
   }
 
+  // Last-resort placeholder: the SAME Labor Budget ceiling shown on
+  // the Financials "Budget: Estimated vs Actual" card, not a
+  // separately-derived number -- these two can never disagree with
+  // each other now, since they're the same calculation.
+  const job = conJobs.find(j => j.id === jobId);
+  if (job) {
+    try {
+      const est = await computeEstimatedBreakdown(job);
+      return { materials, materialsSource, labor: est.labor, source: 'PLACEHOLDER — Labor Budget ceiling (locked waterfall), no real subcontractor cost logged yet' };
+    } catch (e) { /* fall through to raw billed labor below */ }
+  }
+  const { laborAndOther: billedLabor } = await fetchEstimateCostSplitFresh(jobId);
   return { materials, materialsSource, labor: billedLabor, source: 'PLACEHOLDER — billed labor, no real subcontractor cost data logged yet' };
 }
 
