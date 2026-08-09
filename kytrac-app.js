@@ -9,6 +9,19 @@
 // ACTUAL commit currently running. See loadVersionTag() below.
 
 const esc = s => ((s==null?'':s)).toString().replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+// For embedding a value as a JS string-literal ARGUMENT inside an
+// onclick="..." HTML attribute -- a genuinely different job from esc()
+// above, which is for visible text content. esc() HTML-encodes a
+// quote to &#39;, but the browser decodes that back to a literal '
+// BEFORE handing the onclick text to the JS engine -- so esc() alone
+// never actually protects the JS string boundary, it just delays the
+// break by one parsing pass. This escapes backslashes first (so the
+// escaping itself can't be un-escaped), then the JS string delimiter,
+// then the outer HTML attribute's own quote character separately.
+const jsAttrEsc = s => ((s==null?'':s)).toString()
+  .replace(/\\/g, '\\\\')
+  .replace(/'/g, "\\'")
+  .replace(/"/g, '&quot;');
 const uid = p => `${p}-${Math.random().toString(36).slice(2,9)}`;
 const fmtMoney = n => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(Number(n||0));
 const fmtDate = d => d ? new Date(d+'T00:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}) : '—';
@@ -3129,6 +3142,26 @@ let _ganttJobId = null;
 let _ganttJobCollapsed = false;
 
 // Fast re-render using cached _ganttData — no Firestore reload
+// Shared by renderJobGantt (full Firestore refetch) and
+// renderGanttFromCache (fast local-only re-render after remove/
+// restore/duration/percent/indent/outdent edits) -- previously this
+// only lived inside renderJobGantt, so the "X% complete (Y/Z tasks)"
+// header only updated on a full page reload, never after any of the
+// quick local edits every one of tonight's interactive features uses.
+function updateGanttHeaderSummary() {
+  let totalTasks = 0, doneTasks = 0;
+  _ganttData.forEach(({ rooms }) => {
+    rooms.forEach(({ room, tasks }) => {
+      const dt = getDisplayTasks(room, tasks);
+      totalTasks += dt.length;
+      doneTasks += dt.filter(t => t.taskStatus === 'done').length;
+    });
+  });
+  const overallPct = calcJobPct();
+  const pctEl = document.getElementById('ganttCompletePct');
+  if (pctEl) pctEl.textContent = totalTasks ? `${overallPct}% complete (${doneTasks}/${totalTasks} tasks)` : 'No tasks yet';
+}
+
 function renderGanttFromCache() {
   const jobId = _ganttJobId;
   const job = conJobs.find(j => j.id === jobId);
@@ -3155,6 +3188,7 @@ function renderGanttFromCache() {
 
   renderGanttLeft(jobId, job);
   renderGanttRight(minDate, maxDate, today);
+  updateGanttHeaderSummary();
 }
 window.renderGanttFromCache = renderGanttFromCache;
 
@@ -3199,17 +3233,7 @@ async function renderJobGantt(jobId) {
   maxDate.setDate(maxDate.getDate() + 14);
 
   // Calculate overall % complete (duration-weighted — see calcJobPct)
-  let totalTasks = 0, doneTasks = 0;
-  _ganttData.forEach(({ rooms }) => {
-    rooms.forEach(({ room, tasks }) => {
-      const dt = getDisplayTasks(room, tasks);
-      totalTasks += dt.length;
-      doneTasks += dt.filter(t => t.taskStatus === 'done').length;
-    });
-  });
-  const overallPct = calcJobPct();
-  const pctEl = document.getElementById('ganttCompletePct');
-  if (pctEl) pctEl.textContent = totalTasks ? `${overallPct}% complete (${doneTasks}/${totalTasks} tasks)` : 'No tasks yet';
+  updateGanttHeaderSummary();
 
   renderGanttLeft(jobId, job);
   renderGanttRight(minDate, maxDate, today);
@@ -3263,7 +3287,7 @@ function renderTaskNodeRow(node, depth, phase, room, isOwner, siblings, siblingI
         </span>
         ${node.excludeFromSchedule
           ? `<button onclick="event.stopPropagation();restoreTaskToSchedule('${phase.id}','${room.id}','${node.id}')" title="Restore to schedule" style="background:none;border:1px solid rgba(110,145,210,.25);border-radius:6px;color:var(--amber);cursor:pointer;font-size:.65rem;margin-left:4px;padding:0 5px;flex-shrink:0">↺ Restore</button>`
-          : `<button onclick="event.stopPropagation();removeTaskFromSchedule('${phase.id}','${room.id}','${node.id}','${esc(node.name).replace(/'/g,"\\\\'")}')" title="Remove from schedule (stays in the Estimate — price/cost untouched)" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.72rem;margin-left:4px;padding:0;flex-shrink:0">✕</button>`}
+          : `<button onclick="event.stopPropagation();removeTaskFromSchedule('${phase.id}','${room.id}','${node.id}','${jsAttrEsc(node.name)}')" title="Remove from schedule (stays in the Estimate — price/cost untouched)" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.72rem;margin-left:4px;padding:0;flex-shrink:0">✕</button>`}
       ` : ''}
     </div>
     <div class="gantt-days-cell" onclick="event.stopPropagation()">${taskCircular ? '⚠' : (hasKids
