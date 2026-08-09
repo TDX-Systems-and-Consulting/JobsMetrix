@@ -2678,12 +2678,18 @@ function applyJobFinancialsDisplay(job, acOverride, realCostOverride) {
   // activity got logged on it.
   const ec = (typeof realCostOverride === 'number' && realCostOverride > 0) ? realCostOverride : (job.estCost || 0);
   const ac = acOverride || 0;
-  // Best-known cost for margin math: prefer real actual cost (now live
-  // vendor bills + materials purchases, falling back to the stored
-  // job.actualCost field) over a stale/manual estCost.
-  // (estCost with no estimate line items behind it is often a bare imported number — see syncJobEstimateCost.)
-  const hasRealActual = ac > 0;
-  const bestCost = hasRealActual ? ac : ec;
+  // Best-known TOTAL cost for margin math. This must always be ec (the
+  // fullest available real-cost projection — real Paid+Agreed
+  // subcontractor payments plus real/placeholder materials, or the
+  // Labor Budget ceiling when nothing's logged yet), never ac (cash
+  // actually paid out so far). Using ac here was a real bug: a job
+  // with only a deposit paid and the rest of its labor still owed
+  // looked artificially MORE profitable the less of its real cost had
+  // actually been paid yet — Profit needs Revenue minus TOTAL cost,
+  // not Revenue minus "however much cash has moved so far." ac is the
+  // right number for Cost to Complete below (how much MORE needs to be
+  // spent), a genuinely different question from total profitability.
+  const bestCost = ec;
   const profit = cv - bestCost;
   const margin = cv ? (profit / cv * 100) : 0;
 
