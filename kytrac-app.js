@@ -13981,9 +13981,19 @@ function renderTimeLog() {
       </td>
       <td style="font-size:.78rem;color:var(--muted)">${esc(e.notes||'')}</td>
       <td>
-        ${!e.clockOut && e.userId===conCurrentUser?.uid
-          ? `<button class="btn btn-danger" onclick="forceClockOut('${e.id}')" style="padding:3px 8px;font-size:.74rem">Clock Out</button>`
-          : `<button class="btn" onclick="deleteTimeEntry('${e.id}')" style="padding:3px 8px;font-size:.74rem">✕</button>`}
+        ${(() => {
+          const canManage = currentUserRole === 'Owner' || currentUserTeamData?.fullAccessOverride;
+          const isOwnLiveEntry = !e.clockOut && e.userId === conCurrentUser?.uid;
+          const buttons = [];
+          if (!e.clockOut && (isOwnLiveEntry || canManage)) {
+            buttons.push(`<button class="btn btn-danger" onclick="forceClockOut('${e.id}')" style="padding:3px 8px;font-size:.74rem">Clock Out</button>`);
+          }
+          if (canManage) {
+            buttons.push(`<button class="btn" onclick="openEditTimeEntry('${e.id}')" style="padding:3px 8px;font-size:.74rem">✏️ Edit</button>`);
+          }
+          buttons.push(`<button class="btn" onclick="deleteTimeEntry('${e.id}')" style="padding:3px 8px;font-size:.74rem">✕</button>`);
+          return buttons.join(' ');
+        })()}
       </td>
     </tr>`;
   }).join('');
@@ -13995,6 +14005,91 @@ function renderTimeLog() {
   </tr>`;
   renderWeeklyOvertime();
 }
+
+// Owner/Full-Access editing for an existing time entry -- corrects a
+// wrong clock-in time, adjusts hours after the fact, or fixes a typo
+// in notes. Previously the only options on any entry were "force
+// clock out your own live entry" or "delete" -- no way to actually
+// correct a mistake without losing the record and re-entering it from
+// scratch, and no way to touch anyone else's entry but your own live
+// one at all.
+function openEditTimeEntry(entryId) {
+  const entry = allTimeEntries.find(e => e.id === entryId);
+  if (!entry) return;
+  const canManage = currentUserRole === 'Owner' || currentUserTeamData?.fullAccessOverride;
+  if (!canManage) { alert('Only Owners (or team members with Full Access Override) can edit time entries.'); return; }
+
+  document.getElementById('editTimeEntryWho').textContent = `${entry.userName || 'Unknown'} · ${entry.jobName || 'No job'}${entry.phaseName ? ' · ' + entry.phaseName : ''}`;
+  document.getElementById('editTimeDate').value = entry.date || '';
+  document.getElementById('editTimeClockIn').value = entry.clockInISO ? isoToLocalDatetimeInput(entry.clockInISO) : '';
+  document.getElementById('editTimeClockOut').value = entry.clockOutISO ? isoToLocalDatetimeInput(entry.clockOutISO) : '';
+  document.getElementById('editTimeHours').value = entry.hours != null ? entry.hours : '';
+  document.getElementById('editTimeNotes').value = entry.notes || '';
+  document.getElementById('editTimeEntryModal').dataset.entryId = entryId;
+  kOpen('editTimeEntryModal');
+}
+window.openEditTimeEntry = openEditTimeEntry;
+
+// datetime-local inputs need "YYYY-MM-DDTHH:mm" in the browser's own
+// local time, not UTC -- toISOString() would silently shift the
+// displayed time by the browser's UTC offset every time this modal
+// opens, showing the wrong clock-in time even though the stored value
+// is correct.
+function isoToLocalDatetimeInput(iso) {
+  const d = new Date(iso);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function saveEditTimeEntry() {
+  const entryId = document.getElementById('editTimeEntryModal').dataset.entryId;
+  if (!entryId) return;
+  const canManage = currentUserRole === 'Owner' || currentUserTeamData?.fullAccessOverride;
+  if (!canManage) { alert('Only Owners (or team members with Full Access Override) can edit time entries.'); return; }
+
+  const date = document.getElementById('editTimeDate').value;
+  const clockInVal = document.getElementById('editTimeClockIn').value;
+  const clockOutVal = document.getElementById('editTimeClockOut').value;
+  const hoursVal = document.getElementById('editTimeHours').value;
+  const notes = document.getElementById('editTimeNotes').value.trim();
+
+  if (!date) { alert('Date is required.'); return; }
+
+  const updates = { date, notes, editedAt: firebase.firestore.FieldValue.serverTimestamp(), editedBy: conCurrentUser?.email || '' };
+  const del = firebase.firestore.FieldValue.delete();
+
+  if (clockInVal) {
+    const clockInDate = new Date(clockInVal);
+    updates.clockInISO = clockInDate.toISOString();
+    updates.clockIn = firebase.firestore.Timestamp.fromDate(clockInDate);
+    if (clockOutVal) {
+      const clockOutDate = new Date(clockOutVal);
+      if (clockOutDate <= clockInDate) { alert('Clock Out must be after Clock In.'); return; }
+      updates.clockOutISO = clockOutDate.toISOString();
+      updates.clockOut = firebase.firestore.Timestamp.fromDate(clockOutDate);
+      updates.hours = Math.round((clockOutDate - clockInDate) / 3600000 * 100) / 100;
+    } else {
+      // Clock In given, Clock Out left blank -- back to live/in-progress.
+      updates.clockOutISO = del;
+      updates.clockOut = del;
+      updates.hours = del;
+    }
+  } else {
+    // No clock times at all -- treat as a manual hours entry.
+    updates.clockInISO = del;
+    updates.clockIn = del;
+    updates.clockOutISO = del;
+    updates.clockOut = del;
+    const hours = parseFloat(hoursVal);
+    if (isNaN(hours) || hours <= 0) { alert('Enter hours, or set a Clock In time instead.'); return; }
+    updates.hours = hours;
+  }
+
+  coll('timeentries').doc(entryId).update(updates).then(() => {
+    kClose('editTimeEntryModal');
+  }).catch(e => alert('Error saving: ' + e.message));
+}
+window.saveEditTimeEntry = saveEditTimeEntry;
 
 function forceClockOut(entryId) {
   const entry = allTimeEntries.find(e => e.id === entryId);
