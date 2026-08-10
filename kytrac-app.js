@@ -8678,6 +8678,44 @@ function getMyJobIds() {
 }
 window.getMyJobIds = getMyJobIds;
 
+// Master Schedule's own date-update functions -- deliberately
+// separate from updatePhaseDate/updateRoomDate (the per-job Schedule
+// tab's versions), which rely on the implicit _ganttJobId global.
+// Master Schedule shows many jobs on screen at once, so every write
+// here takes jobId explicitly instead -- reusing the per-job
+// functions as-is would silently write to whatever job happened to
+// be open last on the Schedule tab, corrupting a different job's
+// dates. Full re-render after each save, matching how
+// renderMasterSchedulePage already refetches every job's tree on
+// every call -- not a new performance cost, just reusing the existing
+// pattern.
+async function updateMasterPhaseDate(jobId, phaseId, field, value) {
+  if (!jobId || !conDb) return;
+  try {
+    await coll('jobs').doc(jobId)
+      .collection('estimateGroups').doc(phaseId)
+      .update({ [field]: value, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+    renderMasterSchedulePage();
+  } catch(e) {
+    alert('Could not save phase date: ' + e.message);
+  }
+}
+window.updateMasterPhaseDate = updateMasterPhaseDate;
+
+async function updateMasterRoomDate(jobId, phaseId, roomId, field, value) {
+  if (!jobId || !conDb) return;
+  try {
+    await coll('jobs').doc(jobId)
+      .collection('estimateGroups').doc(phaseId)
+      .collection('subgroups').doc(roomId)
+      .update({ [field]: value, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+    renderMasterSchedulePage();
+  } catch(e) {
+    alert('Could not save room date: ' + e.message);
+  }
+}
+window.updateMasterRoomDate = updateMasterRoomDate;
+
 function toggleMasterRow(type, id) {
   if (!window._masterCollapsed) window._masterCollapsed = {};
   const nowCollapsed = !window._masterCollapsed[id];
@@ -8776,6 +8814,7 @@ async function renderMasterSchedulePage() {
   const todayOffset = Math.floor((today - minDate) / 86400000) * DAY_W;
 
   if (!window._masterCollapsed) window._masterCollapsed = {};
+  const isOwner = ['Owner', 'Full Access'].includes(currentUserRole);
 
   // Build month header html
   let monthHtml = '<div style="display:flex">';
@@ -8816,11 +8855,11 @@ async function renderMasterSchedulePage() {
   // Schedule tab, not an approximation of it. Read-only for now
   // (plain text/spans, no <input> elements) -- editing comes in the
   // next pass, once this display layer is confirmed correct.
-  function sixCols(nameHtml, days, start, finish, deps, pct, pctColorVal) {
+  function sixCols(nameHtml, days, startHtml, finishHtml, deps, pct, pctColorVal) {
     return `<div class="gantt-name-cell">${nameHtml}</div>
       <div class="gantt-days-cell">${days ?? '—'}</div>
-      <div class="gantt-date-cell gantt-start-cell">${start || '—'}</div>
-      <div class="gantt-date-cell gantt-end-cell">${finish || '—'}</div>
+      <div class="gantt-date-cell gantt-start-cell" onclick="event.stopPropagation()">${startHtml}</div>
+      <div class="gantt-date-cell gantt-end-cell" onclick="event.stopPropagation()">${finishHtml}</div>
       <div class="gantt-deps-cell">${deps || ''}</div>
       <div class="gantt-pct-cell" style="color:${pctColorVal || 'var(--muted)'};font-weight:700">${pct}%</div>`;
   }
@@ -8861,7 +8900,7 @@ async function renderMasterSchedulePage() {
       ${sixCols(
         `<span id="masterArrowJob_${job.id}" style="flex-shrink:0">${jobCollapsed?'▶':'▼'}</span><span style="color:var(--amber)">🏠 ${esc(job.name)}</span>`,
         jobDays !== null ? jobDays + 'd' : null,
-        job.startDate, job.endDate, '', _jobPct, _jobPctColor
+        esc(job.startDate || '—'), esc(job.endDate || '—'), '', _jobPct, _jobPctColor
       )}
       ${rowBar(job.startDate, job.endDate, jobBarColor, 22, _jobPct, job.name)}
     </div>`;
@@ -8869,7 +8908,7 @@ async function renderMasterSchedulePage() {
     if (!jobCollapsed) {
       if (!phases.length) {
         rowsHtml += `<div class="gantt-left-row" style="min-height:28px">
-          ${sixCols('<span style="padding-left:24px;font-style:italic;color:var(--muted)">No phases with dates set</span>', null, null, null, '', 0)}
+          ${sixCols('<span style="padding-left:24px;font-style:italic;color:var(--muted)">No phases with dates set</span>', null, '—', '—', '', 0)}
           <div style="flex:1;min-width:${totalWidth}px"></div>
         </div>`;
       }
@@ -8897,7 +8936,9 @@ async function renderMasterSchedulePage() {
           ${sixCols(
             `${roomCount?`<span id="masterArrowPhase_${phase.id}" style="flex-shrink:0">${phaseCollapsed?'▶':'▼'}</span>`:'<span style="width:10px;flex-shrink:0"></span>'}<span style="padding-left:14px;color:#93c5fd">${esc(phase.name)}</span>`,
             phaseDays !== null ? phaseDays + 'd' : null,
-            phase.startDate, phase.endDate, '', phasePct, pctColor(phasePct)
+            isOwner ? `<input type="date" value="${phase.startDate||''}" onchange="updateMasterPhaseDate('${job.id}','${phase.id}','startDate',this.value)">` : esc(phase.startDate || '—'),
+            isOwner ? `<input type="date" value="${phase.endDate||''}" onchange="updateMasterPhaseDate('${job.id}','${phase.id}','endDate',this.value)">` : esc(phase.endDate || '—'),
+            '', phasePct, pctColor(phasePct)
           )}
           ${rowBar(phase.startDate, phase.endDate, 'background:linear-gradient(90deg,#1d4ed8,#3b82f6)', 16, phasePct, phase.name)}
         </div>`;
@@ -8925,7 +8966,9 @@ async function renderMasterSchedulePage() {
               ${sixCols(
                 `${displayTasks.length?`<span id="masterArrowRoom_${room.id}" style="flex-shrink:0">${roomCollapsed?'▶':'▼'}</span>`:'<span style="width:8px;flex-shrink:0"></span>'}<span style="padding-left:24px;color:#94a3b8">${esc(room.name)} <span style="color:var(--muted);font-size:.62rem">(${doneTasks}/${displayTasks.length})</span></span>`,
                 roomDays !== null ? roomDays + 'd' : null,
-                roomStartD, roomEndD, formatDependsOn(room.dependsOn), pct, pctColor(pct)
+                isOwner ? `<input type="date" value="${room.startDate||''}" onchange="updateMasterRoomDate('${job.id}','${phase.id}','${room.id}','startDate',this.value)" title="${room.startDate?'Custom date':'Auto-scheduled from phase -- set a date here to override'}">` : esc(roomStartD || '—'),
+                isOwner ? `<input type="date" value="${room.endDate||''}" onchange="updateMasterRoomDate('${job.id}','${phase.id}','${room.id}','endDate',this.value)" title="${room.endDate?'Custom date':'Auto-scheduled from phase -- set a date here to override'}">` : esc(roomEndD || '—'),
+                formatDependsOn(room.dependsOn), pct, pctColor(pct)
               )}
               ${rowBar(roomStartD, roomEndD, roomColor, 12, pct, room.name)}
             </div>`;
@@ -8938,7 +8981,7 @@ async function renderMasterSchedulePage() {
                 rowsHtml += `<div data-master-row="task" data-task-idx="${ti}" data-parent-room="${room.id}" data-parent-phase="${phase.id}" data-parent-job="${job.id}" class="gantt-left-row task-row" style="min-height:${TASK_H}px">
                   ${sixCols(
                     `<span style="padding-left:36px;font-weight:${isDone?'400':'700'};color:${isDone?'#10b981':tPct>0?'#60a5fa':'var(--muted)'}">${glyph}</span><span style="color:${isDone?'#10b981':'#64748b'};text-decoration:${isDone?'line-through':'none'}">${esc(task.name)}</span>`,
-                    task.durationDays || null, task.startDate, task.endDate, '', tPct, isDone ? '#10b981' : (tPct>0 ? '#60a5fa' : 'var(--muted)')
+                    task.durationDays || null, esc(task.startDate || '—'), esc(task.endDate || '—'), '', tPct, isDone ? '#10b981' : (tPct>0 ? '#60a5fa' : 'var(--muted)')
                   )}
                   <div style="flex:1;min-width:${totalWidth}px"></div>
                 </div>`;
