@@ -2330,6 +2330,7 @@
         <div class="settings-head">
           <h3>👥 Team Members</h3>
           <p>Add team members and assign their roles. They sign in with their Google account to access JOBSMETRIX.</p>
+          <button class="btn" onclick="repairTeamMemberAccess()" title="For anyone added before memberEmails syncing was fixed: their team profile exists but they were never added to the company's memberEmails list, so login silently fails on permission checks even though everything looks correct in Settings. This scans every current team member and backfills anyone missing, safely and idempotently -- running it again with nobody missing is a harmless no-op." style="font-size:.78rem;padding:6px 12px;margin-top:8px">🔧 Repair Team Access</button>
         </div>
         <div class="settings-body">
           <!-- Add member form -->
@@ -4756,7 +4757,7 @@
 
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
-<script src="kytrac-app.js?v=202608101847"></script>
+<script src="kytrac-app.js?v=202608101913"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW

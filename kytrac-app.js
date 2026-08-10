@@ -12851,6 +12851,49 @@ function addTeamMember() {
   }).catch(e => alert('Error: ' + e.message));
 }
 
+// Backfills company.memberEmails for anyone who has a real
+// settings/team.members profile but is missing from memberEmails --
+// the exact gap addTeamMember's arrayUnion fix (see comment above)
+// closed for everyone added AFTER that fix, but never touched anyone
+// added before it. Those people look completely normal in this
+// Settings page (same profile, same role) but syncMyClaims can't find
+// them in memberEmails, silently clears their claims, and every
+// claims-gated read after that (starting with the jobs listener)
+// fails with permission-denied -- with nothing in the UI pointing
+// back to memberEmails specifically as the cause. Safe to run
+// anytime: arrayUnion is idempotent, so re-running with nobody
+// actually missing just does nothing.
+async function repairTeamMemberAccess() {
+  if (currentUserRole !== 'Owner') { alert('Only Owners can run this.'); return; }
+  try {
+    const teamDoc = await coll('settings').doc('team').get();
+    const members = teamDoc.exists ? (teamDoc.data().members || {}) : {};
+    const allEmails = Object.values(members).map(m => (m.email || '').toLowerCase()).filter(Boolean);
+    if (!allEmails.length) { alert('No team members found in Settings to check.'); return; }
+
+    const companyDoc = await conDb.collection('companies').doc(currentCompanyId).get();
+    const existing = new Set((companyDoc.data()?.memberEmails || []).map(e => (e || '').toLowerCase()));
+    const missing = allEmails.filter(e => !existing.has(e));
+
+    if (!missing.length) {
+      alert(`Checked ${allEmails.length} team member(s) -- everyone is already correctly set up. Nothing to repair.`);
+      return;
+    }
+
+    if (!confirm(`Found ${missing.length} team member(s) with a Settings profile but missing from memberEmails (the actual permission gate):\n\n${missing.join('\n')}\n\nThis is very likely why they can't fully log in / see jobs. Fix now?`)) return;
+
+    await conDb.collection('companies').doc(currentCompanyId).update({
+      memberEmails: firebase.firestore.FieldValue.arrayUnion(...missing)
+    });
+
+    alert(`Repaired ${missing.length} team member(s):\n\n${missing.join('\n')}\n\nHave them sign all the way out and back in -- their claims will sync correctly now.`);
+  } catch(e) {
+    alert('Repair failed: ' + e.message);
+  }
+}
+window.repairTeamMemberAccess = repairTeamMemberAccess;
+
+
 // Stores the QuickBooks Employee ID mapping for a team member — needed
 // before the daily payroll clock-out sync can push anything for that
 // person. Doesn't sync anything itself, just records the mapping.
