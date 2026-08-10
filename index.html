@@ -4005,14 +4005,15 @@
             <option>Inspection Pending</option><option>Complete</option>
             <option>Closed Completed</option><option>Closed Lost</option>
           </select>
+          <button id="jobDetailHeaderToggleBtn" onclick="toggleJobDetailHeaderCollapse()" title="Collapse contact info, action buttons, and the financial bar to give more room to whatever tab you're viewing (Schedule, Financials, etc). Click again to expand." style="margin-left:auto;font-size:.72rem;font-weight:700;padding:4px 10px;border-radius:6px;background:rgba(110,145,210,.12);border:1px solid rgba(110,145,210,.25);color:var(--muted);cursor:pointer">▲ Collapse</button>
         </div>
         <h3 id="detailJobName" style="margin:5px 0 3px;font-size:1.15rem"></h3>
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <div class="jd-collapsible" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <div id="detailJobClient" class="muted small"></div>
           <div id="detailCallBtns" style="display:flex;gap:5px;flex-wrap:wrap"></div>
         </div>
       </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;width:100%">
+      <div class="jd-collapsible" style="display:flex;gap:6px;flex-wrap:wrap;width:100%">
         <button class="btn" onclick="switchDetailTab('jobnotes', null); openAddJobNote();" style="font-size:.78rem;padding:6px 12px">📋 Log Note</button>
         <button class="btn" onclick="openJobPhotos()" style="font-size:.78rem;padding:6px 12px">📷 Photos</button>
         <button class="btn" onclick="editCurrentJob()" style="font-size:.78rem;padding:6px 12px">✏️ Edit</button>
@@ -4024,7 +4025,7 @@
     </div>
 
     <!-- Financial Summary Bar -->
-    <div id="jobFinBar" style="flex-shrink:0;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:0;background:var(--surface);border-top:1px solid rgba(110,145,210,.12);border-bottom:1px solid rgba(110,145,210,.12)">
+    <div id="jobFinBar" class="jd-collapsible" style="flex-shrink:0;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:0;background:var(--surface);border-top:1px solid rgba(110,145,210,.12);border-bottom:1px solid rgba(110,145,210,.12)">
       <div class="fin-bar-cell" style="border-right:1px solid rgba(110,145,210,.1)">
         <div class="fin-bar-label">Approved Price</div>
         <div class="fin-bar-val" id="fbarApproved" style="color:#a3f2d2">—</div>
@@ -4757,7 +4758,7 @@
 
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
-<script src="kytrac-app.js?v=202608101913"></script>
+<script src="kytrac-app.js?v=202608101929"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW

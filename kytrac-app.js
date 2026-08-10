@@ -4228,6 +4228,24 @@ function toggleGanttFullscreen() {
   }
   setTimeout(() => renderGanttFromCache(), 50);
 }
+
+// Collapses the job-detail header down to a single thin strip (job #,
+// status, name) so whatever tab is active -- Schedule most of all,
+// with its 100-task Gantt, but really any tab -- gets the vertical
+// room the fixed header (contact info, action buttons, financial bar)
+// was eating by default. Toggles three existing blocks via a shared
+// class rather than restructuring the DOM, so nothing about their own
+// layout changes -- they just hide/show as a unit.
+let _jobDetailHeaderCollapsed = false;
+function toggleJobDetailHeaderCollapse() {
+  _jobDetailHeaderCollapsed = !_jobDetailHeaderCollapsed;
+  document.querySelectorAll('#jobDetailModal .jd-collapsible').forEach(el => {
+    el.style.display = _jobDetailHeaderCollapsed ? 'none' : '';
+  });
+  const btn = document.getElementById('jobDetailHeaderToggleBtn');
+  if (btn) btn.textContent = _jobDetailHeaderCollapsed ? '▼ Expand' : '▲ Collapse';
+}
+window.toggleJobDetailHeaderCollapse = toggleJobDetailHeaderCollapse;
 window.toggleGanttFullscreen = toggleGanttFullscreen;
 
 // Escape key exits Gantt fullscreen
