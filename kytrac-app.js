@@ -4852,6 +4852,12 @@ async function saveRoomSchedule() {
     });
     kClose('roomScheduleModal');
     renderJobGantt(_ganttJobId);
+    // Also refresh Master Schedule if that's where this modal was
+    // opened from -- #masterPageGantt exists in the DOM at all times
+    // (pages are hidden via the .active class, not removed), so this
+    // checks the page itself has .active rather than just existing.
+    const msPage = document.getElementById('ktPageMasterschedule');
+    if (msPage && msPage.classList.contains('active')) renderMasterSchedulePage();
   } catch(e) {
     alert('Could not save schedule: ' + e.message);
   }
@@ -8797,6 +8803,31 @@ async function updateMasterTaskDuration(jobId, phaseId, roomId, taskId, days) {
 }
 window.updateMasterTaskDuration = updateMasterTaskDuration;
 
+// Reuses the EXISTING dependency modal (openRoomScheduleModal /
+// saveRoomSchedule) rather than building a parallel one -- that modal
+// reads/writes through the _ganttData/_ganttJobId globals the per-job
+// Schedule tab normally owns, so this temporarily populates those
+// with the ONE job being edited (fresh fetch + the same numbering
+// pass renderJobGantt itself runs), opens the real modal unchanged,
+// and saveRoomSchedule's own re-render call has been extended (see
+// below) to also refresh Master Schedule when it's the active page.
+// Genuinely the same dependency editor, not an approximation of it.
+async function openMasterRoomScheduleModal(jobId, phaseId, roomId) {
+  try {
+    const tree = await loadEpicTree(jobId);
+    _ganttJobId = jobId;
+    _ganttData = tree.map(phase => ({
+      phase,
+      rooms: phase.features.map(room => ({ room, tasks: room.tasks || [] })),
+    }));
+    buildGanttNumbering();
+    openRoomScheduleModal(phaseId, roomId);
+  } catch(e) {
+    alert('Could not open dependency editor: ' + e.message);
+  }
+}
+window.openMasterRoomScheduleModal = openMasterRoomScheduleModal;
+
 function toggleMasterRow(type, id) {
   if (!window._masterCollapsed) window._masterCollapsed = {};
   const nowCollapsed = !window._masterCollapsed[id];
@@ -8936,12 +8967,12 @@ async function renderMasterSchedulePage() {
   // Schedule tab, not an approximation of it. Read-only for now
   // (plain text/spans, no <input> elements) -- editing comes in the
   // next pass, once this display layer is confirmed correct.
-  function sixCols(nameHtml, daysHtml, startHtml, finishHtml, deps, pct, pctColorVal) {
+  function sixCols(nameHtml, daysHtml, startHtml, finishHtml, deps, pct, pctColorVal, depsOnClick, depsTitle) {
     return `<div class="gantt-name-cell">${nameHtml}</div>
       <div class="gantt-days-cell" onclick="event.stopPropagation()">${daysHtml ?? '—'}</div>
       <div class="gantt-date-cell gantt-start-cell" onclick="event.stopPropagation()">${startHtml}</div>
       <div class="gantt-date-cell gantt-end-cell" onclick="event.stopPropagation()">${finishHtml}</div>
-      <div class="gantt-deps-cell">${deps || ''}</div>
+      <div class="gantt-deps-cell" onclick="event.stopPropagation();${depsOnClick||''}" title="${depsTitle||''}">${deps || ''}</div>
       <div class="gantt-pct-cell" style="color:${pctColorVal || 'var(--muted)'};font-weight:700">${pct}%</div>`;
   }
 
@@ -9051,7 +9082,9 @@ async function renderMasterSchedulePage() {
                 isOwner ? `<input type="number" min="1" value="${room.durationDays || (roomDays!==null?roomDays:'')}" placeholder="—" onchange="updateMasterRoomDuration('${job.id}','${phase.id}','${room.id}',this.value)" title="Set duration directly -- clears any manual Start/Finish override and drives the schedule from here">` : (roomDays !== null ? roomDays + 'd' : '—'),
                 isOwner ? `<input type="date" value="${room.startDate||''}" onchange="updateMasterRoomDate('${job.id}','${phase.id}','${room.id}','startDate',this.value)" title="${room.startDate?'Custom date':'Auto-scheduled from phase -- set a date here to override'}">` : esc(roomStartD || '—'),
                 isOwner ? `<input type="date" value="${room.endDate||''}" onchange="updateMasterRoomDate('${job.id}','${phase.id}','${room.id}','endDate',this.value)" title="${room.endDate?'Custom date':'Auto-scheduled from phase -- set a date here to override'}">` : esc(roomEndD || '—'),
-                formatDependsOn(room.dependsOn), pct, pctColor(pct)
+                formatDependsOn(room.dependsOn), pct, pctColor(pct),
+                isOwner ? `openMasterRoomScheduleModal('${job.id}','${phase.id}','${room.id}')` : '',
+                isOwner ? 'Click to set dependencies' : ''
               )}
               ${rowBar(roomStartD, roomEndD, roomColor, 12, pct, room.name)}
             </div>`;
