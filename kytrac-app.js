@@ -8766,7 +8766,10 @@ async function renderMasterSchedulePage() {
   const totalDays = Math.ceil((maxDate - minDate) / 86400000);
   const DAY_W = 32;
   const totalWidth = totalDays * DAY_W;
-  const LABEL_W = 240;
+  // Matches the per-job Schedule tab's #ganttLeft column widths exactly
+  // (340 + 70 + 125 + 125 + 95 + 70 = 825), so Master Schedule reads as
+  // the same tool, not a lighter cousin of it.
+  const LEFT_W = 825;
   const ROW_H = 44;
   const PHASE_H = 34;
   const TASK_H = 26;
@@ -8806,6 +8809,22 @@ async function renderMasterSchedulePage() {
     </div>`;
   }
 
+  // Six fixed-width columns matching .gantt-name-cell/.gantt-days-cell/
+  // .gantt-start-cell/.gantt-end-cell/.gantt-deps-cell/.gantt-pct-cell
+  // exactly (same CSS classes, reused as-is -- not reimplemented) so
+  // this genuinely looks and reads like the same tool as the per-job
+  // Schedule tab, not an approximation of it. Read-only for now
+  // (plain text/spans, no <input> elements) -- editing comes in the
+  // next pass, once this display layer is confirmed correct.
+  function sixCols(nameHtml, days, start, finish, deps, pct, pctColorVal) {
+    return `<div class="gantt-name-cell">${nameHtml}</div>
+      <div class="gantt-days-cell">${days ?? '—'}</div>
+      <div class="gantt-date-cell gantt-start-cell">${start || '—'}</div>
+      <div class="gantt-date-cell gantt-end-cell">${finish || '—'}</div>
+      <div class="gantt-deps-cell">${deps || ''}</div>
+      <div class="gantt-pct-cell" style="color:${pctColorVal || 'var(--muted)'};font-weight:700">${pct}%</div>`;
+  }
+
   let rowsHtml = '';
 
   activeJobs.forEach(job => {
@@ -8836,23 +8855,21 @@ async function renderMasterSchedulePage() {
     });
     const _jobPct = _jobTotal ? Math.round(_jobDone / _jobTotal * 100) : 0;
     const _jobPctColor = _jobPct===100 ? '#10b981' : _jobPct>0 ? '#60a5fa' : 'var(--muted)';
+    const jobDays = workDaysBetween(job.startDate, job.endDate);
 
-    rowsHtml += `<div data-master-row="job" data-job-id="${job.id}" style="display:flex;align-items:stretch;min-height:${ROW_H}px;border-bottom:1px solid rgba(110,145,210,.1);background:rgba(245,158,11,.06);cursor:pointer" onclick="toggleMasterRow('job','${job.id}')">
-      <div class="ms-label" style="width:${LABEL_W}px;flex-shrink:0;padding:6px 10px;border-right:1px solid rgba(110,145,210,.15);overflow:hidden;display:flex;flex-direction:column;justify-content:center">
-        <div style="display:flex;align-items:center;gap:5px">
-          <span id="masterArrowJob_${job.id}" style="font-size:.65rem;color:var(--muted);flex-shrink:0">${jobCollapsed?'▶':'▼'}</span>
-          <span style="font-size:.78rem;font-weight:800;color:var(--amber);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${esc(job.name)}</span>
-          <span style="font-size:.68rem;font-weight:700;color:${_jobPctColor};flex-shrink:0">${_jobPct}%</span>
-        </div>
-        <div style="font-size:.65rem;color:var(--muted);padding-left:14px">${esc(job.status)}${job.startDate?' · '+job.startDate+' → '+(job.endDate||'?'):' · No dates'}</div>
-      </div>
+    rowsHtml += `<div data-master-row="job" data-job-id="${job.id}" class="gantt-left-row phase-row" style="min-height:${ROW_H}px;background:rgba(245,158,11,.06)" onclick="toggleMasterRow('job','${job.id}')">
+      ${sixCols(
+        `<span id="masterArrowJob_${job.id}" style="flex-shrink:0">${jobCollapsed?'▶':'▼'}</span><span style="color:var(--amber)">🏠 ${esc(job.name)}</span>`,
+        jobDays !== null ? jobDays + 'd' : null,
+        job.startDate, job.endDate, '', _jobPct, _jobPctColor
+      )}
       ${rowBar(job.startDate, job.endDate, jobBarColor, 22, _jobPct, job.name)}
     </div>`;
 
     if (!jobCollapsed) {
       if (!phases.length) {
-        rowsHtml += `<div style="display:flex;min-height:28px;border-bottom:1px solid rgba(110,145,210,.05)">
-          <div class="ms-label" style="width:${LABEL_W}px;flex-shrink:0;padding:4px 10px 4px 22px;font-size:.67rem;color:var(--muted);font-style:italic;border-right:1px solid rgba(110,145,210,.06)">No phases with dates set</div>
+        rowsHtml += `<div class="gantt-left-row" style="min-height:28px">
+          ${sixCols('<span style="padding-left:24px;font-style:italic;color:var(--muted)">No phases with dates set</span>', null, null, null, '', 0)}
           <div style="flex:1;min-width:${totalWidth}px"></div>
         </div>`;
       }
@@ -8874,13 +8891,14 @@ async function renderMasterSchedulePage() {
           });
         });
         const phasePct = phaseTotal ? Math.round(phaseDone/phaseTotal*100) : 0;
+        const phaseDays = workDaysBetween(phase.startDate, phase.endDate);
 
-        rowsHtml += `<div data-master-row="phase" data-phase-id="${phase.id}" data-parent-job="${job.id}" style="display:flex;align-items:stretch;min-height:${PHASE_H}px;border-bottom:1px solid rgba(110,145,210,.07);background:rgba(8,19,37,.3);cursor:pointer" onclick="toggleMasterRow('phase','${phase.id}')">
-          <div class="ms-label" style="width:${LABEL_W}px;flex-shrink:0;padding:4px 10px 4px 22px;border-right:1px solid rgba(110,145,210,.15);overflow:hidden;display:flex;align-items:center;gap:5px">
-            ${roomCount?`<span id="masterArrowPhase_${phase.id}" style="font-size:.6rem;color:var(--muted);flex-shrink:0">${phaseCollapsed?'▶':'▼'}</span>`:'<span style="width:10px;flex-shrink:0"></span>'}
-            <span style="font-size:.74rem;font-weight:700;color:#93c5fd;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${esc(phase.name)}</span>
-            <span style="font-size:.65rem;color:var(--muted);flex-shrink:0">${phasePct}%</span>
-          </div>
+        rowsHtml += `<div data-master-row="phase" data-phase-id="${phase.id}" data-parent-job="${job.id}" class="gantt-left-row phase-row" style="min-height:${PHASE_H}px" onclick="toggleMasterRow('phase','${phase.id}')">
+          ${sixCols(
+            `${roomCount?`<span id="masterArrowPhase_${phase.id}" style="flex-shrink:0">${phaseCollapsed?'▶':'▼'}</span>`:'<span style="width:10px;flex-shrink:0"></span>'}<span style="padding-left:14px;color:#93c5fd">${esc(phase.name)}</span>`,
+            phaseDays !== null ? phaseDays + 'd' : null,
+            phase.startDate, phase.endDate, '', phasePct, pctColor(phasePct)
+          )}
           ${rowBar(phase.startDate, phase.endDate, 'background:linear-gradient(90deg,#1d4ed8,#3b82f6)', 16, phasePct, phase.name)}
         </div>`;
 
@@ -8899,14 +8917,17 @@ async function renderMasterSchedulePage() {
             const roomColor = pct===100 ? 'background:#10b981'
               : room.endDate && new Date(room.endDate)<today ? 'background:#ef4444'
               : 'background:linear-gradient(90deg,#0d9488,#14b8a6)';
+            const roomStartD = room.startDate || phase.startDate;
+            const roomEndD = room.endDate || phase.endDate;
+            const roomDays = workDaysBetween(roomStartD, roomEndD);
 
-            rowsHtml += `<div data-master-row="room" data-room-id="${room.id}" data-parent-phase="${phase.id}" data-parent-job="${job.id}" style="display:flex;align-items:stretch;min-height:${PHASE_H}px;border-bottom:1px solid rgba(110,145,210,.05);background:rgba(8,19,37,.15);cursor:${displayTasks.length?'pointer':'default'}" ${displayTasks.length?`onclick="toggleMasterRow('room','${room.id}')"`:''}> 
-              <div class="ms-label" style="width:${LABEL_W}px;flex-shrink:0;padding:3px 10px 3px 38px;border-right:1px solid rgba(110,145,210,.1);overflow:hidden;display:flex;align-items:center;gap:5px">
-                ${displayTasks.length?`<span id="masterArrowRoom_${room.id}" style="font-size:.58rem;color:var(--muted);flex-shrink:0">${roomCollapsed?'▶':'▼'}</span>`:'<span style="width:8px;flex-shrink:0"></span>'}
-                <span style="font-size:.71rem;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${esc(room.name)}</span>
-                <span style="font-size:.62rem;color:var(--muted);flex-shrink:0">${doneTasks}/${displayTasks.length} · ${pct}%</span>
-              </div>
-              ${rowBar(room.startDate||phase.startDate, room.endDate||phase.endDate, roomColor, 12, pct, room.name)}
+            rowsHtml += `<div data-master-row="room" data-room-id="${room.id}" data-parent-phase="${phase.id}" data-parent-job="${job.id}" class="gantt-left-row room-row" style="min-height:${PHASE_H}px;cursor:${displayTasks.length?'pointer':'default'}" ${displayTasks.length?`onclick="toggleMasterRow('room','${room.id}')"`:''}>
+              ${sixCols(
+                `${displayTasks.length?`<span id="masterArrowRoom_${room.id}" style="flex-shrink:0">${roomCollapsed?'▶':'▼'}</span>`:'<span style="width:8px;flex-shrink:0"></span>'}<span style="padding-left:24px;color:#94a3b8">${esc(room.name)} <span style="color:var(--muted);font-size:.62rem">(${doneTasks}/${displayTasks.length})</span></span>`,
+                roomDays !== null ? roomDays + 'd' : null,
+                roomStartD, roomEndD, formatDependsOn(room.dependsOn), pct, pctColor(pct)
+              )}
+              ${rowBar(roomStartD, roomEndD, roomColor, 12, pct, room.name)}
             </div>`;
 
             if (!roomCollapsed) {
@@ -8914,11 +8935,11 @@ async function renderMasterSchedulePage() {
                 const tPct = getTaskPct(task);
                 const isDone = tPct === 100;
                 const glyph = isDone ? '☑' : (tPct > 0 ? tPct + '%' : '☐');
-                rowsHtml += `<div data-master-row="task" data-task-idx="${ti}" data-parent-room="${room.id}" data-parent-phase="${phase.id}" data-parent-job="${job.id}" style="display:flex;align-items:center;min-height:${TASK_H}px;border-bottom:1px solid rgba(110,145,210,.03);background:rgba(8,19,37,.08)">
-                  <div class="ms-label" style="width:${LABEL_W}px;flex-shrink:0;padding:2px 10px 2px 52px;border-right:1px solid rgba(110,145,210,.06);overflow:hidden;display:flex;align-items:center;gap:5px">
-                    <span style="font-size:.68rem;font-weight:${isDone?'400':'700'};color:${isDone?'#10b981':tPct>0?'#60a5fa':'var(--muted)'};flex-shrink:0;min-width:16px;text-align:center">${glyph}</span>
-                    <span style="font-size:.67rem;color:${isDone?'#10b981':'#64748b'};text-decoration:${isDone?'line-through':'none'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(task.name)}</span>
-                  </div>
+                rowsHtml += `<div data-master-row="task" data-task-idx="${ti}" data-parent-room="${room.id}" data-parent-phase="${phase.id}" data-parent-job="${job.id}" class="gantt-left-row task-row" style="min-height:${TASK_H}px">
+                  ${sixCols(
+                    `<span style="padding-left:36px;font-weight:${isDone?'400':'700'};color:${isDone?'#10b981':tPct>0?'#60a5fa':'var(--muted)'}">${glyph}</span><span style="color:${isDone?'#10b981':'#64748b'};text-decoration:${isDone?'line-through':'none'}">${esc(task.name)}</span>`,
+                    task.durationDays || null, task.startDate, task.endDate, '', tPct, isDone ? '#10b981' : (tPct>0 ? '#60a5fa' : 'var(--muted)')
+                  )}
                   <div style="flex:1;min-width:${totalWidth}px"></div>
                 </div>`;
               });
@@ -8937,42 +8958,24 @@ async function renderMasterSchedulePage() {
   el.innerHTML = `
     <div style="height:100%;overflow:auto" id="masterPageScroll">
       <div style="display:flex;position:sticky;top:0;z-index:20;background:rgba(8,19,37,.97);border-bottom:2px solid rgba(110,145,210,.2)">
-        <div class="ms-label" style="width:${LABEL_W}px;flex-shrink:0;height:32px;display:flex;align-items:center;padding:0 10px;font-size:.7rem;font-weight:800;color:var(--muted);border-right:1px solid rgba(110,145,210,.2)">JOB / PHASE / ROOM</div>
-        <div id="masterPageDivider" style="width:5px;flex-shrink:0;cursor:col-resize;background:rgba(110,145,210,.2)" onmouseover="this.style.background='rgba(245,158,11,.5)'" onmouseout="this.style.background='rgba(110,145,210,.2)'"></div>
+        <div style="width:${LEFT_W}px;flex-shrink:0;display:flex;align-items:center;height:32px">
+          <div style="width:340px;flex-shrink:0;padding:0 10px;font-size:.7rem;font-weight:800;color:var(--muted);border-right:1px solid rgba(110,145,210,.1)">TASK NAME</div>
+          <div style="width:70px;flex-shrink:0;padding:0 4px;font-size:.7rem;font-weight:800;color:var(--muted);text-align:center;border-right:1px solid rgba(110,145,210,.1)">DAYS</div>
+          <div style="width:125px;flex-shrink:0;padding:0 6px;font-size:.7rem;font-weight:800;color:var(--muted);border-right:1px solid rgba(110,145,210,.1)">START</div>
+          <div style="width:125px;flex-shrink:0;padding:0 6px;font-size:.7rem;font-weight:800;color:var(--muted);border-right:1px solid rgba(110,145,210,.1)">FINISH</div>
+          <div style="width:95px;flex-shrink:0;padding:0 6px;font-size:.7rem;font-weight:800;color:var(--muted);border-right:1px solid rgba(110,145,210,.1)">DEPENDENCY</div>
+          <div style="width:70px;flex-shrink:0;padding:0 4px;font-size:.7rem;font-weight:800;color:var(--muted);text-align:center">% DONE</div>
+        </div>
         <div style="flex:1;min-width:${totalWidth}px;position:relative">
           ${monthHtml}
           <div style="position:absolute;left:${todayOffset}px;top:0;bottom:0;width:1px;background:rgba(239,68,68,.4);pointer-events:none"></div>
         </div>
       </div>
       <div style="position:relative">
-        <div style="position:absolute;left:${LABEL_W+5+todayOffset}px;top:0;bottom:0;width:1px;background:rgba(239,68,68,.2);z-index:5;pointer-events:none"></div>
+        <div style="position:absolute;left:${LEFT_W+todayOffset}px;top:0;bottom:0;width:1px;background:rgba(239,68,68,.2);z-index:5;pointer-events:none"></div>
         ${rowsHtml}
       </div>
     </div>`;
-
-  const divider = document.getElementById('masterPageDivider');
-  const scroll = document.getElementById('masterPageScroll');
-  let _msLabelW = LABEL_W;
-  if (divider && scroll) {
-    let dragging = false, startX = 0, startW = 0;
-    divider.addEventListener('mousedown', e => {
-      dragging = true; startX = e.clientX; startW = _msLabelW;
-      document.body.style.cursor = 'col-resize';
-      document.body.style.userSelect = 'none';
-      e.preventDefault();
-    });
-    document.addEventListener('mousemove', e => {
-      if (!dragging) return;
-      _msLabelW = Math.max(160, Math.min(600, startW + (e.clientX - startX)));
-      scroll.querySelectorAll('.ms-label').forEach(lbl => lbl.style.width = _msLabelW + 'px');
-    });
-    document.addEventListener('mouseup', () => {
-      if (!dragging) return;
-      dragging = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    });
-  }
 }
 window.renderMasterSchedulePage = renderMasterSchedulePage;
 
