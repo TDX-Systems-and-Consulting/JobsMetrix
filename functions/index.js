@@ -458,12 +458,43 @@ exports.pushPersonalEventToGCal = functions.firestore
     console.log('pushPersonalEventToGCal fired', eventId, 'assignee:', assigneeEmail || '(Everyone)');
 
     if (assigneeEmail) {
-      // ── Single assignee -- existing, working path, unchanged ──
+      // ── Single assignee ──
       const uid = await getUidForEmail(assigneeEmail);
       console.log('pushPersonalEventToGCal uid for', assigneeEmail, ':', uid);
       if (!uid) { console.log('No uid found - user never logged in'); return null; }
       const cal = await getCalendarClientForUser(companyId, uid);
       console.log('pushPersonalEventToGCal cal client:', cal ? 'obtained' : 'null - not connected');
+
+      // Real bug found and fixed here: if this event was previously
+      // "Everyone" (tracked via the plural gcalEventIds map below)
+      // and just got reassigned to one specific person, this branch
+      // used to only ever look at the singular gcalEventId field --
+      // which doesn't exist yet on a from-Everyone event -- so it
+      // created a brand-new Google event and left every original
+      // Everyone-era event (including the reassigned person's own
+      // copy of it) permanently orphaned on Google Calendar, with no
+      // code path that ever cleaned them up. Clean those up here,
+      // on the same team-member loop pushPhaseToGCal/the Everyone
+      // branch below already use.
+      if (before?.gcalEventIds && Object.keys(before.gcalEventIds).length) {
+        const db2 = admin.firestore();
+        const teamDoc2 = await db2.collection('companies').doc(companyId).collection('settings').doc('team').get();
+        const teamData2 = teamDoc2.exists ? teamDoc2.data() : null;
+        const members2 = teamData2
+          ? (teamData2.members && typeof teamData2.members === 'object'
+              ? Object.values(teamData2.members)
+              : Object.values(teamData2).filter(v => v && typeof v === 'object' && (v.email || v.role)))
+          : [];
+        for (const m of members2) {
+          if (!m.email) continue;
+          const mUid = await getUidForEmail(m.email);
+          if (!mUid || !before.gcalEventIds[mUid]) continue;
+          const mCal = await getCalendarClientForUser(companyId, mUid);
+          if (!mCal) continue;
+          try { await mCal.events.delete({ calendarId: 'primary', eventId: before.gcalEventIds[mUid] }); }
+          catch (e) { console.warn('cleanup of old Everyone-event failed for', m.email, ':', e.message); }
+        }
+      }
 
       if (!after) {
         if (before?.gcalEventId) {
@@ -479,7 +510,7 @@ exports.pushPersonalEventToGCal = functions.firestore
           await cal.events.update({ calendarId: 'primary', eventId: after.gcalEventId, requestBody: eventBody });
         } else {
           const created = await cal.events.insert({ calendarId: 'primary', requestBody: eventBody });
-          await change.after.ref.update({ gcalEventId: created.data.id });
+          await change.after.ref.update({ gcalEventId: created.data.id, gcalEventIds: admin.firestore.FieldValue.delete() });
         }
       } catch (e) {
         console.error('pushPersonalEventToGCal failed:', e.message);
@@ -501,6 +532,21 @@ exports.pushPersonalEventToGCal = functions.firestore
           : Object.values(teamData).filter(v => v && typeof v === 'object' && (v.email || v.role)))
       : [];
     if (!members.length) { console.log('No team members found - skipping Everyone push'); return null; }
+
+    // Same real bug, other direction: if this event was previously a
+    // single-assignee event (singular gcalEventId) and just got
+    // reassigned to Everyone, clean up that one old event too, before
+    // the loop below creates the new per-member ones.
+    if (before?.gcalEventId && before?.assignee) {
+      const oldUid = await getUidForEmail(before.assignee);
+      if (oldUid) {
+        const oldCal = await getCalendarClientForUser(companyId, oldUid);
+        if (oldCal) {
+          try { await oldCal.events.delete({ calendarId: 'primary', eventId: before.gcalEventId }); }
+          catch (e) { console.warn('cleanup of old single-assignee event failed:', e.message); }
+        }
+      }
+    }
 
     const gcalEventIds = { ...((after || before)?.gcalEventIds || {}) };
     let idsChanged = false;
@@ -535,7 +581,7 @@ exports.pushPersonalEventToGCal = functions.firestore
     }
 
     if (after && idsChanged) {
-      await change.after.ref.update({ gcalEventIds });
+      await change.after.ref.update({ gcalEventIds, gcalEventId: admin.firestore.FieldValue.delete() });
     }
     return null;
   });
