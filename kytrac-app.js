@@ -13981,7 +13981,7 @@ function renderWeekView(weekStart) {
     weekDays.map(({iso}) => {
       const allDay = window.getCalEvents(iso).filter(e => e.type === 'phase' || (e.type === 'todo') || (e.type === 'event' && !e.ev?.time));
       return `<div style="padding:2px;border-bottom:1px solid rgba(110,145,210,.1);min-height:28px">
-        ${allDay.map(e => `<span class="cal-event-pill" style="background:${e.color}20;color:${e.color};border-left-color:${e.color};font-size:.62rem" title="${e.label}">${e.label.slice(0,20)}${e.label.length>20?'…':''}</span>`).join('')}
+        ${allDay.map(e => `<span class="cal-event-pill" style="background:${e.color}20;color:${e.color};border-left-color:${e.color};font-size:.62rem;cursor:${e.type==='phase'||e.type==='event'?'pointer':'default'}" onclick="event.stopPropagation();${e.type==='phase'?`openJobDetail('${e.jobId}');switchDetailTab('phases',null)`:e.type==='event'?`openCalEventModal('${e.id}')`:''}" title="${e.label}">${e.label.slice(0,20)}${e.label.length>20?'…':''}</span>`).join('')}
       </div>`;
     }).join('');
 
@@ -16688,7 +16688,7 @@ window.renderMonthView = function() {
     const isToday = dateISO === today;
     const events = window.getCalEvents(dateISO);
     const evHtml = events.slice(0,4).map(ev =>
-      `<span class="cal-event-pill" style="background:${ev.color}20;color:${ev.color};border-left-color:${ev.color}" onclick="event.stopPropagation();${ev.type==='event'?`openCalEventModal('${ev.id}')`:''}" title="${ev.label}">${ev.label}${ev.ev?.meetLink?` <a href="${ev.ev.meetLink}" target="_blank" onclick="event.stopPropagation()" style="color:#fff;font-size:.6rem;background:#0d9488;border-radius:3px;padding:0 3px;text-decoration:none">Join</a>`:''}</span>`
+      `<span class="cal-event-pill" style="background:${ev.color}20;color:${ev.color};border-left-color:${ev.color};cursor:${ev.type==='event'||ev.type==='phase'?'pointer':'default'}" onclick="event.stopPropagation();${ev.type==='event'?`openCalEventModal('${ev.id}')`:ev.type==='phase'?`openJobDetail('${ev.jobId}');switchDetailTab('phases',null)`:''}" title="${ev.label}">${ev.label}${ev.ev?.meetLink?` <a href="${ev.ev.meetLink}" target="_blank" onclick="event.stopPropagation()" style="color:#fff;font-size:.6rem;background:#0d9488;border-radius:3px;padding:0 3px;text-decoration:none">Join</a>`:''}</span>`
     ).join('') + (events.length > 4 ? `<span style="font-size:.6rem;color:var(--muted);padding:1px 4px">+${events.length-4} more</span>` : '');
     cells += `<div class="cal-day${isToday?' today':''}" onclick="openCalEventModal(null,'${dateISO}')">
       <div class="cal-day-num">${isToday?`<span class="cal-day-today-num">${d}</span>`:d}</div>
