@@ -8751,6 +8751,52 @@ async function updateMasterTaskDate(jobId, phaseId, roomId, taskId, field, value
 }
 window.updateMasterTaskDate = updateMasterTaskDate;
 
+// Duration and explicit dates are mutually exclusive, same rule as
+// the per-job Schedule tab: setting a duration switches the row back
+// to computed scheduling and clears any manual Start/Finish override
+// -- keeping both active at once would let the Days column lie about
+// what's actually driving the row.
+async function updateMasterRoomDuration(jobId, phaseId, roomId, days) {
+  if (!jobId || !conDb) return;
+  const d = Math.max(1, Math.round(Number(days) || 1));
+  try {
+    await coll('jobs').doc(jobId)
+      .collection('estimateGroups').doc(phaseId)
+      .collection('subgroups').doc(roomId)
+      .update({
+        durationDays: d,
+        startDate: firebase.firestore.FieldValue.delete(),
+        endDate: firebase.firestore.FieldValue.delete(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    renderMasterSchedulePage();
+  } catch(e) {
+    alert('Could not save duration: ' + e.message);
+  }
+}
+window.updateMasterRoomDuration = updateMasterRoomDuration;
+
+async function updateMasterTaskDuration(jobId, phaseId, roomId, taskId, days) {
+  if (!jobId || !conDb) return;
+  const d = Math.max(1, Math.round(Number(days) || 1));
+  try {
+    await coll('jobs').doc(jobId)
+      .collection('estimateGroups').doc(phaseId)
+      .collection('subgroups').doc(roomId)
+      .collection('items').doc(taskId)
+      .update({
+        durationDays: d,
+        startDate: firebase.firestore.FieldValue.delete(),
+        endDate: firebase.firestore.FieldValue.delete(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    renderMasterSchedulePage();
+  } catch(e) {
+    alert('Could not save duration: ' + e.message);
+  }
+}
+window.updateMasterTaskDuration = updateMasterTaskDuration;
+
 function toggleMasterRow(type, id) {
   if (!window._masterCollapsed) window._masterCollapsed = {};
   const nowCollapsed = !window._masterCollapsed[id];
@@ -8890,9 +8936,9 @@ async function renderMasterSchedulePage() {
   // Schedule tab, not an approximation of it. Read-only for now
   // (plain text/spans, no <input> elements) -- editing comes in the
   // next pass, once this display layer is confirmed correct.
-  function sixCols(nameHtml, days, startHtml, finishHtml, deps, pct, pctColorVal) {
+  function sixCols(nameHtml, daysHtml, startHtml, finishHtml, deps, pct, pctColorVal) {
     return `<div class="gantt-name-cell">${nameHtml}</div>
-      <div class="gantt-days-cell">${days ?? '—'}</div>
+      <div class="gantt-days-cell" onclick="event.stopPropagation()">${daysHtml ?? '—'}</div>
       <div class="gantt-date-cell gantt-start-cell" onclick="event.stopPropagation()">${startHtml}</div>
       <div class="gantt-date-cell gantt-end-cell" onclick="event.stopPropagation()">${finishHtml}</div>
       <div class="gantt-deps-cell">${deps || ''}</div>
@@ -9002,7 +9048,7 @@ async function renderMasterSchedulePage() {
             rowsHtml += `<div data-master-row="room" data-room-id="${room.id}" data-parent-phase="${phase.id}" data-parent-job="${job.id}" class="gantt-left-row room-row" style="min-height:${PHASE_H}px;cursor:${displayTasks.length?'pointer':'default'}" ${displayTasks.length?`onclick="toggleMasterRow('room','${room.id}')"`:''}>
               ${sixCols(
                 `${displayTasks.length?`<span id="masterArrowRoom_${room.id}" style="flex-shrink:0">${roomCollapsed?'▶':'▼'}</span>`:'<span style="width:8px;flex-shrink:0"></span>'}<span style="padding-left:24px;color:#94a3b8">${esc(room.name)} <span style="color:var(--muted);font-size:.62rem">(${doneTasks}/${displayTasks.length})</span></span>`,
-                roomDays !== null ? roomDays + 'd' : null,
+                isOwner ? `<input type="number" min="1" value="${room.durationDays || (roomDays!==null?roomDays:'')}" placeholder="—" onchange="updateMasterRoomDuration('${job.id}','${phase.id}','${room.id}',this.value)" title="Set duration directly -- clears any manual Start/Finish override and drives the schedule from here">` : (roomDays !== null ? roomDays + 'd' : '—'),
                 isOwner ? `<input type="date" value="${room.startDate||''}" onchange="updateMasterRoomDate('${job.id}','${phase.id}','${room.id}','startDate',this.value)" title="${room.startDate?'Custom date':'Auto-scheduled from phase -- set a date here to override'}">` : esc(roomStartD || '—'),
                 isOwner ? `<input type="date" value="${room.endDate||''}" onchange="updateMasterRoomDate('${job.id}','${phase.id}','${room.id}','endDate',this.value)" title="${room.endDate?'Custom date':'Auto-scheduled from phase -- set a date here to override'}">` : esc(roomEndD || '—'),
                 formatDependsOn(room.dependsOn), pct, pctColor(pct)
@@ -9020,7 +9066,7 @@ async function renderMasterSchedulePage() {
                 rowsHtml += `<div data-master-row="task" data-task-idx="${ti}" data-parent-room="${room.id}" data-parent-phase="${phase.id}" data-parent-job="${job.id}" class="gantt-left-row task-row" style="min-height:${TASK_H}px">
                   ${sixCols(
                     `<span style="padding-left:36px;font-weight:${isDone?'400':'700'};color:${isDone?'#10b981':tPct>0?'#60a5fa':'var(--muted)'}">${glyph}</span><span style="color:${isDone?'#10b981':'#64748b'};text-decoration:${isDone?'line-through':'none'}">${esc(task.name)}</span>`,
-                    task.durationDays || null,
+                    taskCanEdit ? `<input type="number" min="1" value="${task.durationDays || ''}" placeholder="—" onchange="updateMasterTaskDuration('${job.id}','${phase.id}','${room.id}','${task.id}',this.value)">` : (task.durationDays ? task.durationDays + 'd' : '—'),
                     taskCanEdit ? `<input type="date" value="${task.startDate||''}" onchange="updateMasterTaskDate('${job.id}','${phase.id}','${room.id}','${task.id}','startDate',this.value)">` : esc(task.startDate || '—'),
                     taskCanEdit ? `<input type="date" value="${task.endDate||''}" onchange="updateMasterTaskDate('${job.id}','${phase.id}','${room.id}','${task.id}','endDate',this.value)">` : esc(task.endDate || '—'),
                     '', tPct, isDone ? '#10b981' : (tPct>0 ? '#60a5fa' : 'var(--muted)')
