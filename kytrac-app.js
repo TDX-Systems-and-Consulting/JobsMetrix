@@ -510,7 +510,13 @@ function ktNav(key, btn) {
   // page-aware. Hiding it on pages with no real connection to
   // creating a job.
   const newJobBtn = document.getElementById('ktNewJobBtn');
-  if (newJobBtn) newJobBtn.style.display = (key === 'time') ? 'none' : '';
+  // "+ New Job" was showing on every single page -- it was baked
+  // into the shared topbar shell rather than being page-aware.
+  // Allowlist instead of a growing blacklist: show it only where
+  // creating a job is actually a natural action (Home overview, the
+  // Jobs list/board itself), hide it everywhere else by default.
+  const NEW_JOB_VISIBLE_ON = ['dashboard', 'jobs'];
+  if (newJobBtn) newJobBtn.style.display = NEW_JOB_VISIBLE_ON.includes(key) ? '' : 'none';
   // Trigger renders
   if(key==='globalNotes') loadGlobalNotes();
   if(key==='globalMessages') loadGlobalMessages();
