@@ -393,9 +393,61 @@ async function getUidForEmail(email) {
 
 // pushPersonalEventToGCal
 // ───────────────────────
-// Personal calendar events (companies/{cid}/calendarEvents) already
-// belong to one specific assignee - push create/update/delete straight
-// to that person's calendar if they're connected.
+// Personal calendar events (companies/{cid}/calendarEvents) either
+// belong to one specific assignee, or to "Everyone (All Team)" -- the
+// client saves that second case as assignee: '' (see calEventAssignee
+// dropdown, value="" for the "Everyone" option). The empty string is
+// falsy, so this used to hit the early `if (!assigneeEmail) return`
+// and get silently skipped entirely -- confirmed live: a real "Team
+// Meeting" event assigned to Everyone showed correctly inside JOBSpan
+// itself (that's just reading local Firestore data) but never reached
+// Google Calendar, and therefore never reached PlannerXD either, since
+// PlannerXD only ever pulls from Google, never talks to JOBSpan
+// directly. Single-assignee events were never affected by this --
+// only "Everyone" ones silently vanished at the sync step.
+function buildPersonalEventBody(after) {
+  // Was reading after.endTime directly -- but the client-side save
+  // function (saveCalendarEvent) never actually saves a field with
+  // that name. It computes and saves `duration` (minutes) instead --
+  // e.g. 8am to 4pm becomes { time: '08:00', duration: 480 }, never
+  // an endTime field. after.endTime was therefore ALWAYS undefined,
+  // silently falling back to after.time on every single timed event
+  // ever pushed here -- not just this one. Every past sync of a
+  // timed personal event has shown up on Google Calendar as a zero-
+  // duration start=end event regardless of what duration the user
+  // actually picked. Computing the real end time from start +
+  // duration instead, matching what the client actually saves.
+  let endDateTime = after.date;
+  if (after.time && after.duration) {
+    const [sh, sm] = after.time.split(':').map(Number);
+    let totalMin = sh * 60 + sm + Number(after.duration);
+    let endDate = after.date;
+    if (totalMin >= 1440) {
+      // Rolled past midnight -- advance the calendar date, same as
+      // the client's own wrap-around handling for an overnight event.
+      totalMin -= 1440;
+      const d = new Date(after.date + 'T00:00:00');
+      d.setDate(d.getDate() + 1);
+      endDate = d.toISOString().split('T')[0];
+    }
+    const eh = String(Math.floor(totalMin / 60)).padStart(2, '0');
+    const em = String(totalMin % 60).padStart(2, '0');
+    endDateTime = `${endDate}T${eh}:${em}:00`;
+  }
+
+  return {
+    summary: after.title || 'JOBSpan Event',
+    description: after.meetLink ? `Meet link: ${after.meetLink}` : (after.notes || undefined),
+    location: after.location || undefined,
+    start: after.time
+      ? { dateTime: `${after.date}T${after.time}:00`, timeZone: 'America/Chicago' }
+      : { date: after.date },
+    end: after.time
+      ? { dateTime: endDateTime, timeZone: 'America/Chicago' }
+      : { date: after.date }
+  };
+}
+
 exports.pushPersonalEventToGCal = functions.firestore
   .document('companies/{companyId}/calendarEvents/{eventId}')
   .onWrite(async (change, context) => {
@@ -403,75 +455,87 @@ exports.pushPersonalEventToGCal = functions.firestore
     const before = change.before.exists ? change.before.data() : null;
     const after = change.after.exists ? change.after.data() : null;
     const assigneeEmail = (after || before)?.assignee;
-    console.log('pushPersonalEventToGCal fired', eventId, 'assignee:', assigneeEmail);
-    if (!assigneeEmail) { console.log('No assignee - skipping'); return null; }
+    console.log('pushPersonalEventToGCal fired', eventId, 'assignee:', assigneeEmail || '(Everyone)');
 
-    const uid = await getUidForEmail(assigneeEmail);
-    console.log('pushPersonalEventToGCal uid for', assigneeEmail, ':', uid);
-    if (!uid) { console.log('No uid found - user never logged in'); return null; }
-    const cal = await getCalendarClientForUser(companyId, uid);
-    console.log('pushPersonalEventToGCal cal client:', cal ? 'obtained' : 'null - not connected');
+    if (assigneeEmail) {
+      // ── Single assignee -- existing, working path, unchanged ──
+      const uid = await getUidForEmail(assigneeEmail);
+      console.log('pushPersonalEventToGCal uid for', assigneeEmail, ':', uid);
+      if (!uid) { console.log('No uid found - user never logged in'); return null; }
+      const cal = await getCalendarClientForUser(companyId, uid);
+      console.log('pushPersonalEventToGCal cal client:', cal ? 'obtained' : 'null - not connected');
 
-    // Deleted in JOBSpan -> delete on Google Calendar too, if we'd
-    // previously pushed one.
-    if (!after) {
-      if (before?.gcalEventId) {
-        try { await cal.events.delete({ calendarId: 'primary', eventId: before.gcalEventId }); }
-        catch (e) { console.warn('gcal delete failed (may already be gone):', e.message); }
+      if (!after) {
+        if (before?.gcalEventId) {
+          try { await cal.events.delete({ calendarId: 'primary', eventId: before.gcalEventId }); }
+          catch (e) { console.warn('gcal delete failed (may already be gone):', e.message); }
+        }
+        return null;
+      }
+
+      const eventBody = buildPersonalEventBody(after);
+      try {
+        if (after.gcalEventId) {
+          await cal.events.update({ calendarId: 'primary', eventId: after.gcalEventId, requestBody: eventBody });
+        } else {
+          const created = await cal.events.insert({ calendarId: 'primary', requestBody: eventBody });
+          await change.after.ref.update({ gcalEventId: created.data.id });
+        }
+      } catch (e) {
+        console.error('pushPersonalEventToGCal failed:', e.message);
       }
       return null;
     }
 
-    // Was reading after.endTime directly -- but the client-side save
-    // function (saveCalendarEvent) never actually saves a field with
-    // that name. It computes and saves `duration` (minutes) instead --
-    // e.g. 8am to 4pm becomes { time: '08:00', duration: 480 }, never
-    // an endTime field. after.endTime was therefore ALWAYS undefined,
-    // silently falling back to after.time on every single timed event
-    // ever pushed here -- not just this one. Every past sync of a
-    // timed personal event has shown up on Google Calendar as a zero-
-    // duration start=end event regardless of what duration the user
-    // actually picked. Computing the real end time from start +
-    // duration instead, matching what the client actually saves.
-    let endDateTime = after.date;
-    if (after.time && after.duration) {
-      const [sh, sm] = after.time.split(':').map(Number);
-      let totalMin = sh * 60 + sm + Number(after.duration);
-      let endDate = after.date;
-      if (totalMin >= 1440) {
-        // Rolled past midnight -- advance the calendar date, same as
-        // the client's own wrap-around handling for an overnight event.
-        totalMin -= 1440;
-        const d = new Date(after.date + 'T00:00:00');
-        d.setDate(d.getDate() + 1);
-        endDate = d.toISOString().split('T')[0];
+    // ── "Everyone (All Team)" -- new path, mirrors pushPhaseToGCal's
+    // multi-calendar pattern below: one Google event per connected
+    // team member, IDs tracked in a gcalEventIds map instead of a
+    // single gcalEventId, since one JOBSpan event now corresponds to
+    // several different Google Calendar events.
+    const db = admin.firestore();
+    const teamDoc = await db.collection('companies').doc(companyId).collection('settings').doc('team').get();
+    const teamData = teamDoc.exists ? teamDoc.data() : null;
+    const members = teamData
+      ? (teamData.members && typeof teamData.members === 'object'
+          ? Object.values(teamData.members)
+          : Object.values(teamData).filter(v => v && typeof v === 'object' && (v.email || v.role)))
+      : [];
+    if (!members.length) { console.log('No team members found - skipping Everyone push'); return null; }
+
+    const gcalEventIds = { ...((after || before)?.gcalEventIds || {}) };
+    let idsChanged = false;
+
+    for (const member of members) {
+      if (!member.email) continue;
+      const uid = await getUidForEmail(member.email);
+      if (!uid) continue;
+      const cal = await getCalendarClientForUser(companyId, uid);
+      if (!cal) continue;
+
+      if (!after) {
+        if (gcalEventIds[uid]) {
+          try { await cal.events.delete({ calendarId: 'primary', eventId: gcalEventIds[uid] }); }
+          catch (e) { console.warn('gcal Everyone-event delete failed for', member.email, ':', e.message); }
+        }
+        continue;
       }
-      const eh = String(Math.floor(totalMin / 60)).padStart(2, '0');
-      const em = String(totalMin % 60).padStart(2, '0');
-      endDateTime = `${endDate}T${eh}:${em}:00`;
+
+      const eventBody = buildPersonalEventBody(after);
+      try {
+        if (gcalEventIds[uid]) {
+          await cal.events.update({ calendarId: 'primary', eventId: gcalEventIds[uid], requestBody: eventBody });
+        } else {
+          const created = await cal.events.insert({ calendarId: 'primary', requestBody: eventBody });
+          gcalEventIds[uid] = created.data.id;
+          idsChanged = true;
+        }
+      } catch (e) {
+        console.error('pushPersonalEventToGCal (Everyone) failed for', member.email, ':', e.message);
+      }
     }
 
-    const eventBody = {
-      summary: after.title || 'JOBSpan Event',
-      description: after.meetLink ? `Meet link: ${after.meetLink}` : (after.notes || undefined),
-      location: after.location || undefined,
-      start: after.time
-        ? { dateTime: `${after.date}T${after.time}:00`, timeZone: 'America/Chicago' }
-        : { date: after.date },
-      end: after.time
-        ? { dateTime: endDateTime, timeZone: 'America/Chicago' }
-        : { date: after.date }
-    };
-
-    try {
-      if (after.gcalEventId) {
-        await cal.events.update({ calendarId: 'primary', eventId: after.gcalEventId, requestBody: eventBody });
-      } else {
-        const created = await cal.events.insert({ calendarId: 'primary', requestBody: eventBody });
-        await change.after.ref.update({ gcalEventId: created.data.id });
-      }
-    } catch (e) {
-      console.error('pushPersonalEventToGCal failed:', e.message);
+    if (after && idsChanged) {
+      await change.after.ref.update({ gcalEventIds });
     }
     return null;
   });
