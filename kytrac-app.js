@@ -13837,6 +13837,17 @@ function populateTimeFilters() {
       conJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(j.jobNumber?'#'+j.jobNumber+' ':'')}${esc(j.name)}</option>`).join('');
   }
 
+  // Manual entry crew selector -- real team roster instead of free
+  // text, so names are consistent and match who's actually on the
+  // team (no typos, no "Jon" vs "Jason" fragmenting the same person
+  // across entries).
+  const manualCrewSel = document.getElementById('manualCrew');
+  if (manualCrewSel) {
+    const cur3 = manualCrewSel.value;
+    manualCrewSel.innerHTML = '<option value="">Myself</option>' +
+      (_lastTeamMemberList || []).map(m => `<option value="${esc(m.name||m.email||'')}" ${(m.name||m.email)===cur3?'selected':''}>${esc(m.name||m.email||'')}</option>`).join('');
+  }
+
   // Set today's date on manual entry
   const manualDate = document.getElementById('manualDate');
   if (manualDate && !manualDate.value) manualDate.value = new Date().toISOString().split('T')[0];
