@@ -3479,9 +3479,10 @@ function renderGanttLeft(jobId, job) {
         ? `<input type="date" value="${phase.startDate||''}" onchange="updatePhaseDate('${phase.id}','startDate',this.value)" onclick="event.stopPropagation()">`
         : (phase.startDate||'—')}
       </div>
-      <div class="gantt-date-cell gantt-end-cell">${isOwner
+      <div class="gantt-date-cell gantt-end-cell" onclick="event.stopPropagation()">${isOwner
         ? `<input type="date" value="${phase.endDate||''}" onchange="updatePhaseDate('${phase.id}','endDate',this.value)" onclick="event.stopPropagation()">`
         : (phase.endDate||'—')}
+        ${isOwner && (phase.startDate || phase.endDate) ? `<button onclick="event.stopPropagation();clearPhaseDateOverride('${phase.id}')" title="Clear this phase's dates" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.7rem;flex-shrink:0;padding:0">✕</button>` : ''}
       </div>
       <div class="gantt-deps-cell"></div>
       <div class="gantt-pct-cell" style="color:${pctColor(phasePct)};font-weight:700">${phasePct}%</div>
@@ -4444,6 +4445,97 @@ async function clearRoomDateOverride(phaseId, roomId) {
   }
 }
 window.clearRoomDateOverride = clearRoomDateOverride;
+
+// Phase-level dates have no computed fallback (unlike Room, which
+// falls back to dependency/duration/even-split math off the phase's
+// range) -- a phase's dates are the top of that chain, so "clearing"
+// here just blanks the field directly. Still needed as its own button
+// because there was previously no way to blank a phase's dates at all
+// once set, only overwrite them with another explicit date.
+async function clearPhaseDateOverride(phaseId) {
+  if (!_ganttJobId || !conDb || !confirm('Clear this phase\'s dates? Rooms/tasks that auto-schedule off this phase (with no date of their own) will show as unscheduled until you set new phase dates.')) return;
+  try {
+    const entry = _ganttData.find(p => p.phase.id === phaseId);
+    if (entry) { delete entry.phase.startDate; delete entry.phase.endDate; }
+    await coll('jobs').doc(_ganttJobId)
+      .collection('estimateGroups').doc(phaseId)
+      .update({ startDate: firebase.firestore.FieldValue.delete(), endDate: firebase.firestore.FieldValue.delete() });
+    renderJobGantt(_ganttJobId);
+  } catch(e) {
+    alert('Could not clear dates: ' + e.message);
+  }
+}
+window.clearPhaseDateOverride = clearPhaseDateOverride;
+
+// Whole-job reset -- clears startDate/endDate at every level (job,
+// every phase, every room, every task) in one batch. Needed because
+// clearing just the phase level leaves any room/task that has its own
+// explicit override (set independently via updateRoomDate/
+// updateTaskDate) still showing real dates -- an explicit override
+// always wins over the phase's blank state, by design (see
+// getRoomDates/getTaskDates: the override check happens before the
+// phase-blank check). durationDays and dependsOn are deliberately left
+// untouched -- once every real date anchor in the job is gone, those
+// can't produce a date on their own (getRoomDates/getTaskDates both
+// require phase.startDate/endDate to exist before the duration
+// fallback branch even runs), so nothing is lost by leaving them, and
+// it keeps this reversible: set new phase dates and the existing
+// duration/dependency structure picks back up automatically.
+async function clearAllJobDates() {
+  if (!_ganttJobId || !conDb) return;
+  const totalPhases = _ganttData.length;
+  const totalRooms = _ganttData.reduce((s, p) => s + p.rooms.length, 0);
+  const totalTasks = _ganttData.reduce((s, p) => s + p.rooms.reduce((rs, r) => rs + r.tasks.length, 0), 0);
+  if (!confirm(`Clear ALL dates on this job?\n\nThis wipes the job's own dates plus every phase (${totalPhases}), room (${totalRooms}), and task (${totalTasks}) date underneath it. Durations and dependencies are left alone. This cannot be undone in bulk -- you'd need to re-enter dates individually.`)) return;
+
+  try {
+    const del = firebase.firestore.FieldValue.delete();
+    const ts = firebase.firestore.FieldValue.serverTimestamp();
+    const jobsRef = coll('jobs');
+    let batch = conDb.batch();
+    let opCount = 0;
+    const commitIfFull = async () => {
+      if (opCount >= 450) { // stay well under Firestore's 500-op batch limit
+        await batch.commit();
+        batch = conDb.batch();
+        opCount = 0;
+      }
+    };
+
+    // Job level
+    batch.update(jobsRef.doc(_ganttJobId), { startDate: del, endDate: del, updatedAt: ts });
+    opCount++;
+
+    for (const { phase, rooms } of _ganttData) {
+      await commitIfFull();
+      batch.update(jobsRef.doc(_ganttJobId).collection('estimateGroups').doc(phase.id), { startDate: del, endDate: del, updatedAt: ts });
+      delete phase.startDate; delete phase.endDate;
+      opCount++;
+
+      for (const { room, tasks } of rooms) {
+        await commitIfFull();
+        batch.update(jobsRef.doc(_ganttJobId).collection('estimateGroups').doc(phase.id).collection('subgroups').doc(room.id), { startDate: del, endDate: del, updatedAt: ts });
+        delete room.startDate; delete room.endDate;
+        opCount++;
+
+        for (const task of tasks) {
+          await commitIfFull();
+          batch.update(jobsRef.doc(_ganttJobId).collection('estimateGroups').doc(phase.id).collection('subgroups').doc(room.id).collection('items').doc(task.id), { startDate: del, endDate: del, updatedAt: ts });
+          delete task.startDate; delete task.endDate;
+          opCount++;
+        }
+      }
+    }
+
+    await batch.commit();
+    renderJobGantt(_ganttJobId);
+    alert(`Cleared dates on the job, ${totalPhases} phase(s), ${totalRooms} room(s), and ${totalTasks} task(s).`);
+  } catch(e) {
+    console.error('clearAllJobDates failed:', e);
+    alert('Could not clear all dates: ' + e.message);
+  }
+}
+window.clearAllJobDates = clearAllJobDates;
 
 // Same pattern as updateRoomDate/clearRoomDateOverride above, one
 // level down. getTaskDates() already checks task.startDate/endDate
