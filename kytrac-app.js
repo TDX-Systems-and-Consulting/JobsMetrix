@@ -8884,6 +8884,74 @@ function clearMasterAllJobDates(jobId) {
 }
 window.clearMasterAllJobDates = clearMasterAllJobDates;
 
+// Phase drag-reorder for Master Schedule -- same visual behavior as
+// the per-job Schedule tab's ganttPhaseDragStart/Over/Leave/End, but
+// the drop handler is different by necessity: phases only make sense
+// reordered WITHIN their own job, so this checks the dragged and
+// target phases share a job before doing anything, silently ignoring
+// a drop across two different jobs' phase lists rather than doing
+// something nonsensical with it.
+let _masterDraggedPhaseId = null;
+let _masterDraggedJobId = null;
+
+function masterPhaseDragStart(e, jobId, phaseId) {
+  _masterDraggedPhaseId = phaseId;
+  _masterDraggedJobId = jobId;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', phaseId);
+  e.currentTarget.classList.add('dragging');
+}
+window.masterPhaseDragStart = masterPhaseDragStart;
+
+function masterPhaseDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  e.currentTarget.classList.add('drag-over');
+}
+window.masterPhaseDragOver = masterPhaseDragOver;
+
+function masterPhaseDragLeave(e) {
+  e.currentTarget.classList.remove('drag-over');
+}
+window.masterPhaseDragLeave = masterPhaseDragLeave;
+
+function masterPhaseDragEnd(e) {
+  e.currentTarget.classList.remove('dragging');
+  document.querySelectorAll('.gantt-left-row.phase-row.drag-over').forEach(el => el.classList.remove('drag-over'));
+}
+window.masterPhaseDragEnd = masterPhaseDragEnd;
+
+async function masterPhaseDrop(e, targetJobId, targetPhaseId) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  const draggedId = _masterDraggedPhaseId;
+  const draggedJobId = _masterDraggedJobId;
+  _masterDraggedPhaseId = null;
+  _masterDraggedJobId = null;
+  if (!draggedId || draggedId === targetPhaseId || !conDb) return;
+  if (draggedJobId !== targetJobId) return; // different jobs -- not a valid reorder, ignore silently
+
+  try {
+    const tree = await loadEpicTree(targetJobId);
+    const fromIdx = tree.findIndex(p => p.id === draggedId);
+    const toIdx = tree.findIndex(p => p.id === targetPhaseId);
+    if (fromIdx === -1 || toIdx === -1) return;
+
+    const [moved] = tree.splice(fromIdx, 1);
+    tree.splice(toIdx, 0, moved);
+
+    const writes = tree.map((phase, i) =>
+      coll('jobs').doc(targetJobId).collection('estimateGroups').doc(phase.id)
+        .update({ order: i, updatedAt: firebase.firestore.FieldValue.serverTimestamp() })
+    );
+    await Promise.all(writes);
+    renderMasterSchedulePage();
+  } catch(e2) {
+    alert('Could not save the new phase order: ' + e2.message);
+  }
+}
+window.masterPhaseDrop = masterPhaseDrop;
+
 function toggleMasterRow(type, id) {
   if (!window._masterCollapsed) window._masterCollapsed = {};
   const nowCollapsed = !window._masterCollapsed[id];
@@ -9102,9 +9170,9 @@ async function renderMasterSchedulePage() {
         const phasePct = phaseTotal ? Math.round(phaseDone/phaseTotal*100) : 0;
         const phaseDays = workDaysBetween(phase.startDate, phase.endDate);
 
-        rowsHtml += `<div data-master-row="phase" data-phase-id="${phase.id}" data-parent-job="${job.id}" class="gantt-left-row phase-row" style="min-height:${PHASE_H}px" onclick="toggleMasterRow('phase','${phase.id}')">
+        rowsHtml += `<div data-master-row="phase" data-phase-id="${phase.id}" data-parent-job="${job.id}" class="gantt-left-row phase-row" draggable="${isOwner}" ondragstart="masterPhaseDragStart(event,'${job.id}','${phase.id}')" ondragover="masterPhaseDragOver(event)" ondragleave="masterPhaseDragLeave(event)" ondrop="masterPhaseDrop(event,'${job.id}','${phase.id}')" ondragend="masterPhaseDragEnd(event)" style="min-height:${PHASE_H}px" onclick="toggleMasterRow('phase','${phase.id}')">
           ${sixCols(
-            `${roomCount?`<span id="masterArrowPhase_${phase.id}" style="flex-shrink:0">${phaseCollapsed?'▶':'▼'}</span>`:'<span style="width:10px;flex-shrink:0"></span>'}<span style="padding-left:14px;color:#93c5fd">${esc(phase.name)}</span>`,
+            `${isOwner?`<span class="gantt-drag-handle" title="Drag to reorder phases within this job" onclick="event.stopPropagation()">⠿</span>`:''}${roomCount?`<span id="masterArrowPhase_${phase.id}" style="flex-shrink:0">${phaseCollapsed?'▶':'▼'}</span>`:'<span style="width:10px;flex-shrink:0"></span>'}<span style="padding-left:14px;color:#93c5fd">${esc(phase.name)}</span>`,
             phaseDays !== null ? phaseDays + 'd' : null,
             isOwner ? `<input type="date" value="${phase.startDate||''}" onchange="updateMasterPhaseDate('${job.id}','${phase.id}','startDate',this.value)">` : esc(phase.startDate || '—'),
             isOwner ? `<input type="date" value="${phase.endDate||''}" onchange="updateMasterPhaseDate('${job.id}','${phase.id}','endDate',this.value)">${(phase.startDate||phase.endDate)?`<button onclick="event.stopPropagation();clearMasterPhaseDate('${job.id}','${phase.id}')" title="Clear this phase's dates" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.7rem;flex-shrink:0;padding:0">✕</button>`:''}` : esc(phase.endDate || '—'),
