@@ -8716,6 +8716,41 @@ async function updateMasterRoomDate(jobId, phaseId, roomId, field, value) {
 }
 window.updateMasterRoomDate = updateMasterRoomDate;
 
+async function updateMasterJobDate(jobId, field, value) {
+  if (!jobId || !conDb) return;
+  try {
+    const job = conJobs.find(j => j.id === jobId);
+    if (job) job[field] = value;
+    await coll('jobs').doc(jobId).update({ [field]: value, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+    renderMasterSchedulePage();
+  } catch(e) {
+    alert('Could not save job date: ' + e.message);
+  }
+}
+window.updateMasterJobDate = updateMasterJobDate;
+
+// Task-level dates -- only for REAL tasks (actual items in Firestore).
+// Rooms with no real tasks yet fall back to parsing room.scopeNotes
+// into synthetic display-only rows (id 'scope_<roomId>_<n>') so
+// something still renders -- those aren't Firestore documents and
+// can't be written to, so the row stays read-only for those
+// specifically (checked at the call site via task.id.startsWith
+// ('scope_'), the same synthetic-row marker used when they're built).
+async function updateMasterTaskDate(jobId, phaseId, roomId, taskId, field, value) {
+  if (!jobId || !conDb) return;
+  try {
+    await coll('jobs').doc(jobId)
+      .collection('estimateGroups').doc(phaseId)
+      .collection('subgroups').doc(roomId)
+      .collection('items').doc(taskId)
+      .update({ [field]: value, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+    renderMasterSchedulePage();
+  } catch(e) {
+    alert('Could not save task date: ' + e.message);
+  }
+}
+window.updateMasterTaskDate = updateMasterTaskDate;
+
 function toggleMasterRow(type, id) {
   if (!window._masterCollapsed) window._masterCollapsed = {};
   const nowCollapsed = !window._masterCollapsed[id];
@@ -8900,7 +8935,9 @@ async function renderMasterSchedulePage() {
       ${sixCols(
         `<span id="masterArrowJob_${job.id}" style="flex-shrink:0">${jobCollapsed?'▶':'▼'}</span><span style="color:var(--amber)">🏠 ${esc(job.name)}</span>`,
         jobDays !== null ? jobDays + 'd' : null,
-        esc(job.startDate || '—'), esc(job.endDate || '—'), '', _jobPct, _jobPctColor
+        isOwner ? `<input type="date" value="${job.startDate||''}" onchange="updateMasterJobDate('${job.id}','startDate',this.value)">` : esc(job.startDate || '—'),
+        isOwner ? `<input type="date" value="${job.endDate||''}" onchange="updateMasterJobDate('${job.id}','endDate',this.value)">` : esc(job.endDate || '—'),
+        '', _jobPct, _jobPctColor
       )}
       ${rowBar(job.startDate, job.endDate, jobBarColor, 22, _jobPct, job.name)}
     </div>`;
@@ -8978,10 +9015,15 @@ async function renderMasterSchedulePage() {
                 const tPct = getTaskPct(task);
                 const isDone = tPct === 100;
                 const glyph = isDone ? '☑' : (tPct > 0 ? tPct + '%' : '☐');
+                const isRealTask = !String(task.id).startsWith('scope_');
+                const taskCanEdit = isOwner && isRealTask;
                 rowsHtml += `<div data-master-row="task" data-task-idx="${ti}" data-parent-room="${room.id}" data-parent-phase="${phase.id}" data-parent-job="${job.id}" class="gantt-left-row task-row" style="min-height:${TASK_H}px">
                   ${sixCols(
                     `<span style="padding-left:36px;font-weight:${isDone?'400':'700'};color:${isDone?'#10b981':tPct>0?'#60a5fa':'var(--muted)'}">${glyph}</span><span style="color:${isDone?'#10b981':'#64748b'};text-decoration:${isDone?'line-through':'none'}">${esc(task.name)}</span>`,
-                    task.durationDays || null, esc(task.startDate || '—'), esc(task.endDate || '—'), '', tPct, isDone ? '#10b981' : (tPct>0 ? '#60a5fa' : 'var(--muted)')
+                    task.durationDays || null,
+                    taskCanEdit ? `<input type="date" value="${task.startDate||''}" onchange="updateMasterTaskDate('${job.id}','${phase.id}','${room.id}','${task.id}','startDate',this.value)">` : esc(task.startDate || '—'),
+                    taskCanEdit ? `<input type="date" value="${task.endDate||''}" onchange="updateMasterTaskDate('${job.id}','${phase.id}','${room.id}','${task.id}','endDate',this.value)">` : esc(task.endDate || '—'),
+                    '', tPct, isDone ? '#10b981' : (tPct>0 ? '#60a5fa' : 'var(--muted)')
                   )}
                   <div style="flex:1;min-width:${totalWidth}px"></div>
                 </div>`;
