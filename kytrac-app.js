@@ -4475,6 +4475,7 @@ async function clearRoomDateOverride(phaseId, roomId) {
       .collection('subgroups').doc(roomId)
       .update({ startDate: firebase.firestore.FieldValue.delete(), endDate: firebase.firestore.FieldValue.delete() });
     renderJobGantt(_ganttJobId);
+    refreshMasterIfActive();
   } catch(e) {
     alert('Could not clear dates: ' + e.message);
   }
@@ -4496,6 +4497,7 @@ async function clearPhaseDateOverride(phaseId) {
       .collection('estimateGroups').doc(phaseId)
       .update({ startDate: firebase.firestore.FieldValue.delete(), endDate: firebase.firestore.FieldValue.delete() });
     renderJobGantt(_ganttJobId);
+    refreshMasterIfActive();
   } catch(e) {
     alert('Could not clear dates: ' + e.message);
   }
@@ -4564,6 +4566,7 @@ async function clearAllJobDates() {
 
     await batch.commit();
     renderJobGantt(_ganttJobId);
+    refreshMasterIfActive();
     alert(`Cleared dates on the job, ${totalPhases} phase(s), ${totalRooms} room(s), and ${totalTasks} task(s).`);
   } catch(e) {
     console.error('clearAllJobDates failed:', e);
@@ -4732,6 +4735,7 @@ async function clearTaskDateOverride(phaseId, roomId, taskId) {
       .collection('items').doc(taskId)
       .update({ startDate: firebase.firestore.FieldValue.delete(), endDate: firebase.firestore.FieldValue.delete() });
     renderJobGantt(_ganttJobId);
+    refreshMasterIfActive();
   } catch(e) {
     alert('Could not clear dates: ' + e.message);
   }
@@ -8828,6 +8832,58 @@ async function openMasterRoomScheduleModal(jobId, phaseId, roomId) {
 }
 window.openMasterRoomScheduleModal = openMasterRoomScheduleModal;
 
+// Shared by every Master-Schedule action that reuses a per-job
+// function (dependency modal, clear-date buttons): those functions
+// only know how to refresh the per-job Schedule tab (renderJobGantt),
+// which safely no-ops on Master Schedule since #ganttLeftRows doesn't
+// exist there. This is the other half -- refresh Master Schedule too,
+// but only when it's actually the visible page (it stays in the DOM
+// at all times, just hidden via the .active class, so existence alone
+// isn't the right check).
+function refreshMasterIfActive() {
+  const msPage = document.getElementById('ktPageMasterschedule');
+  if (msPage && msPage.classList.contains('active')) renderMasterSchedulePage();
+}
+window.refreshMasterIfActive = refreshMasterIfActive;
+
+// Same borrow-the-per-job-globals pattern as openMasterRoomScheduleModal
+// above -- these four clear-date buttons call the REAL
+// clearRoomDateOverride/clearPhaseDateOverride/clearTaskDateOverride/
+// clearAllJobDates functions unchanged (all four already extended to
+// call refreshMasterIfActive themselves), just with _ganttData/
+// _ganttJobId pointed at the right job first.
+async function withMasterJobContext(jobId, fn) {
+  const tree = await loadEpicTree(jobId);
+  _ganttJobId = jobId;
+  _ganttData = tree.map(phase => ({
+    phase,
+    rooms: phase.features.map(room => ({ room, tasks: room.tasks || [] })),
+  }));
+  buildGanttNumbering();
+  return fn();
+}
+window.withMasterJobContext = withMasterJobContext;
+
+function clearMasterPhaseDate(jobId, phaseId) {
+  withMasterJobContext(jobId, () => clearPhaseDateOverride(phaseId));
+}
+window.clearMasterPhaseDate = clearMasterPhaseDate;
+
+function clearMasterRoomDate(jobId, phaseId, roomId) {
+  withMasterJobContext(jobId, () => clearRoomDateOverride(phaseId, roomId));
+}
+window.clearMasterRoomDate = clearMasterRoomDate;
+
+function clearMasterTaskDate(jobId, phaseId, roomId, taskId) {
+  withMasterJobContext(jobId, () => clearTaskDateOverride(phaseId, roomId, taskId));
+}
+window.clearMasterTaskDate = clearMasterTaskDate;
+
+function clearMasterAllJobDates(jobId) {
+  withMasterJobContext(jobId, () => clearAllJobDates());
+}
+window.clearMasterAllJobDates = clearMasterAllJobDates;
+
 function toggleMasterRow(type, id) {
   if (!window._masterCollapsed) window._masterCollapsed = {};
   const nowCollapsed = !window._masterCollapsed[id];
@@ -9010,7 +9066,7 @@ async function renderMasterSchedulePage() {
 
     rowsHtml += `<div data-master-row="job" data-job-id="${job.id}" class="gantt-left-row phase-row" style="min-height:${ROW_H}px;background:rgba(245,158,11,.06)" onclick="toggleMasterRow('job','${job.id}')">
       ${sixCols(
-        `<span id="masterArrowJob_${job.id}" style="flex-shrink:0">${jobCollapsed?'▶':'▼'}</span><span style="color:var(--amber)">🏠 ${esc(job.name)}</span>`,
+        `<span id="masterArrowJob_${job.id}" style="flex-shrink:0">${jobCollapsed?'▶':'▼'}</span><span style="color:var(--amber)">🏠 ${esc(job.name)}</span>${isOwner?`<button onclick="event.stopPropagation();clearMasterAllJobDates('${job.id}')" title="Clear ALL dates on this job -- job, every phase, room, and task" style="background:none;border:1px dashed rgba(248,113,113,.4);border-radius:4px;color:#f87171;cursor:pointer;font-size:.62rem;margin-left:8px;padding:0 5px;flex-shrink:0">🗑 Clear All</button>`:''}`,
         jobDays !== null ? jobDays + 'd' : null,
         isOwner ? `<input type="date" value="${job.startDate||''}" onchange="updateMasterJobDate('${job.id}','startDate',this.value)">` : esc(job.startDate || '—'),
         isOwner ? `<input type="date" value="${job.endDate||''}" onchange="updateMasterJobDate('${job.id}','endDate',this.value)">` : esc(job.endDate || '—'),
@@ -9051,7 +9107,7 @@ async function renderMasterSchedulePage() {
             `${roomCount?`<span id="masterArrowPhase_${phase.id}" style="flex-shrink:0">${phaseCollapsed?'▶':'▼'}</span>`:'<span style="width:10px;flex-shrink:0"></span>'}<span style="padding-left:14px;color:#93c5fd">${esc(phase.name)}</span>`,
             phaseDays !== null ? phaseDays + 'd' : null,
             isOwner ? `<input type="date" value="${phase.startDate||''}" onchange="updateMasterPhaseDate('${job.id}','${phase.id}','startDate',this.value)">` : esc(phase.startDate || '—'),
-            isOwner ? `<input type="date" value="${phase.endDate||''}" onchange="updateMasterPhaseDate('${job.id}','${phase.id}','endDate',this.value)">` : esc(phase.endDate || '—'),
+            isOwner ? `<input type="date" value="${phase.endDate||''}" onchange="updateMasterPhaseDate('${job.id}','${phase.id}','endDate',this.value)">${(phase.startDate||phase.endDate)?`<button onclick="event.stopPropagation();clearMasterPhaseDate('${job.id}','${phase.id}')" title="Clear this phase's dates" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.7rem;flex-shrink:0;padding:0">✕</button>`:''}` : esc(phase.endDate || '—'),
             '', phasePct, pctColor(phasePct)
           )}
           ${rowBar(phase.startDate, phase.endDate, 'background:linear-gradient(90deg,#1d4ed8,#3b82f6)', 16, phasePct, phase.name)}
@@ -9081,7 +9137,7 @@ async function renderMasterSchedulePage() {
                 `${displayTasks.length?`<span id="masterArrowRoom_${room.id}" style="flex-shrink:0">${roomCollapsed?'▶':'▼'}</span>`:'<span style="width:8px;flex-shrink:0"></span>'}<span style="padding-left:24px;color:#94a3b8">${esc(room.name)} <span style="color:var(--muted);font-size:.62rem">(${doneTasks}/${displayTasks.length})</span></span>`,
                 isOwner ? `<input type="number" min="1" value="${room.durationDays || (roomDays!==null?roomDays:'')}" placeholder="—" onchange="updateMasterRoomDuration('${job.id}','${phase.id}','${room.id}',this.value)" title="Set duration directly -- clears any manual Start/Finish override and drives the schedule from here">` : (roomDays !== null ? roomDays + 'd' : '—'),
                 isOwner ? `<input type="date" value="${room.startDate||''}" onchange="updateMasterRoomDate('${job.id}','${phase.id}','${room.id}','startDate',this.value)" title="${room.startDate?'Custom date':'Auto-scheduled from phase -- set a date here to override'}">` : esc(roomStartD || '—'),
-                isOwner ? `<input type="date" value="${room.endDate||''}" onchange="updateMasterRoomDate('${job.id}','${phase.id}','${room.id}','endDate',this.value)" title="${room.endDate?'Custom date':'Auto-scheduled from phase -- set a date here to override'}">` : esc(roomEndD || '—'),
+                isOwner ? `<input type="date" value="${room.endDate||''}" onchange="updateMasterRoomDate('${job.id}','${phase.id}','${room.id}','endDate',this.value)" title="${room.endDate?'Custom date':'Auto-scheduled from phase -- set a date here to override'}">${(room.startDate||room.endDate)?`<button onclick="event.stopPropagation();clearMasterRoomDate('${job.id}','${phase.id}','${room.id}')" title="Clear override, go back to duration/dependency-based or auto-scheduling" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.7rem;flex-shrink:0;padding:0">✕</button>`:''}` : esc(roomEndD || '—'),
                 formatDependsOn(room.dependsOn), pct, pctColor(pct),
                 isOwner ? `openMasterRoomScheduleModal('${job.id}','${phase.id}','${room.id}')` : '',
                 isOwner ? 'Click to set dependencies' : ''
@@ -9101,7 +9157,7 @@ async function renderMasterSchedulePage() {
                     `<span style="padding-left:36px;font-weight:${isDone?'400':'700'};color:${isDone?'#10b981':tPct>0?'#60a5fa':'var(--muted)'}">${glyph}</span><span style="color:${isDone?'#10b981':'#64748b'};text-decoration:${isDone?'line-through':'none'}">${esc(task.name)}</span>`,
                     taskCanEdit ? `<input type="number" min="1" value="${task.durationDays || ''}" placeholder="—" onchange="updateMasterTaskDuration('${job.id}','${phase.id}','${room.id}','${task.id}',this.value)">` : (task.durationDays ? task.durationDays + 'd' : '—'),
                     taskCanEdit ? `<input type="date" value="${task.startDate||''}" onchange="updateMasterTaskDate('${job.id}','${phase.id}','${room.id}','${task.id}','startDate',this.value)">` : esc(task.startDate || '—'),
-                    taskCanEdit ? `<input type="date" value="${task.endDate||''}" onchange="updateMasterTaskDate('${job.id}','${phase.id}','${room.id}','${task.id}','endDate',this.value)">` : esc(task.endDate || '—'),
+                    taskCanEdit ? `<input type="date" value="${task.endDate||''}" onchange="updateMasterTaskDate('${job.id}','${phase.id}','${room.id}','${task.id}','endDate',this.value)">${(task.startDate||task.endDate)?`<button onclick="event.stopPropagation();clearMasterTaskDate('${job.id}','${phase.id}','${room.id}','${task.id}')" title="Clear this task's custom dates" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.7rem;flex-shrink:0;padding:0">✕</button>`:''}` : esc(task.endDate || '—'),
                     '', tPct, isDone ? '#10b981' : (tPct>0 ? '#60a5fa' : 'var(--muted)')
                   )}
                   <div style="flex:1;min-width:${totalWidth}px"></div>
