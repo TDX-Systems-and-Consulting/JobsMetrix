@@ -11248,6 +11248,20 @@ function conLoadJobs() {
     loadPOs();
     loadTeamCache();
     renderHomeDashboard();
+  }, (err) => {
+    // Real gap this closes: this listener had no error handler at
+    // all, so a permission-denied read (e.g. a team member's custom
+    // claims not yet synced on their current session — confirmed as
+    // a real, live case, not hypothetical, for a brand-new Field
+    // Technician who could log in but saw zero jobs anywhere, Time
+    // included, with nothing in the UI or console explaining why)
+    // failed completely silently: conJobs just stayed permanently
+    // empty, forever, with no visible error at all. Surfacing it
+    // now so this is diagnosable instead of a silent dead end.
+    console.error('conLoadJobs: jobs listener failed —', err.code, err.message);
+    if (err.code === 'permission-denied') {
+      alert('Could not load jobs — your account permissions may not be fully set up yet. Try signing out and back in. If this keeps happening, contact your Owner.');
+    }
   });
 }
 
