@@ -6216,7 +6216,18 @@ function openAddMaterialsFromJob(expenseId) {
   setVal('matDesc', existing?.desc);
   setVal('matAmount', existing?.amount);
   setVal('matDate', existing?.date || new Date().toISOString().split('T')[0]);
-  setVal('matNotes', existing?.notes);
+  // Auto-fill Notes with the job's address/number on a genuinely NEW
+  // purchase, so Travis doesn't have to type this by hand every time
+  // (real, direct request -- he was manually typing e.g. "7123 Beulah
+  // Ave Job 2026 587" on every single materials purchase before this).
+  // Never overwrites an existing purchase's real notes when editing.
+  if (existing) {
+    setVal('matNotes', existing.notes);
+  } else {
+    const job = conJobs.find(j => j.id === conCurrentJobId);
+    const autoNote = job ? [job.address, job.jobNumber].filter(Boolean).join(' ') : '';
+    setVal('matNotes', autoNote);
+  }
   document.getElementById('matPaidBy').value = existing?.paidBy || 'Debit Card';
   document.getElementById('deleteMatBtn').style.display = existing ? 'inline-flex' : 'none';
 
