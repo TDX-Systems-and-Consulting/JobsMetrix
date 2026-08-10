@@ -16600,7 +16600,7 @@ window.getCalEvents = function(dateISO) {
     const assigneeName = assigneeEmail ? assigneeEmail.split('@')[0] : 'All';
     events.push({
       type: 'event',
-      label: `${ev.meetLink?'🎥 ':''}${ev.time ? ev.time.slice(0,5)+' ' : ''}${esc(ev.title||'')}`,
+      label: `${ev.meetLink?'🎥 ':''}${ev.time ? formatTime12h(ev.time)+' ' : ''}${esc(ev.title||'')}`,
       sublabel: assigneeName,
       color,
       id: ev.id,
@@ -16649,6 +16649,19 @@ window.renderMonthView = function() {
   grid.innerHTML = cells;
 }
 
+// Converts a stored 24hr "HH:MM" string to a 12hr "H:MM AM/PM" display
+// string. Storage/values everywhere stay 24hr (matches how ev.time is
+// read/written/sorted elsewhere) -- this is purely a display formatter.
+function formatTime12h(timeStr) {
+  if (!timeStr) return '';
+  const [hStr, mStr] = timeStr.split(':');
+  const h = parseInt(hStr, 10);
+  if (isNaN(h)) return timeStr;
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  const ampm = h < 12 ? 'AM' : 'PM';
+  return h12 + ':' + (mStr || '00').padStart(2, '0') + ' ' + ampm;
+}
+
 // Generates <option> HTML for a 15-minute-increment time dropdown.
 // value stays 24hr "HH:MM" (matches how ev.time is already stored/read
 // everywhere else), display text is 12hr with AM/PM.
@@ -16657,9 +16670,7 @@ function generateTimeOptionsHtml(selected) {
   for (let h = 0; h < 24; h++) {
     for (let m = 0; m < 60; m += 15) {
       const val = String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
-      const h12 = h % 12 === 0 ? 12 : h % 12;
-      const ampm = h < 12 ? 'AM' : 'PM';
-      const label = h12 + ':' + String(m).padStart(2, '0') + ' ' + ampm;
+      const label = formatTime12h(val);
       html += `<option value="${val}"${val === selected ? ' selected' : ''}>${label}</option>`;
     }
   }
