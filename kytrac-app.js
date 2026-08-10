@@ -504,6 +504,13 @@ function ktNav(key, btn) {
   if(title) title.textContent = page.title;
   // Close mobile sidebar
   document.getElementById('ktSidebar')?.classList.remove('open');
+  // "+ New Job" was showing on every single page, including Time
+  // Tracking (clock in/out) where creating a job makes no sense --
+  // it was baked into the shared topbar shell rather than being
+  // page-aware. Hiding it on pages with no real connection to
+  // creating a job.
+  const newJobBtn = document.getElementById('ktNewJobBtn');
+  if (newJobBtn) newJobBtn.style.display = (key === 'time') ? 'none' : '';
   // Trigger renders
   if(key==='globalNotes') loadGlobalNotes();
   if(key==='globalMessages') loadGlobalMessages();
@@ -4233,14 +4240,18 @@ function toggleGanttFullscreen() {
 // status, name) so whatever tab is active -- Schedule most of all,
 // with its 100-task Gantt, but really any tab -- gets the vertical
 // room the fixed header (contact info, action buttons, financial bar)
-// was eating by default. Toggles three existing blocks via a shared
-// class rather than restructuring the DOM, so nothing about their own
-// layout changes -- they just hide/show as a unit.
+// was eating by default. Uses a CSS class rather than directly
+// setting el.style.display: jobFinBar's own inline style is
+// display:grid, and clearing a directly-set style.display property
+// doesn't restore that -- it falls through to the browser default
+// (block), collapsing the whole 7-column grid into one stacked
+// column. A class only adds/removes display:none !important on top,
+// leaving the original inline display value completely untouched.
 let _jobDetailHeaderCollapsed = false;
 function toggleJobDetailHeaderCollapse() {
   _jobDetailHeaderCollapsed = !_jobDetailHeaderCollapsed;
   document.querySelectorAll('#jobDetailModal .jd-collapsible').forEach(el => {
-    el.style.display = _jobDetailHeaderCollapsed ? 'none' : '';
+    el.classList.toggle('jd-collapsed-hide', _jobDetailHeaderCollapsed);
   });
   const btn = document.getElementById('jobDetailHeaderToggleBtn');
   if (btn) btn.textContent = _jobDetailHeaderCollapsed ? '▼ Expand' : '▲ Collapse';
