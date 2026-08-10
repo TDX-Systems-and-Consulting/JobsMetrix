@@ -1368,6 +1368,31 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
     const newAmtPaid = Math.round(((inv.amtPaid || 0) + amountPaidNow) * 100) / 100;
     const total = inv.total || 0;
 
+    // Real Stripe processing fee for THIS specific payment, not an
+    // estimated 2.9%+$0.30 -- pulled directly from the actual balance
+    // transaction, since the true fee varies by payment method (card
+    // vs. US bank account/ACH have very different rates) and can carry
+    // small per-transaction variance Stripe applies on its own side.
+    // Best-effort: if this lookup fails for any reason, the core
+    // payment recording below must still succeed -- a real customer
+    // payment being marked Paid is far more important than capturing
+    // the exact fee amount, same reasoning as the QBO sync below.
+    let stripeFee = null, stripeNetAmount = null;
+    try {
+      if (session.payment_intent) {
+        const pi = await stripe.paymentIntents.retrieve(session.payment_intent, {
+          expand: ['latest_charge.balance_transaction'],
+        });
+        const bt = pi.latest_charge?.balance_transaction;
+        if (bt) {
+          stripeFee = Math.round(bt.fee) / 100;
+          stripeNetAmount = Math.round(bt.net) / 100;
+        }
+      }
+    } catch (feeErr) {
+      console.error('stripeWebhook: could not retrieve real fee (payment still recorded):', feeErr.message);
+    }
+
     const update = {
       amtPaid: newAmtPaid,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1375,6 +1400,13 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
       stripeLastPaidAt: admin.firestore.FieldValue.serverTimestamp(),
       paymentMethod: 'Card / Online (Stripe)'
     };
+    if (stripeFee !== null) {
+      // Cumulative, matching amtPaid's own cumulative pattern, in case
+      // an invoice is ever paid across more than one Stripe session
+      // (e.g. a partial payment now, the remaining balance later).
+      update.stripeFeeTotal = Math.round(((inv.stripeFeeTotal || 0) + stripeFee) * 100) / 100;
+      update.stripeNetTotal = Math.round(((inv.stripeNetTotal || 0) + stripeNetAmount) * 100) / 100;
+    }
     if (newAmtPaid >= total) {
       update.status = 'Paid';
       update.paidDate = new Date().toISOString().split('T')[0];
@@ -1388,10 +1420,11 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
     // though Mark Paid entries showed up fine.
     try {
       const amtStr = amountPaidNow.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+      const feeNote = stripeFee !== null ? ` (Stripe fee: $${stripeFee.toFixed(2)}, net $${stripeNetAmount.toFixed(2)})` : '';
       await db.collection('companies').doc(companyId)
         .collection('jobs').doc(jobId).collection('logs').add({
           date: new Date().toISOString().split('T')[0],
-          notes: `Invoice ${inv.number || ''} paid — $${amtStr} (Stripe)`.replace('  ', ' ').trim(),
+          notes: `Invoice ${inv.number || ''} paid — $${amtStr} (Stripe)${feeNote}`.replace('  ', ' ').trim(),
           type: 'invoice_paid',
           userName: 'Stripe (auto)',
           companyId,

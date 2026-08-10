@@ -10797,15 +10797,44 @@ async function computeLockedBucketSplit(job) {
   const flex = remainAfterMOM * 0.20;
   const remainAfterFlex = remainAfterMOM - flex;
   const taxes = remainAfterFlex * 0.275;
-  const retainedEarnings = remainAfterFlex - taxes;
+  // Real Stripe processing fees (card ~2.9%+$0.30, ACH/US bank
+  // account meaningfully less) come straight out of Retained Earnings
+  // -- true profit is what's left after every real cost, and this is
+  // a real cost, just a variable one tied to how the customer chose
+  // to pay rather than something baked into the estimate up front.
+  // Pulled from the ACTUAL fee Stripe charged (stripeFeeTotal on each
+  // invoice, recorded by the webhook from the real balance transaction
+  // at the moment of payment), not an estimated rate -- exact, not
+  // approximated, and correctly reflects ACH's lower real cost too.
+  const stripeFees = await getJobStripeFeesTotal(job.id);
+  const retainedEarnings = remainAfterFlex - taxes - stripeFees;
   const r = v => Math.round(v * 100) / 100;
   return {
     revenue: r(revenue), materials: r(materials), labor: r(labor),
     overhead: r(overhead), marketing: r(marketing), flex: r(flex),
-    taxes: r(taxes), retainedEarnings: r(retainedEarnings),
+    taxes: r(taxes), stripeFees: r(stripeFees), retainedEarnings: r(retainedEarnings),
   };
 }
 window.computeLockedBucketSplit = computeLockedBucketSplit;
+
+// Sums the real, actual Stripe processing fee across every invoice on
+// this job -- stripeFeeTotal is written by the webhook from the real
+// balance transaction at the moment each payment lands, so this is
+// exact, not an estimated 2.9%+$0.30 (which would also be wrong for
+// any portion paid via ACH/US bank account, a meaningfully lower real
+// rate than card).
+async function getJobStripeFeesTotal(jobId) {
+  try {
+    const snap = await coll('jobs').doc(jobId).collection('invoices').get();
+    let total = 0;
+    snap.forEach(d => { total += (d.data().stripeFeeTotal || 0); });
+    return total;
+  } catch (e) {
+    console.warn('Could not load Stripe fees for job', jobId, ':', e.message);
+    return 0;
+  }
+}
+window.getJobStripeFeesTotal = getJobStripeFeesTotal;
 
 // Fires automatically the moment a payment is marked received (see
 // commitMarkPaid below) -- shows the five buckets Travis actually
