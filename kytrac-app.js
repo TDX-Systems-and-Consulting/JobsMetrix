@@ -27353,6 +27353,12 @@ function loadEpicTree(jobId) {
               // task above" and "outdent" actually reorder.
               parentTaskId: t.parentTaskId || null,
               order: (t.order != null) ? t.order : idx,
+              // Needed for customerSafeLabel/subgroupGradeLabel to
+              // show the "-- Low/Medium/High Grade" suffix on room
+              // names (matching the printed Punch List) -- without
+              // this, every room's grade suffix silently comes back
+              // blank since loadEpicTree was never including it.
+              bundleTier: t.bundleTier || null,
             });
           });
 
