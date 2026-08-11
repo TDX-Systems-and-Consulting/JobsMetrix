@@ -12417,7 +12417,7 @@ function buildSubAgreementText(sub, job, co) {
     '',
     `This Subcontractor Agreement ("Agreement") is entered into as of the Agreement Date above by and between ${companyName} ("Company") and ${subName} ("Subcontractor").`,
     '',
-    `1. SCOPE OF WORK. Subcontractor agrees to furnish all labor, materials (unless otherwise agreed in writing), equipment, and supervision necessary to perform ${trade} work at ${jobAddress}, in accordance with the agreed scope for this project.`,
+    `1. SCOPE OF WORK. Subcontractor agrees to furnish all labor, equipment, and supervision necessary to perform ${trade} work at ${jobAddress}, in accordance with the agreed scope for this project. Company shall furnish and pay for all materials required for the Work, unless otherwise agreed in writing.`,
     '',
     contractPriceClause,
     '',
@@ -12453,6 +12453,7 @@ async function sendSubAgreement(jobId, subId) {
     if (subDocSnap.exists) sub = { id: subDocSnap.id, ...subDocSnap.data() };
   } catch(e) {}
   if (!sub) { alert('Subcontractor record not found.'); return; }
+  if (!sub.email) { alert('This subcontractor has no email on file \u2014 add one under Contractors before sending.'); return; }
 
   const agreementText = buildSubAgreementText(sub, job, companyProfile);
   const hash = await sha256(agreementText);
@@ -12472,30 +12473,27 @@ async function sendSubAgreement(jobId, subId) {
     createdBy: conCurrentUser?.email || '',
   };
 
+  let agreementId;
   try {
     const ref = await coll('jobs').doc(jobId).collection('subAgreements').add({
       ...agreementData,
       companyId: currentCompanyId || null,
     });
-    const agreementId = ref.id;
+    agreementId = ref.id;
+  } catch(e) {
+    alert('Error creating subcontractor agreement: ' + e.message);
+    return;
+  }
 
-    // Reuse existing portal token for this job if one exists (same
-    // pattern as sendLienWaiver / sendProposalViaEmail).
-    let token;
-    try {
-      const snap = await conDb.collection('portalTokens')
-        .where('jobId','==',jobId).limit(1).get();
-      if (!snap.empty) {
-        token = snap.docs[0].id;
-      } else {
-        token = jobId + '-hash-' + Math.random().toString(36).slice(2,10);
-        await conDb.collection('portalTokens').doc(token).set({
-          jobId, companyId: currentCompanyId || null,
-          created: Date.now(), createdBy: conCurrentUser?.email || '',
-          expires: null, shareInvoices: true
-        });
-      }
-    } catch(tokenErr) {
+  // Reuse existing portal token for this job if one exists (same
+  // pattern as sendLienWaiver / sendProposalViaEmail).
+  let token;
+  try {
+    const snap = await conDb.collection('portalTokens')
+      .where('jobId','==',jobId).limit(1).get();
+    if (!snap.empty) {
+      token = snap.docs[0].id;
+    } else {
       token = jobId + '-hash-' + Math.random().toString(36).slice(2,10);
       await conDb.collection('portalTokens').doc(token).set({
         jobId, companyId: currentCompanyId || null,
@@ -12503,21 +12501,81 @@ async function sendSubAgreement(jobId, subId) {
         expires: null, shareInvoices: true
       });
     }
-
-    const portalUrl = `${location.origin}${location.pathname}?portal=${token}&subagreement=${agreementId}`;
-
-    showSubAgreementSendDialog({
-      agreementId, jobId, portalUrl,
-      subName: sub.name || 'Subcontractor',
-      subEmail: sub.email || '',
-      trade: sub.trade || '',
-      amount: sub.amount || sub.contract || 0,
+  } catch(tokenErr) {
+    token = jobId + '-hash-' + Math.random().toString(36).slice(2,10);
+    await conDb.collection('portalTokens').doc(token).set({
+      jobId, companyId: currentCompanyId || null,
+      created: Date.now(), createdBy: conCurrentUser?.email || '',
+      expires: null, shareInvoices: true
     });
-  } catch(e) {
-    alert('Error creating subcontractor agreement: ' + e.message);
   }
+
+  const portalUrl = `${location.origin}${location.pathname}?portal=${token}&subagreement=${agreementId}`;
+  const subject = 'Subcontractor Agreement \u2014 Signature Required';
+  const bodyHtml = `
+    <h2 style="color:#d97706;margin-top:0">Subcontractor Agreement</h2>
+    <p>Hi ${esc(sub.name)},</p>
+    <p>Please review and sign the subcontractor agreement for ${esc(job.name || 'this project')}.</p>
+    <div style="text-align:center;margin:28px 0">
+      <a href="${portalUrl}" style="background:#d97706;color:#fff;padding:14px 32px;border-radius:10px;text-decoration:none;font-weight:700;font-size:1rem;display:inline-block">
+        \u270d\ufe0f Review &amp; Sign Agreement
+      </a>
+    </div>
+    <p style="font-size:.85rem;color:#666">Or copy this link into your browser:<br>
+      <a href="${portalUrl}" style="color:#d97706;word-break:break-all">${portalUrl}</a>
+    </p>`;
+  const bodyText = `Hi ${sub.name},\n\nPlease review and sign the subcontractor agreement for ${job.name || 'this project'}.\n\n${portalUrl}`;
+
+  // Same preview-before-send pattern as invoices/proposals: render the
+  // actual agreement document into the shared modal's iframe so nothing
+  // goes out sight-unseen.
+  const docHtml = buildSubAgreementPreviewHtml(agreementText, sub.name || 'Subcontractor', job.name || '');
+  document.getElementById('emailPreviewProposalFrame').srcdoc = docHtml;
+
+  _pendingSubAgreementEmail = { agreementId, jobId, to: sub.email, toName: sub.name, subject, bodyHtml, bodyText };
+  document.getElementById('emailPreviewTo').textContent = sub.email + (sub.name ? ' (' + sub.name + ')' : '');
+  document.getElementById('emailPreviewSubject').textContent = subject;
+  document.getElementById('emailPreviewBody').innerHTML = bodyHtml;
+
+  // Shared modal's Confirm button is repointed per document type,
+  // same pattern used for invoices -- doesn't touch that markup.
+  const confirmBtn = document.getElementById('emailPreviewConfirmBtn');
+  if (confirmBtn) confirmBtn.onclick = confirmSendSubAgreementEmail;
+
+  kOpen('emailPreviewModal');
 }
 window.sendSubAgreement = sendSubAgreement;
+
+function buildSubAgreementPreviewHtml(agreementText, subName, jobName) {
+  return '<html><body style="font-family:Arial;padding:24px;max-width:720px;margin:auto;color:#222">' +
+    '<h2 style="color:#d97706;margin-top:0">Subcontractor Agreement</h2>' +
+    '<p style="color:#666;font-size:.9rem">' + esc(subName) + (jobName ? ' &middot; ' + esc(jobName) : '') + '</p>' +
+    '<pre style="white-space:pre-wrap;font-family:Arial;font-size:.92rem;line-height:1.6;border:1px solid #eee;border-radius:8px;padding:20px;background:#fafafa">' +
+    esc(agreementText) +
+    '</pre></body></html>';
+}
+
+let _pendingSubAgreementEmail = null;
+
+async function confirmSendSubAgreementEmail() {
+  if (!_pendingSubAgreementEmail) return;
+  const { to, toName, subject, bodyHtml, bodyText, jobId } = _pendingSubAgreementEmail;
+  const confirmBtn = document.getElementById('emailPreviewConfirmBtn');
+  const originalText = confirmBtn ? confirmBtn.textContent : '';
+  try {
+    if (!conFunctions) throw new Error('Functions not available');
+    const sendEmail = conFunctions.httpsCallable('sendJobspanEmail');
+    if (confirmBtn) { confirmBtn.textContent = 'Sending\u2026'; confirmBtn.disabled = true; }
+    await sendEmail({ to, toName, subject, bodyHtml, bodyText, docType: 'subAgreement', jobId });
+    kClose('emailPreviewModal');
+    alert('Subcontractor agreement sent to ' + to + '.');
+  } catch(e) {
+    alert('Error sending email: ' + e.message);
+  } finally {
+    if (confirmBtn) { confirmBtn.textContent = originalText || 'Confirm & Send'; confirmBtn.disabled = false; }
+  }
+}
+window.confirmSendSubAgreementEmail = confirmSendSubAgreementEmail;
 
 function showSubAgreementSendDialog({ agreementId, jobId, portalUrl, subName, subEmail, trade, amount }) {
   const existing = document.getElementById('subAgreementSendModal');
@@ -16593,6 +16651,13 @@ let _portalJobName = null;
 let _portalColl = null;
 let _portalLatestProposal = null;
 let _portalToken = null;
+// True only when the current portal load is a subcontractor agreement
+// link (?subagreement=...), not a customer link. Gates the customer's
+// pricing, payment schedule, invoices, activity log, and messages out
+// of what a subcontractor's link can see -- checked in loadPortalJob()
+// (what gets loaded at all) and renderPortalProposal() (what gets shown
+// from the shared room/task list vs. the customer-only financial parts).
+let _portalSubAgreementMode = false;
 
 function loadPortalJob(db, jobId, tokenData, token) {
   _portalToken = token || null;
@@ -16607,6 +16672,11 @@ function loadPortalJob(db, jobId, tokenData, token) {
     return db.collection(name); // fallback for old tokens
   }
   _portalColl = portalColl;
+
+  // Subcontractor Agreement links are a different audience than the
+  // customer -- see the flag's own comment above for what this gates.
+  const urlSubAgreementId = new URLSearchParams(location.search).get('subagreement');
+  _portalSubAgreementMode = !!urlSubAgreementId;
 
   // Load company profile for branding
   portalColl('settings').doc('company').get()
@@ -16632,42 +16702,51 @@ function loadPortalJob(db, jobId, tokenData, token) {
           renderPortalPhases(phases);
         }).catch(() => renderPortalPhases([]));
 
-      // Load shared daily logs (last 20)
-      portalColl('jobs').doc(jobId).collection('logs')
-        .orderBy('date','desc').limit(20).get()
-        .then(snap => {
-          const logs = [];
-          snap.forEach(d => logs.push({ id: d.id, ...d.data() }));
-          renderPortalLogs(logs);
-        }).catch(() => renderPortalLogs([]));
-
-      // Load invoices if sharing enabled
-      if (tokenData.shareInvoices !== false) {
-        portalColl('jobs').doc(jobId).collection('invoices')
-          .orderBy('date','desc').get()
+      // Daily logs, invoices, change orders, and messages are all
+      // customer-only -- never loaded at all for a subcontractor link,
+      // not just hidden after the fact.
+      if (!_portalSubAgreementMode) {
+        // Load shared daily logs (last 20)
+        portalColl('jobs').doc(jobId).collection('logs')
+          .orderBy('date','desc').limit(20).get()
           .then(snap => {
-            const invs = [];
-            snap.forEach(d => invs.push({ id: d.id, ...d.data() }));
-            renderPortalInvoices(invs, jobId);
+            const logs = [];
+            snap.forEach(d => logs.push({ id: d.id, ...d.data() }));
+            renderPortalLogs(logs);
+          }).catch(() => renderPortalLogs([]));
+
+        // Load invoices if sharing enabled
+        if (tokenData.shareInvoices !== false) {
+          portalColl('jobs').doc(jobId).collection('invoices')
+            .orderBy('date','desc').get()
+            .then(snap => {
+              const invs = [];
+              snap.forEach(d => invs.push({ id: d.id, ...d.data() }));
+              renderPortalInvoices(invs, jobId);
+            }).catch(() => {});
+        }
+
+        // Load approved change orders
+        portalColl('jobs').doc(jobId).collection('changeorders')
+          .where('status','==','Approved').get()
+          .then(snap => {
+            const cos = [];
+            snap.forEach(d => cos.push({ id: d.id, ...d.data() }));
+            renderPortalCOs(cos);
           }).catch(() => {});
+
+        // Load customer's own message thread (portal only ever shows
+        // customer-originated messages, never internal team chatter -
+        // internal replies aren't customer-visible yet, a known v1 gap)
+        loadPortalMessages(portalColl, jobId);
       }
 
-      // Load approved change orders
-      portalColl('jobs').doc(jobId).collection('changeorders')
-        .where('status','==','Approved').get()
-        .then(snap => {
-          const cos = [];
-          snap.forEach(d => cos.push({ id: d.id, ...d.data() }));
-          renderPortalCOs(cos);
-        }).catch(() => {});
-
-      // Load customer's own message thread (portal only ever shows
-      // customer-originated messages, never internal team chatter -
-      // internal replies aren't customer-visible yet, a known v1 gap)
-      loadPortalMessages(portalColl, jobId);
-
       // Load the latest Proposal version (Draft versions are never shown
-      // to the customer — only Pending/Approved/Declined are customer-facing)
+      // to the customer — only Pending/Approved/Declined are customer-facing).
+      // Still loaded in sub-agreement mode -- it's the source of the
+      // room/task scope checklist a subcontractor should see; the
+      // customer-only pricing parts are suppressed inside
+      // renderPortalProposal() itself via _portalSubAgreementMode.
       portalColl('jobs').doc(jobId).collection('proposals')
         .orderBy('version', 'desc').limit(1).get()
         .then(snap => {
@@ -16684,7 +16763,6 @@ function loadPortalJob(db, jobId, tokenData, token) {
       }
 
       // Load subcontractor agreement if ?subagreement= param is present
-      const urlSubAgreementId = new URLSearchParams(location.search).get('subagreement');
       if (urlSubAgreementId) {
         setTimeout(() => renderPortalSubAgreement(urlSubAgreementId), 400);
       }
@@ -17446,6 +17524,7 @@ function renderPortalProposal(prop, jobId) {
     heading.textContent = '📄 Proposal — Awaiting Your Signature';
     body.innerHTML = `
       ${roomsHtml}
+      ${_portalSubAgreementMode ? '' : `
       <div class="portal-prop-total">
         <span style="font-weight:800;color:#eaf0fb">Total Project Investment</span>
         <span style="font-weight:900;font-size:1.2rem;color:#fbbf24">$${data.grandTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
@@ -17461,12 +17540,13 @@ function renderPortalProposal(prop, jobId) {
           <button id="portalSignApproveBtn" class="btn-amber" style="padding:8px 18px;font-size:.85rem" onclick="submitPortalSignature('${prop.id}','${jobId}','approved')">✓ Approve &amp; Sign</button>
           <button id="portalSignDeclineBtn" class="btn" style="padding:8px 18px;font-size:.85rem;color:#ef5350" onclick="submitPortalSignature('${prop.id}','${jobId}','declined')">Decline</button>
         </div>
-      </div>`;
-    initPortalSignaturePad();
+      </div>`}`;
+    if (!_portalSubAgreementMode) initPortalSignaturePad();
   } else if (prop.status === 'approved') {
     heading.textContent = '✅ Proposal — Approved';
     body.innerHTML = `
       ${roomsHtml}
+      ${_portalSubAgreementMode ? '' : `
       <div class="portal-prop-total">
         <span style="font-weight:800;color:#eaf0fb">Total Project Investment</span>
         <span style="font-weight:900;font-size:1.2rem;color:#fbbf24">$${data.grandTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
@@ -17475,7 +17555,7 @@ function renderPortalProposal(prop, jobId) {
       <div style="margin-top:14px;font-size:.82rem;color:#1dbb87">
         Signed by ${esc(prop.signedByName || 'customer')}${prop.respondedAt?.toDate ? ' on ' + prop.respondedAt.toDate().toLocaleDateString() : ''}.
         ${prop.signatureDataUrl ? `<br><img src="${prop.signatureDataUrl}" style="height:50px;margin-top:8px;background:#fff;border-radius:4px;padding:4px">` : ''}
-      </div>`;
+      </div>`}`;
   } else if (prop.status === 'declined') {
     heading.textContent = 'Proposal — Declined';
     body.innerHTML = `<div style="font-size:.86rem;color:var(--muted)">
