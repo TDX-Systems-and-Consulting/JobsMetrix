@@ -8075,10 +8075,13 @@ function populateSubModalJobInfo() {
 function populateSubVendorSelect() {
   const sel = document.getElementById('subNameSelect');
   if (!sel) return;
-  const vendors = [...allVendors].sort((a,b) => (a.name||'').localeCompare(b.name||''));
-  sel.innerHTML = '<option value="">Select from Vendor Directory\u2026</option>' +
+  // Contractors (coll('contractors')), NOT allVendors -- Contractors is
+  // the real subcontractor directory (trade, burdened rate, crew links);
+  // Vendors is a separate general supplier list.
+  const contractors = [...(allContractors || [])].sort((a,b) => (a.name||'').localeCompare(b.name||''));
+  sel.innerHTML = '<option value="">Select from Contractors\u2026</option>' +
     '<option value="__new__">+ Add new (not in directory)</option>' +
-    vendors.map(v => `<option value="${v.id}">${esc(v.name)}${v.trade ? ' \u2014 ' + esc(v.trade) : ''}</option>`).join('');
+    contractors.map(c => `<option value="${c.id}">${esc(c.name)}${c.trade ? ' \u2014 ' + esc(c.trade) : ''}</option>`).join('');
 }
 
 function handleSubNameSelectChange() {
