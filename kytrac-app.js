@@ -3875,17 +3875,26 @@ function calcJobPct() {
 // one-way hide.
 let _ganttShowExcluded = false;
 
+// Matches the printed Punch List exactly by reusing the SAME function
+// that generates it (punchListScopeTasks) rather than a separate,
+// possibly-drifting reimplementation. Scope text -- not cost-tagged
+// catalog items -- is the source of truth for what's trackable here:
+// a room's real completion is "did we do what the punch list says,"
+// not "which line items are tagged Labor vs Materials" (those two
+// only usually agree). Falls back to real catalog tasks only for the
+// rare room with zero scope notes AND zero item notes -- otherwise
+// there'd be nothing to check off at all.
 function getDisplayTasks(room, tasks) {
   let dt;
-  if (!tasks.length && room.scopeNotes) {
+  const scopeLines = punchListScopeTasks({ scopeNotes: room.scopeNotes, items: tasks });
+  if (scopeLines.length) {
     const statusMap = room.scopeNoteStatus || {};
-    dt = room.scopeNotes.split('\n')
-      .map(l => l.trim()).filter(Boolean)
-      .map((line, i) => ({
-        id: `scope_${room.id}_${i}`,
-        name: line,
-        taskStatus: statusMap[`scope_${room.id}_${i}`] || 'todo',
-      }));
+    dt = scopeLines.map((line, i) => ({
+      id: `scope_${room.id}_${i}`,
+      name: line,
+      taskStatus: statusMap[`scope_${room.id}_${i}`] || 'todo',
+      fromScopeNotes: true,
+    }));
   } else {
     dt = tasks;
   }
@@ -4577,27 +4586,31 @@ async function clearAllJobDates() {
 }
 window.clearAllJobDates = clearAllJobDates;
 
-// Bulk-excludes every task under every room in a job from the
-// schedule view, leaving only room-level rows -- the same unit the
-// printed Punch List already tracks (customerSafeLabel operates on
-// the room/subgroup, not individual tasks). Nothing is deleted:
-// excludeFromSchedule just hides a task from Gantt/Master Schedule
-// while it stays fully intact in the Estimate, fully reversible via
-// "Show excluded" -> Restore, same as removing one task by hand --
-// this just does it for every task in the job at once instead of
-// one at a time.
+// Bulk-excludes MATERIAL/PRODUCT tasks from the schedule (leaving
+// LABOR tasks visible and trackable) -- not a blanket "hide
+// everything under a room" like the first version of this. Travis's
+// exact framing: painter's tape doesn't change a room's completion
+// percent, so it shouldn't be a checkbox on the Gantt at all; the
+// labor line for painting the room does represent real progress and
+// stays. Reuses isLaborItem() unchanged -- the same rule financial
+// reporting already uses to split Materials vs Labor -- rather than
+// inventing a second, possibly-inconsistent definition of "labor"
+// just for scheduling. Nothing is deleted: excludeFromSchedule just
+// hides a task from Gantt/Master Schedule while it stays fully intact
+// in the Estimate, fully reversible via "Show excluded" -> Restore.
 async function simplifySchedule(jobId) {
   if (!jobId || !conDb) return;
   try {
     const tree = await loadEpicTree(jobId);
-    let taskCount = 0, roomCount = 0;
+    let materialCount = 0, laborCount = 0, roomCount = 0;
     const writes = [];
     tree.forEach(phase => {
       (phase.features || []).forEach(room => {
         roomCount++;
         (room.tasks || []).forEach(task => {
+          if (isLaborItem(task)) { laborCount++; return; } // real trackable work -- stays visible
           if (task.excludeFromSchedule) return; // already excluded, skip
-          taskCount++;
+          materialCount++;
           writes.push(
             coll('jobs').doc(jobId)
               .collection('estimateGroups').doc(phase.id)
@@ -4609,17 +4622,17 @@ async function simplifySchedule(jobId) {
       });
     });
 
-    if (!taskCount) {
-      alert(`Checked ${roomCount} room(s) -- every task is already excluded. Schedule is already simplified to room-level tracking.`);
+    if (!materialCount) {
+      alert(`Checked ${roomCount} room(s), ${laborCount} labor task(s) -- every material/product line is already hidden. Only labor stays on the schedule.`);
       return;
     }
 
-    if (!confirm(`Simplify this job's schedule?\n\nHides ${taskCount} individual material/labor task(s) across ${roomCount} room(s), leaving only room-level rows to track -- matching the printed Punch List. Nothing is deleted; every hidden task stays fully intact in the Estimate and can be brought back anytime with "Show excluded".`)) return;
+    if (!confirm(`Simplify this job's schedule?\n\nHides ${materialCount} material/product task(s) (tape, screws, fixtures, etc. -- things that don't represent progress) across ${roomCount} room(s). Keeps ${laborCount} labor task(s) visible and trackable, since those DO represent real work. Nothing is deleted; every hidden task stays fully intact in the Estimate and can be brought back anytime with "Show excluded".`)) return;
 
     await Promise.all(writes);
     if (_ganttJobId === jobId) renderGanttFromCache();
     refreshMasterIfActive();
-    alert(`Simplified -- hid ${taskCount} task(s) across ${roomCount} room(s). Room-level rows are now the trackable schedule.`);
+    alert(`Simplified -- hid ${materialCount} material/product task(s) across ${roomCount} room(s). ${laborCount} labor task(s) stayed visible and trackable.`);
   } catch(e) {
     alert('Could not simplify schedule: ' + e.message);
   }
@@ -8041,8 +8054,67 @@ function openAddSubModal() {
   document.getElementById('subAmount').value = '';
   document.getElementById('subInsExp').value = '';
   document.getElementById('deleteSubBtn').style.display = 'none';
+  populateSubModalJobInfo();
+  populateSubVendorSelect();
+  const sel = document.getElementById('subNameSelect');
+  if (sel) sel.value = '';
+  const nameInput = document.getElementById('subName');
+  if (nameInput) nameInput.style.display = 'none';
   kOpen('addSubModal');
 }
+
+// ── Job info + Vendor Directory dropdown for the Add/Edit Sub modal ──
+function populateSubModalJobInfo() {
+  const job = conJobs.find(j => j.id === conCurrentJobId);
+  const nameEl = document.getElementById('subModalJobName');
+  const addrEl = document.getElementById('subModalJobAddress');
+  if (nameEl) nameEl.textContent = job?.name || 'Job not found';
+  if (addrEl) addrEl.textContent = job?.address || '';
+}
+
+function populateSubVendorSelect() {
+  const sel = document.getElementById('subNameSelect');
+  if (!sel) return;
+  const vendors = [...allVendors].sort((a,b) => (a.name||'').localeCompare(b.name||''));
+  sel.innerHTML = '<option value="">Select from Vendor Directory\u2026</option>' +
+    '<option value="__new__">+ Add new (not in directory)</option>' +
+    vendors.map(v => `<option value="${v.id}">${esc(v.name)}${v.trade ? ' \u2014 ' + esc(v.trade) : ''}</option>`).join('');
+}
+
+function handleSubNameSelectChange() {
+  const sel = document.getElementById('subNameSelect');
+  const nameInput = document.getElementById('subName');
+  if (!sel || !nameInput) return;
+  const val = sel.value;
+  if (val === '__new__') {
+    nameInput.style.display = '';
+    nameInput.value = '';
+    nameInput.focus();
+  } else if (val === '') {
+    nameInput.style.display = 'none';
+    nameInput.value = '';
+  } else {
+    // An existing vendor was chosen -- auto-fill name, trade, contact,
+    // phone, email from the directory record so nothing has to be
+    // retyped for data that already exists.
+    nameInput.style.display = 'none';
+    const contractor = (allContractors || []).find(c => c.id === val);
+    if (contractor) {
+      nameInput.value = contractor.name || '';
+      const tradeEl = document.getElementById('subTrade');
+      const contactEl = document.getElementById('subContact');
+      const phoneEl = document.getElementById('subPhone');
+      const emailEl = document.getElementById('subEmail');
+      if (tradeEl && contractor.trade) tradeEl.value = contractor.trade;
+      if (contactEl && contractor.contact) contactEl.value = contractor.contact;
+      if (phoneEl && contractor.phone) phoneEl.value = contractor.phone;
+      if (emailEl && contractor.email) emailEl.value = contractor.email;
+    }
+  }
+}
+window.handleSubNameSelectChange = handleSubNameSelectChange;
+window.populateSubVendorSelect = populateSubVendorSelect;
+window.populateSubModalJobInfo = populateSubModalJobInfo;
 
 function openEditSub(id) {
   const s = conSubs.find(x => x.id === id);
@@ -8060,6 +8132,23 @@ function openEditSub(id) {
   document.getElementById('subInsExp').value = s.insExp || '';
   document.getElementById('subNotes').value = s.notes || '';
   document.getElementById('deleteSubBtn').style.display = 'inline-flex';
+  populateSubModalJobInfo();
+  populateSubVendorSelect();
+  // If this sub's name matches a vendor in the directory exactly, show
+  // that as the selected dropdown option; otherwise fall back to the
+  // free-text "+ Add new" input pre-filled with the existing name, so
+  // editing a sub that predates the vendor directory (or was a genuine
+  // one-off) doesn't lose or mismatch its name.
+  const sel = document.getElementById('subNameSelect');
+  const nameInput = document.getElementById('subName');
+  const matchingContractor = (allContractors || []).find(c => c.name === s.name);
+  if (sel && matchingContractor) {
+    sel.value = matchingContractor.id;
+    if (nameInput) nameInput.style.display = 'none';
+  } else if (sel) {
+    sel.value = '__new__';
+    if (nameInput) nameInput.style.display = '';
+  }
   kOpen('addSubModal');
 }
 
@@ -9317,7 +9406,7 @@ async function renderMasterSchedulePage() {
 
     rowsHtml += `<div data-master-row="job" data-job-id="${job.id}" class="gantt-left-row phase-row" style="min-height:${ROW_H}px;background:rgba(245,158,11,.06)" onclick="toggleMasterRow('job','${job.id}')">
       ${sixCols(
-        `<span id="masterArrowJob_${job.id}" style="flex-shrink:0">${jobCollapsed?'▶':'▼'}</span><span class="gantt-task-name-text" style="color:var(--amber)" title="${esc(job.name)}">🏠 ${esc(job.name)}</span>${isOwner?`<button onclick="event.stopPropagation();clearMasterAllJobDates('${job.id}')" title="Clear ALL dates on this job -- job, every phase, room, and task" style="background:none;border:1px dashed rgba(248,113,113,.4);border-radius:4px;color:#f87171;cursor:pointer;font-size:.62rem;margin-left:8px;padding:0 5px;flex-shrink:0">🗑 Clear All</button><button onclick="event.stopPropagation();simplifySchedule('${job.id}')" title="Hides individual material/labor tasks, leaving only room-level rows to track -- matching the printed Punch List" style="background:none;border:1px dashed rgba(110,145,210,.4);border-radius:4px;color:var(--muted);cursor:pointer;font-size:.62rem;margin-left:4px;padding:0 5px;flex-shrink:0">📋 Simplify</button>`:''}`,
+        `<span id="masterArrowJob_${job.id}" style="flex-shrink:0">${jobCollapsed?'▶':'▼'}</span><span class="gantt-task-name-text" style="color:var(--amber)" title="${esc(job.name)}">🏠 ${esc(job.name)}</span>${isOwner?`<button onclick="event.stopPropagation();clearMasterAllJobDates('${job.id}')" title="Clear ALL dates on this job -- job, every phase, room, and task" style="background:none;border:1px dashed rgba(248,113,113,.4);border-radius:4px;color:#f87171;cursor:pointer;font-size:.62rem;margin-left:8px;padding:0 5px;flex-shrink:0">🗑 Clear All</button><button onclick="event.stopPropagation();simplifySchedule('${job.id}')" title="Hides material/product tasks (tape, screws, fixtures) that don't represent progress. Keeps labor tasks visible and trackable, since those DO drive completion percent." style="background:none;border:1px dashed rgba(110,145,210,.4);border-radius:4px;color:var(--muted);cursor:pointer;font-size:.62rem;margin-left:4px;padding:0 5px;flex-shrink:0">📋 Simplify</button>`:''}`,
         jobDays !== null ? jobDays + 'd' : null,
         isOwner ? `<input type="date" value="${job.startDate||''}" onchange="updateMasterJobDate('${job.id}','startDate',this.value)">` : esc(job.startDate || '—'),
         isOwner ? `<input type="date" value="${job.endDate||''}" onchange="updateMasterJobDate('${job.id}','endDate',this.value)">` : esc(job.endDate || '—'),
@@ -27353,6 +27442,11 @@ function loadEpicTree(jobId) {
               // task above" and "outdent" actually reorder.
               parentTaskId: t.parentTaskId || null,
               order: (t.order != null) ? t.order : idx,
+              // Needed by punchListScopeTasks (reads item.notes) so
+              // getDisplayTasks can match the printed Punch List
+              // exactly -- same silent-gap pattern as bundleTier
+              // above, loadEpicTree was never including this either.
+              notes: t.notes || '',
               // Needed for customerSafeLabel/subgroupGradeLabel to
               // show the "-- Low/Medium/High Grade" suffix on room
               // names (matching the printed Punch List) -- without

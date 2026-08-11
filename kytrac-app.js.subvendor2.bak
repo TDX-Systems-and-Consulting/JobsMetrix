@@ -8085,17 +8085,17 @@ function handleSubNameSelectChange() {
     // phone, email from the directory record so nothing has to be
     // retyped for data that already exists.
     nameInput.style.display = 'none';
-    const contractor = (allContractors || []).find(c => c.id === val);
-    if (contractor) {
-      nameInput.value = contractor.name || '';
+    const vendor = allVendors.find(v => v.id === val);
+    if (vendor) {
+      nameInput.value = vendor.name || '';
       const tradeEl = document.getElementById('subTrade');
       const contactEl = document.getElementById('subContact');
       const phoneEl = document.getElementById('subPhone');
       const emailEl = document.getElementById('subEmail');
-      if (tradeEl && contractor.trade) tradeEl.value = contractor.trade;
-      if (contactEl && contractor.contact) contactEl.value = contractor.contact;
-      if (phoneEl && contractor.phone) phoneEl.value = contractor.phone;
-      if (emailEl && contractor.email) emailEl.value = contractor.email;
+      if (tradeEl && vendor.trade) tradeEl.value = vendor.trade;
+      if (contactEl && vendor.contact) contactEl.value = vendor.contact;
+      if (phoneEl && vendor.phone) phoneEl.value = vendor.phone;
+      if (emailEl && vendor.email) emailEl.value = vendor.email;
     }
   }
 }
@@ -8128,9 +8128,9 @@ function openEditSub(id) {
   // one-off) doesn't lose or mismatch its name.
   const sel = document.getElementById('subNameSelect');
   const nameInput = document.getElementById('subName');
-  const matchingContractor = (allContractors || []).find(c => c.name === s.name);
-  if (sel && matchingContractor) {
-    sel.value = matchingContractor.id;
+  const matchingVendor = allVendors.find(v => v.name === s.name);
+  if (sel && matchingVendor) {
+    sel.value = matchingVendor.id;
     if (nameInput) nameInput.style.display = 'none';
   } else if (sel) {
     sel.value = '__new__';

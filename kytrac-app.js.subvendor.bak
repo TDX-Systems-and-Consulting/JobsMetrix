@@ -8041,67 +8041,8 @@ function openAddSubModal() {
   document.getElementById('subAmount').value = '';
   document.getElementById('subInsExp').value = '';
   document.getElementById('deleteSubBtn').style.display = 'none';
-  populateSubModalJobInfo();
-  populateSubVendorSelect();
-  const sel = document.getElementById('subNameSelect');
-  if (sel) sel.value = '';
-  const nameInput = document.getElementById('subName');
-  if (nameInput) nameInput.style.display = 'none';
   kOpen('addSubModal');
 }
-
-// ── Job info + Vendor Directory dropdown for the Add/Edit Sub modal ──
-function populateSubModalJobInfo() {
-  const job = conJobs.find(j => j.id === conCurrentJobId);
-  const nameEl = document.getElementById('subModalJobName');
-  const addrEl = document.getElementById('subModalJobAddress');
-  if (nameEl) nameEl.textContent = job?.name || 'Job not found';
-  if (addrEl) addrEl.textContent = job?.address || '';
-}
-
-function populateSubVendorSelect() {
-  const sel = document.getElementById('subNameSelect');
-  if (!sel) return;
-  const vendors = [...allVendors].sort((a,b) => (a.name||'').localeCompare(b.name||''));
-  sel.innerHTML = '<option value="">Select from Vendor Directory\u2026</option>' +
-    '<option value="__new__">+ Add new (not in directory)</option>' +
-    vendors.map(v => `<option value="${v.id}">${esc(v.name)}${v.trade ? ' \u2014 ' + esc(v.trade) : ''}</option>`).join('');
-}
-
-function handleSubNameSelectChange() {
-  const sel = document.getElementById('subNameSelect');
-  const nameInput = document.getElementById('subName');
-  if (!sel || !nameInput) return;
-  const val = sel.value;
-  if (val === '__new__') {
-    nameInput.style.display = '';
-    nameInput.value = '';
-    nameInput.focus();
-  } else if (val === '') {
-    nameInput.style.display = 'none';
-    nameInput.value = '';
-  } else {
-    // An existing vendor was chosen -- auto-fill name, trade, contact,
-    // phone, email from the directory record so nothing has to be
-    // retyped for data that already exists.
-    nameInput.style.display = 'none';
-    const contractor = (allContractors || []).find(c => c.id === val);
-    if (contractor) {
-      nameInput.value = contractor.name || '';
-      const tradeEl = document.getElementById('subTrade');
-      const contactEl = document.getElementById('subContact');
-      const phoneEl = document.getElementById('subPhone');
-      const emailEl = document.getElementById('subEmail');
-      if (tradeEl && contractor.trade) tradeEl.value = contractor.trade;
-      if (contactEl && contractor.contact) contactEl.value = contractor.contact;
-      if (phoneEl && contractor.phone) phoneEl.value = contractor.phone;
-      if (emailEl && contractor.email) emailEl.value = contractor.email;
-    }
-  }
-}
-window.handleSubNameSelectChange = handleSubNameSelectChange;
-window.populateSubVendorSelect = populateSubVendorSelect;
-window.populateSubModalJobInfo = populateSubModalJobInfo;
 
 function openEditSub(id) {
   const s = conSubs.find(x => x.id === id);
@@ -8119,23 +8060,6 @@ function openEditSub(id) {
   document.getElementById('subInsExp').value = s.insExp || '';
   document.getElementById('subNotes').value = s.notes || '';
   document.getElementById('deleteSubBtn').style.display = 'inline-flex';
-  populateSubModalJobInfo();
-  populateSubVendorSelect();
-  // If this sub's name matches a vendor in the directory exactly, show
-  // that as the selected dropdown option; otherwise fall back to the
-  // free-text "+ Add new" input pre-filled with the existing name, so
-  // editing a sub that predates the vendor directory (or was a genuine
-  // one-off) doesn't lose or mismatch its name.
-  const sel = document.getElementById('subNameSelect');
-  const nameInput = document.getElementById('subName');
-  const matchingContractor = (allContractors || []).find(c => c.name === s.name);
-  if (sel && matchingContractor) {
-    sel.value = matchingContractor.id;
-    if (nameInput) nameInput.style.display = 'none';
-  } else if (sel) {
-    sel.value = '__new__';
-    if (nameInput) nameInput.style.display = '';
-  }
   kOpen('addSubModal');
 }
 
