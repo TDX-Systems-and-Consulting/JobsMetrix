@@ -22970,13 +22970,47 @@ function proposalSafeLabel(sub) {
 // tasks. Scope is commonly entered one room/instruction per line, but older
 // imported estimates often stored several room instructions as sentences in
 // one paragraph, so support both shapes.
+// Common measurement/unit abbreviations that end in a period but are NOT
+// sentence boundaries -- "60 in. W x 36 in. H Frameless..." must stay one
+// task, not fracture into "60 in." / "W x 36 in." / "H Frameless...".
+const SCOPE_NOTE_ABBREVIATIONS = new Set([
+  'in', 'ft', 'lf', 'sf', 'sqft', 'sq', 'yd', 'ea', 'ct', 'no', 'dia',
+  'mm', 'cm', 'hr', 'hrs', 'min', 'sec', 'approx', 'etc', 'vs',
+  'w', 'h', 'd', 'l', 'qty', 'oz', 'lb', 'lbs', 'gal'
+]);
+
+// Splits a block of scope-note text into sentences, but refuses to split
+// right after a known abbreviation (so "in." "ft." "W" "H" "D" etc. don't
+// get treated as end-of-sentence just because the next word is capitalized
+// or numeric).
+function splitScopeNoteSentences(str) {
+  const out = [];
+  let start = 0;
+  const boundaryRe = /([.!?])\s+(?=[A-Z0-9])/g;
+  let m;
+  while ((m = boundaryRe.exec(str))) {
+    const punct = m[1];
+    const splitPos = m.index + 1;
+    if (punct === '.') {
+      const preceding = str.slice(0, m.index);
+      const wordMatch = preceding.match(/([A-Za-z]+)$/);
+      if (wordMatch && SCOPE_NOTE_ABBREVIATIONS.has(wordMatch[1].toLowerCase())) {
+        continue; // not a real sentence boundary -- keep going
+      }
+    }
+    out.push(str.slice(start, splitPos));
+    start = splitPos;
+  }
+  out.push(str.slice(start));
+  return out.map(part => part.trim()).filter(Boolean);
+}
+
 function punchListScopeTasks(sub) {
   const scopeParts = [sub.scopeNotes, ...(sub.items || []).map(item => item.notes)]
     .filter(Boolean)
     .flatMap(note => String(note)
-      .split(/\r?\n+|(?<=[.!?])\s+(?=[A-Z0-9])/)
-      .map(part => part.trim())
-      .filter(Boolean));
+      .split(/\r?\n+/)
+      .flatMap(splitScopeNoteSentences));
 
   // Keep the printed checklist concise when the same note was copied onto
   // multiple estimate items during an import.
