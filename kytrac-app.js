@@ -12401,8 +12401,25 @@ function buildSubAgreementText(sub, job, co) {
     ? subPaymentRows.map(r => `   \u2022 ${r.label} (${r.pct}%): $${Number(r.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`).join('\n')
     : null;
   const contractPriceClause = paymentScheduleLines
-    ? `2. CONTRACT PRICE. The total contract price for the Work is $${amtStr}, payable according to the following schedule:\n\n${paymentScheduleLines}\n\nEach payment is due upon Company's acceptance of the Work completed for that stage.`
-    : `2. CONTRACT PRICE. The total contract price for the Work is $${amtStr}, payable per Company's standard payment schedule upon completion of agreed milestones and Company's acceptance of the Work.`;
+    ? `3. CONTRACT PRICE. The total contract price for the Work is $${amtStr}, payable according to the following schedule:\n\n${paymentScheduleLines}\n\nEach payment is due upon Company's acceptance of the Work completed for that stage.`
+    : `3. CONTRACT PRICE. The total contract price for the Work is $${amtStr}, payable per Company's standard payment schedule upon completion of agreed milestones and Company's acceptance of the Work.`;
+
+  // Estimated Days to Complete is derived from the job's own Start/Target
+  // dates (job.startDate / job.endDate) via the same workDaysBetween()
+  // helper the Master Schedule already uses, so it can never drift out of
+  // sync with what's actually scheduled. If the job has no dates set yet,
+  // the clause still reads correctly -- it just states the Start Date will
+  // be confirmed separately, rather than printing a blank or a broken
+  // sentence.
+  const scheduleStartDate = job.startDate
+    ? new Date(job.startDate + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+    : null;
+  const scheduleDays = (typeof workDaysBetween === 'function')
+    ? workDaysBetween(job.startDate, job.endDate)
+    : null;
+  const scheduleClause = scheduleStartDate
+    ? `2. SCHEDULE. Subcontractor shall commence the Work on or about ${scheduleStartDate} ("Start Date")${scheduleDays ? ` and shall substantially complete the Work within an estimated ${scheduleDays} working day${scheduleDays === 1 ? '' : 's'} of the Start Date` : ''}, subject to delays caused by Company, weather, material availability, or other matters beyond Subcontractor's reasonable control. Time is not of the essence solely by virtue of this clause, but Subcontractor shall notify Company promptly in writing of any anticipated delay.`
+    : `2. SCHEDULE. The Start Date and estimated number of working days to complete the Work shall be confirmed by Company in writing (including by email or through Company's project management system) prior to or upon commencement of the Work, and once confirmed shall be deemed incorporated into this Agreement. Subcontractor shall notify Company promptly in writing of any anticipated delay. Time is not of the essence solely by virtue of this clause.`;
 
   return [
     'SUBCONTRACTOR AGREEMENT',
@@ -12419,23 +12436,25 @@ function buildSubAgreementText(sub, job, co) {
     '',
     `1. SCOPE OF WORK. Subcontractor agrees to furnish all labor, equipment, and supervision necessary to perform ${trade} work at ${jobAddress}, in accordance with the agreed scope for this project. Company shall furnish and pay for all materials required for the Work, unless otherwise agreed in writing.`,
     '',
+    scheduleClause,
+    '',
     contractPriceClause,
     '',
-    '3. INDEPENDENT CONTRACTOR STATUS. Subcontractor is retained as an independent contractor and not as an employee, agent, joint venturer, or partner of Company. Subcontractor shall determine the means and methods of performing the Work, shall furnish its own tools and equipment unless otherwise agreed, and is solely responsible for its own taxes and for the wages, taxes, and benefits of any individuals it employs or engages. Nothing in this Agreement creates an employer-employee relationship between Company and Subcontractor or Subcontractor\'s employees, agents, or lower-tier subcontractors.',
+    '4. INDEPENDENT CONTRACTOR STATUS. Subcontractor is retained as an independent contractor and not as an employee, agent, joint venturer, or partner of Company. Subcontractor shall determine the means and methods of performing the Work, shall furnish its own tools and equipment unless otherwise agreed, and is solely responsible for its own taxes and for the wages, taxes, and benefits of any individuals it employs or engages. Nothing in this Agreement creates an employer-employee relationship between Company and Subcontractor or Subcontractor\'s employees, agents, or lower-tier subcontractors.',
     '',
-    '4. LICENSES AND COMPLIANCE. Subcontractor represents that it holds, and shall maintain, all licenses, permits, and certifications required by law to perform the Work, and shall comply with all applicable building codes, safety regulations (including OSHA), and municipal ordinances.',
+    '5. LICENSES AND COMPLIANCE. Subcontractor represents that it holds, and shall maintain, all licenses, permits, and certifications required by law to perform the Work, and shall comply with all applicable building codes, safety regulations (including OSHA), and municipal ordinances.',
     '',
-    '5. CHANGE ORDERS. No changes to the Scope of Work or Contract Price are effective unless agreed in writing by both parties before the additional work is performed.',
+    '6. CHANGE ORDERS. No changes to the Scope of Work, Contract Price, or Schedule are effective unless agreed in writing by both parties before the additional or extended work is performed. Subcontractor shall not proceed with, and Company shall have no obligation to pay for, any work performed outside the Scope of Work or beyond the Schedule set forth in Clause 2 without a signed Change Order. Subcontractor\'s performance of unauthorized additional work is at Subcontractor\'s own risk and expense.',
     '',
-    '6. INSURANCE AND INDEMNIFICATION. Subcontractor shall maintain commercial general liability insurance and workers\' compensation insurance as required by law, and shall provide Company with a certificate of insurance upon request. Subcontractor shall indemnify, defend, and hold harmless Company from claims, damages, or losses arising out of Subcontractor\'s negligent acts, omissions, or breach of this Agreement, except to the extent caused by Company\'s own negligence.',
+    '7. INSURANCE AND INDEMNIFICATION. Subcontractor shall maintain commercial general liability insurance and workers\' compensation insurance as required by law, and shall provide Company with a certificate of insurance upon request. Subcontractor shall indemnify, defend, and hold harmless Company from claims, damages, or losses arising out of Subcontractor\'s negligent acts, omissions, or breach of this Agreement, except to the extent caused by Company\'s own negligence.',
     '',
-    '7. WARRANTY. Subcontractor warrants that the Work shall be free from defects in materials and workmanship for one (1) year from substantial completion, and shall promptly correct, at its own expense, any Work found defective during that period, ordinary wear and tear excepted.',
+    '8. WARRANTY. Subcontractor warrants that the Work shall be free from defects in materials and workmanship for one (1) year from substantial completion, and shall promptly correct, at its own expense, any Work found defective during that period, ordinary wear and tear excepted.',
     '',
-    '8. TERMINATION. Company may terminate this Agreement for cause upon written notice if Subcontractor fails to cure a material breach within ten (10) days of notice. Company may terminate for convenience upon written notice, in which case Subcontractor shall be paid for Work satisfactorily performed prior to termination.',
+    '9. TERMINATION. Company may terminate this Agreement for cause upon written notice if Subcontractor fails to cure a material breach within ten (10) days of notice. Company may terminate for convenience upon written notice, in which case Subcontractor shall be paid for Work satisfactorily performed prior to termination.',
     '',
-    '9. GOVERNING LAW. This Agreement shall be governed by the laws of the State of Missouri.',
+    '10. GOVERNING LAW. This Agreement shall be governed by the laws of the State of Missouri.',
     '',
-    '10. ENTIRE AGREEMENT. This Agreement constitutes the entire agreement between the parties regarding the Work and supersedes all prior negotiations or representations, whether written or oral. This Agreement may only be amended in writing signed by both parties.',
+    '11. ENTIRE AGREEMENT. This Agreement constitutes the entire agreement between the parties regarding the Work and supersedes all prior negotiations or representations, whether written or oral. This Agreement may only be amended in writing signed by both parties.',
     '',
     'By signing below, Subcontractor acknowledges having read and agreed to the terms of this Agreement, and that Subcontractor\'s electronic signature is legally binding under the federal Electronic Signatures in Global and National Commerce Act (E-SIGN).',
   ].join('\n');
