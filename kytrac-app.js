@@ -4745,17 +4745,24 @@ async function updateTaskDuration(phaseId, roomId, taskId, days) {
     const entry = _ganttData.find(p => p.phase.id === phaseId);
     const roomEntry = entry?.rooms.find(r => r.room.id === roomId);
     const task = roomEntry?.tasks.find(t => t.id === taskId);
-    if (task) { task.durationDays = d; delete task.startDate; delete task.endDate; }
+    // A start date already sitting on this task is what the user is
+    // actively anchoring the row to -- editing Days should compute the
+    // end date FROM it, not wipe it out. Only fall back to clearing
+    // both dates (and deferring to dependency/room-based scheduling)
+    // when there's no start date to anchor to in the first place.
+    const updates = task?.startDate
+      ? { durationDays: d, endDate: addWorkDaysISO(task.startDate, d) }
+      : { durationDays: d, startDate: firebase.firestore.FieldValue.delete(), endDate: firebase.firestore.FieldValue.delete() };
+    if (task) {
+      task.durationDays = d;
+      if (task.startDate) { task.endDate = updates.endDate; }
+      else { delete task.startDate; delete task.endDate; }
+    }
     await coll('jobs').doc(_ganttJobId)
       .collection('estimateGroups').doc(phaseId)
       .collection('subgroups').doc(roomId)
       .collection('items').doc(taskId)
-      .update({
-        durationDays: d,
-        startDate: firebase.firestore.FieldValue.delete(),
-        endDate: firebase.firestore.FieldValue.delete(),
-        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-      });
+      .update({ ...updates, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
     renderJobGantt(_ganttJobId);
   } catch(e) {
     console.error('updateTaskDuration failed:', e);
@@ -4770,16 +4777,21 @@ async function updateRoomDuration(phaseId, roomId, days) {
   try {
     const entry = _ganttData.find(p => p.phase.id === phaseId);
     const roomEntry = entry?.rooms.find(r => r.room.id === roomId);
-    if (roomEntry) { roomEntry.room.durationDays = d; delete roomEntry.room.startDate; delete roomEntry.room.endDate; }
+    // Same fix as updateTaskDuration: an existing start date anchors
+    // the row, so compute the end date from it instead of deleting it.
+    const room = roomEntry?.room;
+    const updates = room?.startDate
+      ? { durationDays: d, endDate: addWorkDaysISO(room.startDate, d) }
+      : { durationDays: d, startDate: firebase.firestore.FieldValue.delete(), endDate: firebase.firestore.FieldValue.delete() };
+    if (room) {
+      room.durationDays = d;
+      if (room.startDate) { room.endDate = updates.endDate; }
+      else { delete room.startDate; delete room.endDate; }
+    }
     await coll('jobs').doc(_ganttJobId)
       .collection('estimateGroups').doc(phaseId)
       .collection('subgroups').doc(roomId)
-      .update({
-        durationDays: d,
-        startDate: firebase.firestore.FieldValue.delete(),
-        endDate: firebase.firestore.FieldValue.delete(),
-        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-      });
+      .update({ ...updates, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
     renderJobGantt(_ganttJobId);
   } catch(e) {
     console.error('updateRoomDuration failed:', e);
@@ -8937,16 +8949,20 @@ async function updateMasterTaskDuration(jobId, phaseId, roomId, taskId, days) {
   if (!jobId || !conDb) return;
   const d = Math.max(1, Math.round(Number(days) || 1));
   try {
-    await coll('jobs').doc(jobId)
+    // No local task object here (Master Schedule doesn't hold the
+    // per-job _ganttData tree) -- read the existing startDate first so
+    // Days edits anchor to it instead of blindly wiping both dates,
+    // same fix as updateTaskDuration.
+    const docRef = coll('jobs').doc(jobId)
       .collection('estimateGroups').doc(phaseId)
       .collection('subgroups').doc(roomId)
-      .collection('items').doc(taskId)
-      .update({
-        durationDays: d,
-        startDate: firebase.firestore.FieldValue.delete(),
-        endDate: firebase.firestore.FieldValue.delete(),
-        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-      });
+      .collection('items').doc(taskId);
+    const snap = await docRef.get();
+    const existingStart = snap.exists ? snap.data().startDate : null;
+    const updates = existingStart
+      ? { durationDays: d, endDate: addWorkDaysISO(existingStart, d) }
+      : { durationDays: d, startDate: firebase.firestore.FieldValue.delete(), endDate: firebase.firestore.FieldValue.delete() };
+    await docRef.update({ ...updates, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
     renderMasterSchedulePage();
   } catch(e) {
     alert('Could not save duration: ' + e.message);
