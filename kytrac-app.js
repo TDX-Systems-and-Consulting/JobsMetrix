@@ -16677,6 +16677,15 @@ function loadPortalJob(db, jobId, tokenData, token) {
   // customer -- see the flag's own comment above for what this gates.
   const urlSubAgreementId = new URLSearchParams(location.search).get('subagreement');
   _portalSubAgreementMode = !!urlSubAgreementId;
+  if (_portalSubAgreementMode) {
+    // Unlike portalInvoicesSection/portalCOSection, these two have no
+    // display:none default in the HTML -- simply never loading their
+    // data (done above) left them visible but empty instead of hidden.
+    const logsSec = document.getElementById('portalLogsSection');
+    const msgSec = document.getElementById('portalMessagesSection');
+    if (logsSec) logsSec.style.display = 'none';
+    if (msgSec) msgSec.style.display = 'none';
+  }
 
   // Load company profile for branding
   portalColl('settings').doc('company').get()
@@ -17248,7 +17257,7 @@ function renderPortalSubAgreement(agreementId) {
       section = document.createElement('div');
       section.id = 'portalSubAgreementSection';
       section.className = 'portal-section';
-      const msgSection = document.getElementById('portalMessageSection');
+      const msgSection = document.getElementById('portalMessagesSection');
       if (msgSection) msgSection.parentNode.insertBefore(section, msgSection);
       else document.getElementById('ktPortalView')?.appendChild(section);
     }
