@@ -1275,6 +1275,18 @@ exports.createStripePaymentLink = functions.https.onCall(async (data, context) =
       // Metadata is how the webhook finds its way back to the right
       // invoice doc - Stripe echoes this back untouched on every event.
       metadata: { companyId, jobId, invoiceId },
+      // Also stamp the same metadata onto the PaymentIntent Stripe
+      // creates automatically for this session -- payment_intent.
+      // succeeded/payment_intent.payment_failed events carry the
+      // PaymentIntent as their payload, not the Checkout Session, so
+      // without this those events would have no way back to this
+      // invoice. Needed specifically for delayed-settlement methods
+      // like ACH (us_bank_account above): checkout.session.completed
+      // fires the moment the customer submits their bank details, but
+      // the money doesn't actually land for several business days --
+      // these two events are what tell us it genuinely cleared or
+      // bounced, days later.
+      payment_intent_data: { metadata: { companyId, jobId, invoiceId } },
       success_url: 'https://jobsmetrix.com/?paid=1&invoice=' + invoiceId,
       cancel_url: 'https://jobsmetrix.com/?paid=0&invoice=' + invoiceId,
     });
@@ -1338,21 +1350,39 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
     return res.status(400).send('Webhook signature verification failed.');
   }
 
-  if (event.type !== 'checkout.session.completed') {
+  const handledTypes = ['checkout.session.completed', 'payment_intent.succeeded', 'payment_intent.payment_failed'];
+  if (!handledTypes.includes(event.type)) {
     // Ack anything else so Stripe doesn't keep retrying events we
     // don't care about.
     return res.status(200).send('Ignored event type: ' + event.type);
   }
 
+  if (event.type === 'checkout.session.completed') {
+    return handleCheckoutSessionCompleted(event, companyId, res);
+  } else if (event.type === 'payment_intent.succeeded') {
+    return handlePaymentIntentSucceeded(event, companyId, res, stripe);
+  } else {
+    return handlePaymentIntentFailed(event, companyId, res);
+  }
+});
+
+// checkout.session.completed fires the moment the customer submits
+// payment -- for card payments that's effectively "it happened," but
+// for delayed-settlement methods like ACH (us_bank_account) the money
+// hasn't actually moved yet and won't for several business days. This
+// handler deliberately does NOT touch amtPaid or mark the invoice
+// Paid -- it only records that a payment attempt is in flight, so
+// nothing gets counted as collected revenue (feeding the 7-bucket
+// waterfall, sub-account transfers, etc.) before it's genuinely real
+// money in the bank. The actual financial recording happens in
+// handlePaymentIntentSucceeded below, once Stripe confirms it cleared.
+async function handleCheckoutSessionCompleted(event, companyId, res) {
   const session = event.data.object;
   const { jobId, invoiceId } = session.metadata || {};
   if (!jobId || !invoiceId) {
     console.error('stripeWebhook: checkout.session.completed missing metadata.', session.id);
-    // Still 200 - a malformed/foreign session isn't something Stripe
-    // should keep retrying forever.
     return res.status(200).send('Missing metadata, ignored.');
   }
-
   try {
     const db = admin.firestore();
     const invRef = db.collection('companies').doc(companyId)
@@ -1362,32 +1392,62 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
       console.error('stripeWebhook: invoice not found', companyId, jobId, invoiceId);
       return res.status(200).send('Invoice not found, ignored.');
     }
+    await invRef.update({
+      status: 'Processing',
+      stripeCheckoutSessionId: session.id,
+      stripePaymentIntentId: session.payment_intent || null,
+      stripeCheckoutCompletedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return res.status(200).send('OK - marked Processing, awaiting settlement.');
+  } catch (e) {
+    console.error('stripeWebhook: checkout.session.completed processing failed:', e.message);
+    return res.status(500).send('Internal error.');
+  }
+}
+
+// The REAL "money actually landed" event. This is where amtPaid,
+// status='Paid', the real Stripe fee, the QBO sync, and the customer
+// confirmation email all happen -- moved here from
+// checkout.session.completed specifically so nothing downstream
+// (Financials, the COO Budget waterfall, sub-account transfer
+// prompts) ever treats a pending ACH transfer as collected before it
+// genuinely is.
+async function handlePaymentIntentSucceeded(event, companyId, res, stripe) {
+  const pi = event.data.object;
+  const { jobId, invoiceId } = pi.metadata || {};
+  if (!jobId || !invoiceId) {
+    console.error('stripeWebhook: payment_intent.succeeded missing metadata.', pi.id);
+    return res.status(200).send('Missing metadata, ignored.');
+  }
+
+  try {
+    const db = admin.firestore();
+    const jobRef = db.collection('companies').doc(companyId).collection('jobs').doc(jobId);
+    const invRef = jobRef.collection('invoices').doc(invoiceId);
+    const [jobDoc, invDoc] = await Promise.all([jobRef.get(), invRef.get()]);
+    if (!invDoc.exists) {
+      console.error('stripeWebhook: invoice not found', companyId, jobId, invoiceId);
+      return res.status(200).send('Invoice not found, ignored.');
+    }
+    const job = jobDoc.exists ? jobDoc.data() : {};
     const inv = invDoc.data();
 
-    const amountPaidNow = (session.amount_total || 0) / 100; // cents -> dollars
+    const amountPaidNow = (pi.amount_received || pi.amount || 0) / 100; // cents -> dollars
     const newAmtPaid = Math.round(((inv.amtPaid || 0) + amountPaidNow) * 100) / 100;
     const total = inv.total || 0;
 
     // Real Stripe processing fee for THIS specific payment, not an
-    // estimated 2.9%+$0.30 -- pulled directly from the actual balance
-    // transaction, since the true fee varies by payment method (card
-    // vs. US bank account/ACH have very different rates) and can carry
-    // small per-transaction variance Stripe applies on its own side.
-    // Best-effort: if this lookup fails for any reason, the core
-    // payment recording below must still succeed -- a real customer
-    // payment being marked Paid is far more important than capturing
-    // the exact fee amount, same reasoning as the QBO sync below.
+    // estimated 2.9%+$0.30.
     let stripeFee = null, stripeNetAmount = null;
     try {
-      if (session.payment_intent) {
-        const pi = await stripe.paymentIntents.retrieve(session.payment_intent, {
-          expand: ['latest_charge.balance_transaction'],
-        });
-        const bt = pi.latest_charge?.balance_transaction;
-        if (bt) {
-          stripeFee = Math.round(bt.fee) / 100;
-          stripeNetAmount = Math.round(bt.net) / 100;
-        }
+      const piFull = await stripe.paymentIntents.retrieve(pi.id, {
+        expand: ['latest_charge.balance_transaction'],
+      });
+      const bt = piFull.latest_charge?.balance_transaction;
+      if (bt) {
+        stripeFee = Math.round(bt.fee) / 100;
+        stripeNetAmount = Math.round(bt.net) / 100;
       }
     } catch (feeErr) {
       console.error('stripeWebhook: could not retrieve real fee (payment still recorded):', feeErr.message);
@@ -1396,14 +1456,11 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
     const update = {
       amtPaid: newAmtPaid,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      stripePaymentIntentId: session.payment_intent || null,
+      stripePaymentIntentId: pi.id,
       stripeLastPaidAt: admin.firestore.FieldValue.serverTimestamp(),
       paymentMethod: 'Card / Online (Stripe)'
     };
     if (stripeFee !== null) {
-      // Cumulative, matching amtPaid's own cumulative pattern, in case
-      // an invoice is ever paid across more than one Stripe session
-      // (e.g. a partial payment now, the remaining balance later).
       update.stripeFeeTotal = Math.round(((inv.stripeFeeTotal || 0) + stripeFee) * 100) / 100;
       update.stripeNetTotal = Math.round(((inv.stripeNetTotal || 0) + stripeNetAmount) * 100) / 100;
     }
@@ -1413,11 +1470,6 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
     }
     await invRef.update(update);
 
-    // Log to the Activity feed — this is the ONLY payment path that
-    // doesn't go through the client's commitMarkPaid(), which normally
-    // writes this. Without this, webhook-driven (i.e. the actual real
-    // Stripe payment) confirmations were invisible in Activity even
-    // though Mark Paid entries showed up fine.
     try {
       const amtStr = amountPaidNow.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
       const feeNote = stripeFee !== null ? ` (Stripe fee: $${stripeFee.toFixed(2)}, net $${stripeNetAmount.toFixed(2)})` : '';
@@ -1434,11 +1486,21 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
       console.error('stripeWebhook: activity log write failed (non-fatal):', logErr.message);
     }
 
-    // Sync to QBO for bookkeeping - best-effort. A QBO failure here
-    // should never make Stripe think the webhook failed (which would
-    // cause Stripe to keep retrying an already-successful payment
-    // confirmation). The payment is already recorded in JOBSMETRIX
-    // regardless of whether this succeeds.
+    // Best-effort payment confirmation email -- separate from
+    // whatever Stripe's own receipt settings do (Settings > Emails >
+    // Successful payments controls the actual card-network-compliant
+    // receipt). A failure here should never fail the webhook itself;
+    // the payment is already correctly recorded either way.
+    try {
+      const customerEmail = job.email || job.clientEmail || '';
+      if (customerEmail) {
+        await sendPaymentConfirmationEmail(companyId, job, inv, amountPaidNow, jobId, invoiceId);
+      }
+    } catch (emailErr) {
+      console.error('stripeWebhook: confirmation email failed (non-fatal):', emailErr.message);
+    }
+
+    // Sync to QBO for bookkeeping - best-effort.
     try {
       await syncInvoiceToQbo(companyId, jobId, invoiceId);
     } catch (e) {
@@ -1447,12 +1509,122 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
 
     return res.status(200).send('OK');
   } catch (e) {
-    console.error('stripeWebhook: processing failed:', e.message);
-    // 500 here IS appropriate (unlike the QBO case above) - this means
-    // amtPaid itself failed to update, so Stripe retrying is correct.
-    return res.status(500).send('Processing failed.');
+    console.error('stripeWebhook: payment_intent.succeeded processing failed:', e.message);
+    return res.status(500).send('Internal error.');
   }
-});
+}
+
+// The bounce/decline case -- most relevant for ACH, which can fail
+// days after checkout.session.completed already fired (insufficient
+// funds, wrong account/routing number, account closed, etc). Since
+// handleCheckoutSessionCompleted never touched amtPaid, there's
+// nothing to reverse here -- just flip the status to a distinct
+// "Payment Failed" (not silently back to unpaid) so it's obvious in
+// the UI that a payment was actually attempted and didn't go through,
+// not just that the invoice was never sent a link.
+async function handlePaymentIntentFailed(event, companyId, res) {
+  const pi = event.data.object;
+  const { jobId, invoiceId } = pi.metadata || {};
+  if (!jobId || !invoiceId) {
+    console.error('stripeWebhook: payment_intent.payment_failed missing metadata.', pi.id);
+    return res.status(200).send('Missing metadata, ignored.');
+  }
+  try {
+    const db = admin.firestore();
+    const invRef = db.collection('companies').doc(companyId)
+      .collection('jobs').doc(jobId).collection('invoices').doc(invoiceId);
+    const invDoc = await invRef.get();
+    if (!invDoc.exists) {
+      console.error('stripeWebhook: invoice not found', companyId, jobId, invoiceId);
+      return res.status(200).send('Invoice not found, ignored.');
+    }
+    const failureReason = pi.last_payment_error?.message || 'Unknown reason';
+    await invRef.update({
+      status: 'Payment Failed',
+      stripePaymentFailureReason: failureReason,
+      stripePaymentFailedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    try {
+      await db.collection('companies').doc(companyId)
+        .collection('jobs').doc(jobId).collection('logs').add({
+          date: new Date().toISOString().split('T')[0],
+          notes: `Payment attempt FAILED on invoice — ${failureReason}`,
+          type: 'invoice_payment_failed',
+          userName: 'Stripe (auto)',
+          companyId,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+    } catch (logErr) {
+      console.error('stripeWebhook: activity log write failed (non-fatal):', logErr.message);
+    }
+    return res.status(200).send('OK - marked Payment Failed.');
+  } catch (e) {
+    console.error('stripeWebhook: payment_intent.payment_failed processing failed:', e.message);
+    return res.status(500).send('Internal error.');
+  }
+}
+
+// Sends a "Payment Received" confirmation using the exact same
+// branded-HTML-wrapper + SendGrid REST pattern sendJobspanEmail uses
+// (that function is a callable, meant to be invoked from the client
+// with an authenticated user -- this webhook has neither, so this
+// reimplements the same send logic directly rather than trying to
+// invoke that function cross-function).
+async function sendPaymentConfirmationEmail(companyId, job, inv, amountPaidNow, jobId, invoiceId) {
+  const sgKey = process.env.SENDGRID_KEY || (functions.config().sendgrid && functions.config().sendgrid.key);
+  if (!sgKey) return; // Not configured -- skip silently, this is best-effort
+
+  const db = admin.firestore();
+  let companyName = 'JTXD Contracting';
+  try {
+    const settDoc = await db.collection('companies').doc(companyId).collection('settings').doc('company').get();
+    if (settDoc.exists) companyName = settDoc.data().companyName || companyName;
+  } catch(e) {}
+
+  const customerEmail = job.email || job.clientEmail || '';
+  const customerName = job.client || 'Customer';
+  const invNum = inv.number || 'Invoice';
+  const amtStr = amountPaidNow.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+
+  const bodyHtml = `<p>Hi ${customerName},</p>
+    <p>This confirms we've received your payment of <strong>$${amtStr}</strong> toward ${invNum}${job.name ? ' for ' + job.name : ''}.</p>
+    <p>Thank you!</p>`;
+
+  const brandedHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#f4f4f4;font-family:Arial,sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:32px 0">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:12px;overflow:hidden;max-width:600px;width:100%">
+        <tr><td style="background:#04121f;padding:24px 32px;text-align:center">
+          <span style="color:#d97706;font-size:1.3rem;font-weight:800;letter-spacing:.02em">${companyName}</span>
+        </td></tr>
+        <tr><td style="padding:32px;color:#1a1a1a;font-size:15px;line-height:1.6">${bodyHtml}</td></tr>
+        <tr><td style="background:#f9f9f9;padding:20px 32px;text-align:center;font-size:12px;color:#888;border-top:1px solid #eee">
+          This email was sent by ${companyName} via JOBSpan.
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>`;
+
+  const payload = {
+    personalizations: [{ to: [{ email: customerEmail, name: customerName }] }],
+    from: { email: 'travis@jtxdgroup.com', name: companyName },
+    reply_to: { email: 'travis@jtxdgroup.com', name: companyName },
+    subject: `Payment Received — ${invNum}`,
+    content: [
+      { type: 'text/plain', value: `We've received your payment of $${amtStr} toward ${invNum}. Thank you!` },
+      { type: 'text/html', value: brandedHtml }
+    ]
+  };
+
+  await fetch('https://api.sendgrid.com/v3/mail/send', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${sgKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+}
 
 exports.sendMessageNotificationSms = functions.firestore
   .document('companies/{companyId}/jobs/{jobId}/messages/{messageId}')
