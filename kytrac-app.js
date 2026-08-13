@@ -2723,7 +2723,8 @@ function applyJobFinancialsDisplay(job, acOverride, realCostOverride) {
   const projProfit = profit;
   const projMargin = margin;
 
-  const setFin = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = fmt(val); };
+  const _canSeeMoney = canViewJobMoney();
+  const setFin = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = _canSeeMoney ? fmt(val) : '\u2022\u2022\u2022'; };
   // Top financial bar
   setFin('fbarApproved', cv);
   setFin('fbarCollected', collected);
@@ -2738,13 +2739,13 @@ function applyJobFinancialsDisplay(job, acOverride, realCostOverride) {
   // green/red/neutral-amber pattern already used correctly elsewhere
   // in this file (e.g. Financials Hub net cash position).
   const fbarP = document.getElementById('fbarProfit');
-  if (fbarP) { fbarP.textContent = fmt(projProfit); fbarP.style.color = projProfit > 0 ? '#a3f2d2' : projProfit < 0 ? '#f87171' : '#f59e0b'; }
+  if (fbarP) { fbarP.textContent = _canSeeMoney ? fmt(projProfit) : '\u2022\u2022\u2022'; fbarP.style.color = !_canSeeMoney ? 'var(--muted)' : projProfit > 0 ? '#a3f2d2' : projProfit < 0 ? '#f87171' : '#f59e0b'; }
   const fbarM = document.getElementById('fbarMargin');
   // Was `projMargin > 0` -- a genuinely flat 0% margin (not a loss,
   // just break-even or no revenue basis yet) fell into the red branch
   // right alongside real negative margins. >= 0 treats true zero as
   // neutral instead of alarming.
-  if (fbarM) { fbarM.textContent = projMargin.toFixed(1) + '%'; fbarM.style.color = projMargin > 0 ? '#a3f2d2' : projMargin < 0 ? '#f87171' : '#f59e0b'; }
+  if (fbarM) { fbarM.textContent = _canSeeMoney ? (projMargin.toFixed(1) + '%') : '\u2022\u2022\u2022'; fbarM.style.color = !_canSeeMoney ? 'var(--muted)' : projMargin > 0 ? '#a3f2d2' : projMargin < 0 ? '#f87171' : '#f59e0b'; }
 
   // Dashboard right panel
   setFin('dashFinApproved', cv);
@@ -2755,9 +2756,9 @@ function applyJobFinancialsDisplay(job, acOverride, realCostOverride) {
   // Profit and Margin were also frozen green (#a3f2d2) in the HTML,
   // never updated for a real loss.
   const dashP = document.getElementById('dashFinProfit');
-  if (dashP) { dashP.textContent = fmt(projProfit); dashP.style.color = projProfit > 0 ? '#a3f2d2' : projProfit < 0 ? '#f87171' : '#f59e0b'; }
+  if (dashP) { dashP.textContent = _canSeeMoney ? fmt(projProfit) : '\u2022\u2022\u2022'; dashP.style.color = !_canSeeMoney ? 'var(--muted)' : projProfit > 0 ? '#a3f2d2' : projProfit < 0 ? '#f87171' : '#f59e0b'; }
   const dashM = document.getElementById('dashFinMargin');
-  if (dashM) { dashM.textContent = projMargin.toFixed(1) + '%'; dashM.style.color = projMargin > 0 ? '#a3f2d2' : projMargin < 0 ? '#f87171' : '#f59e0b'; }
+  if (dashM) { dashM.textContent = _canSeeMoney ? (projMargin.toFixed(1) + '%') : '\u2022\u2022\u2022'; dashM.style.color = !_canSeeMoney ? 'var(--muted)' : projMargin > 0 ? '#a3f2d2' : projMargin < 0 ? '#f87171' : '#f59e0b'; }
 
   // Financials tab est/actual block
   setFin('finContract', cv);
@@ -2974,6 +2975,16 @@ function openJobDetail(jobId, defaultTab) {
   // avoids a dead button sitting in the nav for everyone else).
   const finTabBtn = document.querySelector('#jobDetailModal .con-subtab[onclick*="\'financials\'"]');
   if (finTabBtn) finTabBtn.style.display = canViewFinancialsTab() ? '' : 'none';
+
+  // Subs tab button — same treatment. Subcontractor contract amounts
+  // (including what Kyle/Simon/other field-level 1099 payees are each
+  // paid) are visible on this tab, so anyone without canViewJobMoney()
+  // (Field Technicians, Team Leads, Sales, Marketing/Office Staff) never
+  // sees the button. switchDetailTab() hard-blocks the content itself
+  // too, so this isn't the only line of defense, just avoids a dead
+  // button sitting in the nav for everyone else.
+  const subsTabBtn = document.querySelector('#jobDetailModal .con-subtab[onclick*="\'subs\'"]');
+  if (subsTabBtn) subsTabBtn.style.display = canViewJobMoney() ? '' : 'none';
 
   const fmt = v => '$' + Number(v||0).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0});
 
@@ -5995,12 +6006,28 @@ function canViewFinancialsTab() {
   return (conCurrentUser?.email || '').toLowerCase() === FINANCIALS_TAB_ALLOWED_EMAIL;
 }
 
+// Broader than canViewFinancialsTab() above (which is a hard, single-email
+// lock on the COO-level Financials tab specifically). This governs the
+// persistent job stat bar, the Dashboard's financial panel, and the Subs
+// tab -- surfaces where Owner/PM/Office Manager/Accounting reasonably need
+// visibility, but Field Technicians, Team Leads, Sales, and Marketing/
+// Office Staff should not see cost, payment, or subcontractor-pay data.
+function canViewJobMoney() {
+  if (currentUserTeamData?.fullAccessOverride) return true;
+  if (currentUserRole === 'Owner') return true;
+  return hasPermission('costing') || hasPermission('invoicing') || hasPermission('subs');
+}
+
 function switchDetailTab(tab, btn) {
   // Hard block, checked BEFORE anything else renders — refuses even a
   // direct/forced switchDetailTab('financials') call (e.g. from the
   // browser console), not just hiding the button. Silently redirects
   // to Dashboard instead, no error message revealing the tab exists.
   if (tab === 'financials' && !canViewFinancialsTab()) {
+    tab = 'dashboard';
+    btn = document.querySelector('#jobDetailModal .con-subtab');
+  }
+  if (tab === 'subs' && !canViewJobMoney()) {
     tab = 'dashboard';
     btn = document.querySelector('#jobDetailModal .con-subtab');
   }
