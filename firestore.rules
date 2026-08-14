@@ -31,6 +31,18 @@ service cloud.firestore {
       );
     }
 
+    // ── Collection-group access for cross-job queries ───────────────
+    // Dedicated rule so collectionGroup('logs') queries (Home dashboard's
+    // "Logs Today" stat, the Global Logs admin feed) actually work.
+    // The nested per-job match further down does NOT cover collection-
+    // group queries on its own -- Firestore requires this separate
+    // {path=**} rule even though it's the same underlying documents.
+    // Scoped by the companyId every log document already carries via
+    // subDoc(), same tenant-isolation model as the rest of this file.
+    match /{path=**}/logs/{logId} {
+      allow read: if inCompany(resource.data.companyId);
+    }
+
     // ── Top-level companies collection ──────────────────────────────
     // Needed for company resolution (resolveCompany() / syncMyClaims)
     // before a user necessarily has companyId claims yet on first login,
