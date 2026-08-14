@@ -2643,7 +2643,7 @@ function syncCurrentJobEstimateCost() {
 // historical data are unaffected; this only wins when live data exists.
 function refreshJobFinancials(job) {
   if (!job) return;
-  applyJobFinancialsDisplay(job, job.actualCost || 0);
+  applyJobFinancialsDisplay(job, job.actualCost || 0, null, null, false);
 
   if (!conDb) return;
   const jobId = job.id;
@@ -2656,7 +2656,7 @@ function refreshJobFinancials(job) {
     // Only override if live tracking actually has data, or the stored
     // field is empty — never silently zero out a real imported number.
     if (liveActual > 0 || !(job.actualCost > 0)) {
-      applyJobFinancialsDisplay(job, liveActual, projectedRealCost, lockedSplit);
+      applyJobFinancialsDisplay(job, liveActual, projectedRealCost, lockedSplit, true);
     }
   };
   coll('vendors').get().then(vSnap => {
@@ -2740,7 +2740,7 @@ function refreshJobFinancials(job) {
     .catch(() => { maybeApplyLive(); });
 }
 
-function applyJobFinancialsDisplay(job, acOverride, realCostOverride, lockedSplitOverride) {
+function applyJobFinancialsDisplay(job, acOverride, realCostOverride, lockedSplitOverride, isLive) {
   const fmt = v => '$' + Number(v||0).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0});
   const cv = getJobValue(job);
   // Projected cost baseline for a job with no real spend logged yet:
@@ -2791,12 +2791,22 @@ function applyJobFinancialsDisplay(job, acOverride, realCostOverride, lockedSpli
 
   const _canSeeMoney = canViewJobMoney();
   const setFin = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = _canSeeMoney ? fmt(val) : '\u2022\u2022\u2022'; };
+  // Fields whose real value depends on the async live-data chain
+  // (Firestore fetches for vendor bills, subcontractor payments, hours,
+  // the locked-formula split) showed a fully-formatted, confident "$0"
+  // the instant a job opened, before that chain had a chance to
+  // resolve -- indistinguishable from "confirmed, nothing spent." A
+  // real screenshot of that exact flash ($0 Spent to Date on a job that
+  // actually had $924 spent) is what prompted this. isLive=false only
+  // on the very first, fast-paint call in refreshJobFinancials(); every
+  // subsequent call (after the live chain resolves) passes true.
+  const setFinAsync = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = !isLive ? '…' : (_canSeeMoney ? fmt(val) : '\u2022\u2022\u2022'); };
   // Top financial bar
   setFin('fbarApproved', cv);
   setFin('fbarCollected', collected);
   setFin('fbarBalance', balance);
-  setFin('fbarCostComplete', costToComplete);
-  setFin('fbarSpentToDate', ac);
+  setFinAsync('fbarCostComplete', costToComplete);
+  setFinAsync('fbarSpentToDate', ac);
   // fbarProfit's color was hardcoded green (#a3f2d2) directly in the
   // HTML template and never touched again -- setFin() only ever set
   // .textContent. A genuine loss (e.g. -$60,011 on a job with no
@@ -2805,39 +2815,54 @@ function applyJobFinancialsDisplay(job, acOverride, realCostOverride, lockedSpli
   // green/red/neutral-amber pattern already used correctly elsewhere
   // in this file (e.g. Financials Hub net cash position).
   const fbarP = document.getElementById('fbarProfit');
-  if (fbarP) { fbarP.textContent = _canSeeMoney ? fmt(projProfit) : '\u2022\u2022\u2022'; fbarP.style.color = !_canSeeMoney ? 'var(--muted)' : projProfit > 0 ? '#a3f2d2' : projProfit < 0 ? '#f87171' : '#f59e0b'; }
+  if (fbarP) {
+    fbarP.textContent = !isLive ? '…' : (_canSeeMoney ? fmt(projProfit) : '\u2022\u2022\u2022');
+    fbarP.style.color = !isLive ? 'var(--muted)' : !_canSeeMoney ? 'var(--muted)' : projProfit > 0 ? '#a3f2d2' : projProfit < 0 ? '#f87171' : '#f59e0b';
+  }
   const fbarM = document.getElementById('fbarMargin');
   // Was `projMargin > 0` -- a genuinely flat 0% margin (not a loss,
   // just break-even or no revenue basis yet) fell into the red branch
   // right alongside real negative margins. >= 0 treats true zero as
   // neutral instead of alarming.
-  if (fbarM) { fbarM.textContent = _canSeeMoney ? (projMargin.toFixed(1) + '%') : '\u2022\u2022\u2022'; fbarM.style.color = !_canSeeMoney ? 'var(--muted)' : projMargin > 0 ? '#a3f2d2' : projMargin < 0 ? '#f87171' : '#f59e0b'; }
+  if (fbarM) {
+    fbarM.textContent = !isLive ? '…' : (_canSeeMoney ? (projMargin.toFixed(1) + '%') : '\u2022\u2022\u2022');
+    fbarM.style.color = !isLive ? 'var(--muted)' : !_canSeeMoney ? 'var(--muted)' : projMargin > 0 ? '#a3f2d2' : projMargin < 0 ? '#f87171' : '#f59e0b';
+  }
 
   // Dashboard right panel
   setFin('dashFinApproved', cv);
   setFin('dashFinCollected', collected);
   setFin('dashFinBalance', balance);
-  setFin('dashFinCost', bestCost);
+  setFinAsync('dashFinCost', bestCost);
   // Same hardcoded-green bug as fbarProfit above -- this panel's Proj.
   // Profit and Margin were also frozen green (#a3f2d2) in the HTML,
   // never updated for a real loss.
   const dashP = document.getElementById('dashFinProfit');
-  if (dashP) { dashP.textContent = _canSeeMoney ? fmt(projProfit) : '\u2022\u2022\u2022'; dashP.style.color = !_canSeeMoney ? 'var(--muted)' : projProfit > 0 ? '#a3f2d2' : projProfit < 0 ? '#f87171' : '#f59e0b'; }
+  if (dashP) {
+    dashP.textContent = !isLive ? '…' : (_canSeeMoney ? fmt(projProfit) : '\u2022\u2022\u2022');
+    dashP.style.color = !isLive ? 'var(--muted)' : !_canSeeMoney ? 'var(--muted)' : projProfit > 0 ? '#a3f2d2' : projProfit < 0 ? '#f87171' : '#f59e0b';
+  }
   const dashM = document.getElementById('dashFinMargin');
-  if (dashM) { dashM.textContent = _canSeeMoney ? (projMargin.toFixed(1) + '%') : '\u2022\u2022\u2022'; dashM.style.color = !_canSeeMoney ? 'var(--muted)' : projMargin > 0 ? '#a3f2d2' : projMargin < 0 ? '#f87171' : '#f59e0b'; }
+  if (dashM) {
+    dashM.textContent = !isLive ? '…' : (_canSeeMoney ? (projMargin.toFixed(1) + '%') : '\u2022\u2022\u2022');
+    dashM.style.color = !isLive ? 'var(--muted)' : !_canSeeMoney ? 'var(--muted)' : projMargin > 0 ? '#a3f2d2' : projMargin < 0 ? '#f87171' : '#f59e0b';
+  }
 
   // Financials tab est/actual block
   setFin('finContract', cv);
-  setFin('finEstCost', bestCost);
-  setFin('finEstProfit', profit);
+  setFinAsync('finEstCost', bestCost);
+  setFinAsync('finEstProfit', profit);
   const finM = document.getElementById('finEstMargin');
-  if (finM) finM.textContent = margin.toFixed(1) + '%';
+  if (finM) finM.textContent = !isLive ? '…' : (margin.toFixed(1) + '%');
   const finBar = document.getElementById('finMarginBar');
-  if (finBar) finBar.style.width = Math.min(Math.max(margin,0), 100) + '%';
-  setFin('finActualCost', ac);
+  if (finBar) finBar.style.width = (!isLive ? 0 : Math.min(Math.max(margin,0), 100)) + '%';
+  setFinAsync('finActualCost', ac);
   const variance = ec - ac;
   const varEl = document.getElementById('finVariance');
-  if (varEl) { varEl.textContent = (variance >= 0 ? '+' : '') + fmt(variance); varEl.style.color = variance >= 0 ? '#a3f2d2' : '#ef5350'; }
+  if (varEl) {
+    varEl.textContent = !isLive ? '…' : ((variance >= 0 ? '+' : '') + fmt(variance));
+    varEl.style.color = !isLive ? 'var(--muted)' : (variance >= 0 ? '#a3f2d2' : '#ef5350');
+  }
   const aciEl = document.getElementById('actualCostInput');
   if (aciEl) aciEl.value = ac || '';
 
