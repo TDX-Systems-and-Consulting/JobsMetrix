@@ -7191,7 +7191,6 @@ async function loadGlobalNotes() {
   el.innerHTML = '<div class="small muted" style="text-align:center;padding:32px">Loading…</div>';
 
   const myEmail = (conCurrentUser?.email || '').toLowerCase();
-  const isOwnerOrFullAccess = conUserRole === 'Owner' || window._hasFullAccess;
 
   const allNotes = [];
   // Fetch every job's notes IN PARALLEL rather than one at a time. The old
@@ -7613,7 +7612,7 @@ function renderJobNotes(notes) {
             <div style="font-size:.72rem;color:var(--muted)">${dateStr} · ${timeStr}</div>
           </div>
         </div>
-        ${(conUserRole === 'Owner' || window._hasFullAccess) ? `<button onclick="deleteJobNote('${n.id}')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.8rem;padding:4px" title="Delete note">✕</button>` : ''}
+        ${(currentUserRole === 'Owner' || window._hasFullAccess) ? `<button onclick="deleteJobNote('${n.id}')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.8rem;padding:4px" title="Delete note">✕</button>` : ''}
       </div>
       <div style="font-size:.9rem;color:#eaf0fb;line-height:1.6;white-space:pre-wrap;word-break:break-word">${esc(n.text || '')}</div>
       ${n.category ? `<div style="margin-top:8px"><span style="background:rgba(217,119,6,.15);color:#f59e0b;padding:2px 8px;border-radius:6px;font-size:.72rem;font-weight:700">${esc(n.category)}</span></div>` : ''}
@@ -18677,7 +18676,7 @@ async function loadTimeOffRequests() {
   if (!panel || !list) return;
 
   // Only owners and full access users see the panel
-  const isAdmin = conUserRole === 'Owner' || conUserRole === 'Project Manager' || window._hasFullAccess;
+  const isAdmin = currentUserRole === 'Owner' || currentUserRole === 'Project Manager' || window._hasFullAccess;
 
   try {
     let query = coll('timeOffRequests').orderBy('createdAt', 'desc').limit(50);
