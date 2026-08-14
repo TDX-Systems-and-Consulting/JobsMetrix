@@ -21155,11 +21155,42 @@ async function computeRealJobCost(jobId) {
     ? (realMaterialsActual > billedMaterials ? 'actual vendor bills + expenses (exceeds estimate -- real overrun)' : 'estimate-derived (full materials not yet purchased)')
     : 'estimate-derived (raw billed) — no real purchases logged yet';
 
+  // Real, signed subcontractor agreements (status Contracted or later --
+  // i.e. an actual signed contract, not just a bid still being
+  // considered) live on jobs/{jobId}/subs, keyed by their own `amount`
+  // field -- a completely separate collection from subcontractorPayments
+  // below. Real gap found: signing an agreement flips a sub's status to
+  // 'Contracted' but never creates a subcontractorPayments record, so
+  // real signed contracts (707 Karon Drive: Kyle Martin $8,000 + Truedom
+  // Contracting $10,000 + 7 Pillars $12,000 = $30,000) sat there while
+  // this function fell through to a clocked-hours estimate or the Labor
+  // Budget placeholder, missing the real committed cost entirely --
+  // Travis: "under subs it is clear I signed 3 subs for 30,000... the
+  // numbers don't add up anywhere." Same "take the higher, real number"
+  // pattern as Materials above: summing contracted subs' amounts and
+  // taking the max against whatever subcontractorPayments produces means
+  // neither system has to be the sole source of truth, and a signed
+  // contract is never invisible just because nobody separately logged a
+  // payment record for it too.
+  const subsSnap = await coll('jobs').doc(jobId).collection('subs').get();
+  let contractedSubsTotal = 0;
+  subsSnap.forEach(d => {
+    const s = d.data();
+    if (s.status && s.status !== 'Bidding' && typeof s.amount === 'number') {
+      contractedSubsTotal += s.amount;
+    }
+  });
+
   const paySnap = await coll('jobs').doc(jobId).collection('subcontractorPayments').get();
   let loggedLabor = 0;
   paySnap.forEach(d => { const p = d.data(); if (p.status !== 'Voided') loggedLabor += (p.amount || 0); });
-  if (loggedLabor > 0) {
-    return { materials, materialsSource, labor: loggedLabor, source: 'actual subcontractor payments' };
+
+  const bestKnownLabor = Math.max(contractedSubsTotal, loggedLabor);
+  if (bestKnownLabor > 0) {
+    const source = contractedSubsTotal > loggedLabor
+      ? 'signed subcontractor agreements (Subs & Vendors)'
+      : 'actual subcontractor payments';
+    return { materials, materialsSource, labor: bestKnownLabor, source };
   }
 
   const contractorsOnJob = (allContractors || []).filter(c => (c.crewMemberEmails||[]).length);
