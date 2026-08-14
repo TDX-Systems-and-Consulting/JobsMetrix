@@ -2963,6 +2963,7 @@ function renderJobMap(job) {
 
 function openJobDetail(jobId, defaultTab) {
   if (isFieldTechRestricted() && (!defaultTab || defaultTab === 'dashboard')) defaultTab = 'phases';
+  if (isFieldTechRestricted() && (!defaultTab || defaultTab === 'dashboard')) defaultTab = 'phases';
   const job = conJobs.find(j => j.id === jobId);
   if (!job) return;
   conCurrentJobId = jobId;
@@ -2986,6 +2987,22 @@ function openJobDetail(jobId, defaultTab) {
   // button sitting in the nav for everyone else.
   const subsTabBtn = document.querySelector('#jobDetailModal .con-subtab[onclick*="\'subs\'"]');
   if (subsTabBtn) subsTabBtn.style.display = canViewJobMoney() ? '' : 'none';
+
+  // Change Orders button — Team Lead's level and above only (carries $
+  // deltas, same reasoning as Financials/Subs).
+  const coTabBtn = document.querySelector('#jobDetailModal .con-subtab[onclick*="\'changeorders\'"]');
+  if (coTabBtn) coTabBtn.style.display = canCreateChangeOrders() ? '' : 'none';
+
+  // Field Technician allowlist — hide every tab button not explicitly
+  // approved for field-level work. Defense in depth on top of the
+  // switchDetailTab hard block above.
+  if (isFieldTechRestricted()) {
+    document.querySelectorAll('#jobDetailModal #jobDetailTabRow .con-subtab').forEach(function(b) {
+      const m = (b.getAttribute('onclick') || '').match(/switchDetailTab\('([a-z]+)'/);
+      const tabName = m ? m[1] : null;
+      if (tabName && !FIELD_TECH_ALLOWED_TABS.includes(tabName)) b.style.display = 'none';
+    });
+  }
 
   // Change Orders button — Team Lead's level and above only (carries $
   // deltas, same reasoning as Financials/Subs).
@@ -6059,6 +6076,30 @@ function isFieldTechRestricted() {
   return currentUserRole === 'Field Technician';
 }
 
+// Change Orders: Travis wants creation (and, as implemented here, viewing --
+// change orders carry $ deltas, same reasoning as the Subs tab) restricted
+// to Team Lead's level (45) and above. Uses the existing numeric `level`
+// field already on every role instead of hardcoding a role list, so this
+// stays correct if roles are ever added or reordered.
+function canCreateChangeOrders() {
+  if (currentUserTeamData?.fullAccessOverride) return true;
+  if (currentUserRole === 'Owner') return true;
+  const role = KYTRAC_ROLES[currentUserRole];
+  return !!role && role.level >= KYTRAC_ROLES['Team Lead'].level;
+}
+
+// Field Technicians get an ALLOWLIST, not a blocklist -- only these tabs
+// are visible on a job: Schedule, To-Dos, Notes, Daily Logs, Selections,
+// Plans, Messages, Entry Info. Everything else (Dashboard, Estimate,
+// Invoices, Change Orders, Specifications, Subs, Activity, Files,
+// Financials, Reports, Retrospective) is hidden, per Travis's explicit
+// list of what field-level work actually requires.
+const FIELD_TECH_ALLOWED_TABS = ['phases', 'todos', 'jobnotes', 'logs', 'selections', 'plans', 'messages', 'entryinfo'];
+function isFieldTechRestricted() {
+  if (currentUserTeamData?.fullAccessOverride) return false;
+  return currentUserRole === 'Field Technician';
+}
+
 function switchDetailTab(tab, btn) {
   // Hard block, checked BEFORE anything else renders — refuses even a
   // direct/forced switchDetailTab('financials') call (e.g. from the
@@ -6071,6 +6112,14 @@ function switchDetailTab(tab, btn) {
   if (tab === 'subs' && !canViewJobMoney()) {
     tab = 'dashboard';
     btn = document.querySelector('#jobDetailModal .con-subtab');
+  }
+  if (tab === 'changeorders' && !canCreateChangeOrders()) {
+    tab = 'dashboard';
+    btn = document.querySelector('#jobDetailModal .con-subtab');
+  }
+  if (isFieldTechRestricted() && !FIELD_TECH_ALLOWED_TABS.includes(tab)) {
+    tab = 'phases';
+    btn = document.querySelector('#jobDetailModal .con-subtab[onclick*="\'phases\'"]') || document.querySelector('#jobDetailModal .con-subtab');
   }
   if (tab === 'changeorders' && !canCreateChangeOrders()) {
     tab = 'dashboard';
@@ -16390,7 +16439,7 @@ function renderGlobalLogCard(log) {
         <span style="font-weight:700;margin-right:6px">⚠️ Issue:</span>${esc(log.issues)}
       </div>`:''}
       ${hasPhotos?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
-        ${log.photos.slice(0,6).map((p,i) => `<img src="${p}" style="width:70px;height:70px;object-fit:cover;border-radius:8px;cursor:pointer;border:1px solid rgba(110,145,210,.2)" onclick="openLightbox('${p}')" />`).join('')}
+        ${log.photos.slice(0,6).map((p,i) => `<img src="${p.dataUrl}" style="width:70px;height:70px;object-fit:cover;border-radius:8px;cursor:pointer;border:1px solid rgba(110,145,210,.2)" onclick="openLightbox('${p.dataUrl.replace(/'/g,"\\'")}')" />`).join('')}
         ${log.photos.length>6?`<div style="width:70px;height:70px;border-radius:8px;background:rgba(8,18,36,.8);border:1px solid rgba(110,145,210,.2);display:flex;align-items:center;justify-content:center;font-size:.76rem;color:var(--muted)">+${log.photos.length-6}</div>`:''}
       </div>`:''}
     </div>
