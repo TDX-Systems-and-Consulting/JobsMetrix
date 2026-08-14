@@ -2099,7 +2099,9 @@ function loadPlans(jobId) {
     renderPlans(plans);
   }).catch(() => renderPlans([]));
 }
+let _currentPlans = [];
 function renderPlans(plans) {
+  _currentPlans = plans;
   const list = document.getElementById('plansList');
   if (!list) return;
   if (!plans.length) {
@@ -2112,8 +2114,9 @@ function renderPlans(plans) {
       const thumb = isImg
         ? `<img src="${p.dataUrl}" style="width:100%;height:120px;object-fit:cover;border-radius:8px 8px 0 0" />`
         : `<div style="height:120px;display:flex;align-items:center;justify-content:center;font-size:2rem;background:rgba(110,145,210,.08);border-radius:8px 8px 0 0">📄</div>`;
-      const open = p.dataUrl ? `onclick="window.open('${p.dataUrl}','_blank')" style="cursor:pointer"` : '';
-      return `<div class="kt-card" style="padding:0;overflow:clip" ${open}>
+      const open = p.dataUrl ? `onclick="openPlanDoc('${p.id}')" style="cursor:pointer"` : '';
+      return `<div class="kt-card" style="padding:0;overflow:clip;position:relative" ${open}>
+        <button onclick="event.stopPropagation();deletePlan('${p.id}')" title="Delete" style="position:absolute;top:6px;right:6px;width:22px;height:22px;border-radius:50%;border:none;background:rgba(8,14,28,.85);color:#ef5350;font-size:.8rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2;line-height:1">✕</button>
         ${thumb}
         <div style="padding:8px 10px">
           <div style="font-size:.78rem;font-weight:700;white-space:nowrap;overflow:clip;text-overflow:ellipsis">${esc(p.name||'Plan')}</div>
@@ -2121,6 +2124,30 @@ function renderPlans(plans) {
         </div></div>`;
     }).join('') + '</div>';
 }
+
+// Looks the plan up from the cached array rather than embedding its full
+// (potentially very long) dataUrl inline in an HTML onclick attribute.
+// Delegates the actual open behavior to openDocInNewTab() -- the same
+// blank-tab-plus-iframe technique the Documents page already uses, which
+// sidesteps Chrome's block on top-level navigation to data:text/html.
+function openPlanDoc(id) {
+  const plan = _currentPlans.find(p => p.id === id);
+  if (plan) openDocInNewTab(plan);
+}
+window.openPlanDoc = openPlanDoc;
+
+// Plans/blueprints live in the same `documents` collection as everything
+// else (category: 'Plan' or 'Contract') -- reuses deleteDoc()'s exact
+// confirm-then-delete pattern for consistency, then refreshes this job's
+// Plans grid specifically since that view has its own cached render path
+// separate from the standalone Documents page.
+function deletePlan(id) {
+  if (!confirm('Delete this plan? This cannot be undone.')) return;
+  coll('documents').doc(id).delete()
+    .then(() => { if (conCurrentJobId) loadPlans(conCurrentJobId); })
+    .catch(e => alert('Error deleting: ' + e.message));
+}
+window.deletePlan = deletePlan;
 async function handlePlanUpload(fileList) {
   const files = Array.from(fileList || []);
   if (!files.length || !conDb || !conCurrentJobId) return;
@@ -16381,22 +16408,36 @@ function promptDocCategory() {
   });
 }
 
+// Shared by openDocument() (the Documents page) and Plans & Blueprints --
+// opens a BLANK tab first (always allowed) and writes the content into it,
+// using the data: URL only as an iframe src rather than a top-level
+// navigation target. Chrome silently blocks top-level navigation to
+// data:text/html (and some other non-image data: URLs) as an anti-
+// phishing measure -- the tab opens but stays blank, no error anywhere,
+// which is exactly what made Signed Proposals look broken in Plans.
+// Embedding the same data: URL in an iframe isn't a top-level navigation,
+// so it isn't subject to that restriction.
+function openDocInNewTab(doc) {
+  if (!doc.dataUrl) {
+    alert(`"${doc.name}" was uploaded without file data (file was too large). Re-upload to view.`);
+    return;
+  }
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html><head><title>${esc(doc.name)}</title></head><body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh">
+    ${doc.type?.startsWith('image/') ? `<img src="${doc.dataUrl}" style="max-width:100%;max-height:100vh;object-fit:contain" />` :
+      doc.type === 'application/pdf' ? `<iframe src="${doc.dataUrl}" style="width:100vw;height:100vh;border:none"></iframe>` :
+      doc.type === 'text/html' ? `<iframe src="${doc.dataUrl}" style="width:100vw;height:100vh;border:none;background:#fff"></iframe>` :
+      `<div style="color:#fff;text-align:center;padding:40px"><p>Preview not available for this file type.</p><a href="${doc.dataUrl}" download="${esc(doc.name)}" style="color:#d97706;font-size:1.1rem">⬇ Download ${esc(doc.name)}</a></div>`
+    }
+  </body></html>`);
+  win.document.close();
+}
+window.openDocInNewTab = openDocInNewTab;
+
 function openDocument(id) {
   const doc = allDocuments.find(d => d.id === id);
   if (!doc) return;
-  if (doc.dataUrl) {
-    const win = window.open('', '_blank');
-    win.document.write(`<!DOCTYPE html><html><head><title>${esc(doc.name)}</title></head><body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh">
-      ${doc.type?.startsWith('image/') ? `<img src="${doc.dataUrl}" style="max-width:100%;max-height:100vh;object-fit:contain" />` :
-        doc.type === 'application/pdf' ? `<iframe src="${doc.dataUrl}" style="width:100vw;height:100vh;border:none"></iframe>` :
-        doc.type === 'text/html' ? `<iframe src="${doc.dataUrl}" style="width:100vw;height:100vh;border:none;background:#fff"></iframe>` :
-        `<div style="color:#fff;text-align:center;padding:40px"><p>Preview not available for this file type.</p><a href="${doc.dataUrl}" download="${esc(doc.name)}" style="color:#d97706;font-size:1.1rem">⬇ Download ${esc(doc.name)}</a></div>`
-      }
-    </body></html>`);
-    win.document.close();
-  } else {
-    alert(`"${doc.name}" was uploaded without file data (file was too large). Re-upload to view.`);
-  }
+  openDocInNewTab(doc);
 }
 
 function downloadDoc(id) {
