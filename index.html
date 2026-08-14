@@ -4283,8 +4283,8 @@
             <div class="finhub-cash-row"><span>Materials Purchased</span><b id="fhMaterialsOut" style="color:#a3f2d2">—</b></div>
             <div class="finhub-cash-row"><span>Subcontractor Payments (Paid)</span><b id="fhSubPayOut" style="color:#a3f2d2">—</b></div>
             <div class="finhub-cash-row finhub-cash-hot"><span>We Owe (AP)</span><b id="fhWeOwe" style="color:#fca5a5">—</b></div>
-            <div class="finhub-cash-row"><span>True Materials Cost (billed ÷ 1.15 markup)</span><b id="fhEstMaterials">—</b></div>
-            <div class="finhub-cash-row"><span>Subcontractor Pay (days × $100/hr)</span><b id="fhEstLabor">—</b></div>
+            <div class="finhub-cash-row"><span>Materials (locked formula)</span><b id="fhEstMaterials">—</b></div>
+            <div class="finhub-cash-row"><span>Labor (real subcontractor cost)</span><b id="fhEstLabor">—</b></div>
           </div>
         </div>
         <div class="finhub-net" id="fhNetBox">
@@ -4297,19 +4297,10 @@
 
         <div class="finhub-net" id="fhProfitBox" style="border-color:rgba(29,187,135,.35);background:rgba(29,187,135,.08)">
           <div>
-            <div class="finhub-net-label" style="color:#a3f2d2">Projected Company Profit (Contract − True Materials − Subcontractor Pay)</div>
+            <div class="finhub-net-label" style="color:#a3f2d2">Projected Company Profit (locked formula — Retained Earnings)</div>
             <div class="finhub-net-sub" id="fhProfitSub">—</div>
           </div>
           <div class="finhub-net-val" id="fhProfitVal" style="color:#a3f2d2">—</div>
-        </div>
-
-        <div class="finhub-net" style="background:rgba(6,14,28,.6)">
-          <div style="flex:1">
-            <div class="finhub-net-label">Confirmed Subcontractor Days</div>
-            <div class="finhub-net-sub" id="fhDaysHint">—</div>
-          </div>
-          <input id="fhConfirmedDays" type="number" min="0" step="0.5" onchange="saveConfirmedLaborDays()"
-            style="width:70px;padding:6px 8px;font-size:1rem;font-weight:800;text-align:center" />
         </div>
 
         <!-- ══ CUSTOMER INVOICES ══ -->
@@ -4811,7 +4802,7 @@
 
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
-<script src="kytrac-app.js?v=202608141739"></script>
+<script src="kytrac-app.js?v=202608141814"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW

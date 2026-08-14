@@ -2649,13 +2649,14 @@ function refreshJobFinancials(job) {
   const jobId = job.id;
   let billsPaid = 0, materialsTotal = 0, subPayTotal = 0, laborCost = 0, doneCount = 0;
   let projectedRealCost = null;
+  let lockedSplit = null;
   const maybeApplyLive = () => {
-    if (++doneCount < 5) return;
+    if (++doneCount < 6) return;
     const liveActual = Math.round((billsPaid + materialsTotal + subPayTotal + laborCost) * 100) / 100;
     // Only override if live tracking actually has data, or the stored
     // field is empty — never silently zero out a real imported number.
     if (liveActual > 0 || !(job.actualCost > 0)) {
-      applyJobFinancialsDisplay(job, liveActual, projectedRealCost);
+      applyJobFinancialsDisplay(job, liveActual, projectedRealCost, lockedSplit);
     }
   };
   coll('vendors').get().then(vSnap => {
@@ -2727,9 +2728,19 @@ function refreshJobFinancials(job) {
   computeRealJobCost(jobId)
     .then(rc => { projectedRealCost = rc.materials + rc.labor; maybeApplyLive(); })
     .catch(() => { maybeApplyLive(); });
+  // Sixth leg: the real locked-formula bottom line (Retained Earnings),
+  // the SAME number the COO Budget Breakdown and the Financials Hub
+  // panel both show -- so Profit/Margin on the top stat bar finally
+  // agree with the rest of the page instead of being a separate,
+  // partial (materials+labor only, no Overhead/Marketing/Flex/Taxes)
+  // calculation that happened to share the same "Projected Profit"
+  // label. Travis: "I want it done right."
+  computeLockedBucketSplit(job)
+    .then(split => { lockedSplit = split; maybeApplyLive(); })
+    .catch(() => { maybeApplyLive(); });
 }
 
-function applyJobFinancialsDisplay(job, acOverride, realCostOverride) {
+function applyJobFinancialsDisplay(job, acOverride, realCostOverride, lockedSplitOverride) {
   const fmt = v => '$' + Number(v||0).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0});
   const cv = getJobValue(job);
   // Projected cost baseline for a job with no real spend logged yet:
@@ -2742,20 +2753,24 @@ function applyJobFinancialsDisplay(job, acOverride, realCostOverride) {
   // activity got logged on it.
   const ec = (typeof realCostOverride === 'number' && realCostOverride > 0) ? realCostOverride : (job.estCost || 0);
   const ac = acOverride || 0;
-  // Best-known TOTAL cost for margin math. This must always be ec (the
-  // fullest available real-cost projection — real Paid+Agreed
-  // subcontractor payments plus real/placeholder materials, or the
-  // Labor Budget ceiling when nothing's logged yet), never ac (cash
-  // actually paid out so far). Using ac here was a real bug: a job
-  // with only a deposit paid and the rest of its labor still owed
-  // looked artificially MORE profitable the less of its real cost had
-  // actually been paid yet — Profit needs Revenue minus TOTAL cost,
-  // not Revenue minus "however much cash has moved so far." ac is the
-  // right number for Cost to Complete below (how much MORE needs to be
-  // spent), a genuinely different question from total profitability.
+  // Best-known TOTAL cost for Cost to Complete (materials + labor only —
+  // "what does this job cost to finish," a real operational number
+  // independent of company-level allocations like Overhead/Marketing).
   const bestCost = ec;
-  const profit = cv - bestCost;
-  const margin = cv ? (profit / cv * 100) : 0;
+  // Profit/Margin, on the other hand, are the REAL bottom line -- same
+  // number as the COO Budget Breakdown's Retained Earnings and the
+  // Financials Hub panel's Projected Company Profit (see
+  // computeLockedBucketSplit). This used to be cv - bestCost (materials
+  // + labor only, skipping Overhead/Marketing/Flex/Taxes entirely) --
+  // technically gross profit, but labeled and colored like it was the
+  // final number, which is exactly what made it read ~$22K too high.
+  // Falls back to the gross calc only for the very first paint, before
+  // the locked-formula fetch (async, since it needs real subcontractor
+  // + Stripe fee data) has had a chance to resolve.
+  const profit = lockedSplitOverride ? lockedSplitOverride.retainedEarnings : (cv - bestCost);
+  const margin = lockedSplitOverride
+    ? (lockedSplitOverride.revenue > 0 ? (profit / lockedSplitOverride.revenue * 100) : 0)
+    : (cv ? (profit / cv * 100) : 0);
 
   // Collected: prefer the imported JobTread figure; fall back to in-app invoice payments.
   const jobInvs = (allInvoices || []).filter(i => i.jobId === job.id);
@@ -7091,81 +7106,34 @@ function fhRenderTotals(job) {
   const netSub = document.getElementById('fhNetSub');
   if (netSub) netSub.textContent = `${fhMoney(owedUs)} still coming in · ${fhMoney(weOwe)} still going out`;
 
-  // True Materials / Subcontractor Pay / Company Profit — worked out
-  // directly through Travis's own numbers on this job (the
-  // $67,879.91 estimate). Two DIFFERENT mechanisms, not the same
-  // markup logic applied twice:
-  //
-  // Materials: the billed price already includes a flat 15% markup,
-  // so true cost = billed / 1.15. (Confirmed against real dollars:
-  // $21,924.32 billed -> $19,064.63 true cost.)
-  //
-  // Labor: NOT a percentage markup at all, and NOT the estimate's
-  // internal unitCost field (that's Jason's per-line catalog guess,
-  // unrelated to what a subcontractor actually gets paid). Instead:
-  // Jason's estimate assumes a 3-man crew at $100/hr each (=$2,400/
-  // day) to arrive at the billed labor total. Reverse that to get
-  // estimated days, round up, then re-price at a FLAT $100/hr
-  // (regardless of actual crew size) to get what the subcontractor is
-  // offered. (Confirmed: $44,949.35 billed / $2,400/day = 18.73 days
-  // -> rounds to 19 as pure math.)
-  //
-  // The exact day count is then a real scheduling judgment call
-  // (a Friends & Family discount marker, crew availability, etc.)
-  // that this app has no way to know — so the rounded-up number is
-  // only ever a STARTING suggestion. Travis confirms/overrides it in
-  // the editable field below; Subcontractor Pay and Company Profit
-  // both recompute from whatever's actually confirmed there, not the
-  // raw suggestion.
-  const MATERIALS_MARKUP = 0.15;
-  const SUBCONTRACTOR_RATE = 100;
-  const CREW_SIZE = 3;
-  const HOURS_PER_DAY = 8;
+  // Materials / Labor / Company Profit -- now sourced entirely from
+  // computeLockedBucketSplit(), the SAME real locked-formula engine that
+  // drives the COO Budget Breakdown and the top stat bar (see
+  // applyJobFinancialsDisplay). This used to be a THIRD, independently
+  // invented calculation: materials backed the 15% markup OUT (wrong --
+  // the locked formula keeps it in), and labor was a fabricated flat
+  // $100/hr x 3-man x estimated-days guess that ignored the real signed
+  // subcontractor payment ($27,360 Agreed on 707 Karon Drive) entirely.
+  // Travis: "I want it done right" -- one formula, real data, same
+  // number everywhere on this page instead of three different ones.
   if (conCurrentJobId) {
-    fetchEstimateCostSplitFresh(conCurrentJobId).then(({ materials, laborAndOther }) => {
-      const trueMaterials = materials / (1 + MATERIALS_MARKUP);
-      const suggestedDays = laborAndOther > 0 ? Math.ceil(laborAndOther / (CREW_SIZE * HOURS_PER_DAY * SUBCONTRACTOR_RATE)) : 0;
-      set('fhEstMaterials', trueMaterials);
+    computeLockedBucketSplit(job).then(split => {
+      set('fhEstMaterials', split.materials);
+      set('fhEstLabor', split.labor);
 
-      const confirmed = job.confirmedLaborDays;
-      const daysToUse = (confirmed != null && confirmed !== '') ? Number(confirmed) : suggestedDays;
-      const subPay = daysToUse * HOURS_PER_DAY * SUBCONTRACTOR_RATE;
-      set('fhEstLabor', subPay);
-
-      const daysInput = document.getElementById('fhConfirmedDays');
-      if (daysInput && document.activeElement !== daysInput) {
-        daysInput.value = confirmed != null && confirmed !== '' ? confirmed : suggestedDays;
-      }
-      const daysHint = document.getElementById('fhDaysHint');
-      if (daysHint) daysHint.textContent = `Suggested: ${suggestedDays} day${suggestedDays===1?'':'s'} (${laborAndOther > 0 ? fhMoney(laborAndOther) : '$0'} billed labor ÷ ${CREW_SIZE}-man crew ÷ $${SUBCONTRACTOR_RATE}/hr) — adjust if you're scheduling this differently`;
-
-      const profit = contractTotal - trueMaterials - subPay;
-      const margin = contractTotal > 0 ? (profit / contractTotal * 100) : 0;
+      const profit = split.retainedEarnings;
+      const margin = split.revenue > 0 ? (profit / split.revenue * 100) : 0;
       const profitEl = document.getElementById('fhProfitVal');
       const profitColor = profit > 0 ? '#a3f2d2' : profit < 0 ? '#f87171' : '#f59e0b';
       if (profitEl) { profitEl.textContent = (profit<0?'-':'')+fhMoney(Math.abs(profit)); profitEl.style.color = profitColor; }
       const profitSub = document.getElementById('fhProfitSub');
-      if (profitSub) profitSub.textContent = `${margin.toFixed(1)}% margin on ${fhMoney(contractTotal)} contract — ${daysToUse} day${daysToUse===1?'':'s'} × ${CREW_SIZE}-man × $${SUBCONTRACTOR_RATE}/hr`;
+      if (profitSub) profitSub.textContent = `${margin.toFixed(1)}% margin on ${fhMoney(split.revenue)} contract, after Overhead, Marketing, Flex, Taxes, and real Stripe fees — same number as the COO Budget Breakdown's Retained Earnings`;
     }).catch(() => {
       set('fhEstMaterials', 0);
       set('fhEstLabor', 0);
     });
   }
 }
-
-// Saves Travis's confirmed day count for subcontractor pay, and
-// recomputes Company Profit from it immediately.
-function saveConfirmedLaborDays() {
-  const input = document.getElementById('fhConfirmedDays');
-  const jobId = conCurrentJobId;
-  if (!input || !jobId) return;
-  const val = input.value === '' ? null : parseFloat(input.value);
-  coll('jobs').doc(jobId).update({ confirmedLaborDays: val }).then(() => {
-    const job = conJobs.find(j => j.id === jobId);
-    if (job) { job.confirmedLaborDays = val; fhRenderTotals(job); }
-  }).catch(e => alert('Error saving: ' + e.message));
-}
-window.saveConfirmedLaborDays = saveConfirmedLaborDays;
 
 
 
@@ -21143,11 +21111,24 @@ async function computeRealMaterialsActual(jobId) {
 async function computeRealJobCost(jobId) {
   const { materials: billedMaterials } = await fetchEstimateCostSplitFresh(jobId);
   const realMaterialsActual = await computeRealMaterialsActual(jobId);
-  // Materials fallback is raw billed, not billed÷1.15 -- per the
-  // locked formula, the ~15% markup is Travis's own deliberate
-  // overrun float and stays IN the Materials bucket, never backed out.
-  const materials = realMaterialsActual != null ? realMaterialsActual : billedMaterials;
-  const materialsSource = realMaterialsActual != null ? 'actual vendor bills + expenses' : 'estimate-derived (raw billed) — no real purchases logged yet';
+  // Real bug found and fixed here: while a job is still actively being
+  // purchased for, "actual spend so far" is NOT the same thing as "total
+  // materials this job will cost" -- it starts low and ramps up as
+  // purchasing happens. The old logic let ANY real spend (even a single
+  // $5 receipt) completely REPLACE the full estimate-derived materials
+  // figure, which understated total projected cost (and therefore
+  // inflated Profit/Margin) on every in-progress job the moment its
+  // first material purchase was logged. Confirmed live on 707 Karon
+  // Drive: $304.95 actually spent vs. $22,943.06 in the signed
+  // proposal's materials line -- Cost to Complete was reading ~$22.6K
+  // too low, Profit ~$22.6K too high, Margin 59.2% instead of ~25.9%.
+  // Taking the max of the two fixes this while still correctly
+  // reflecting a genuine overrun once real spend exceeds the estimate
+  // (at which point actual, being higher, naturally wins on its own).
+  const materials = realMaterialsActual != null ? Math.max(realMaterialsActual, billedMaterials) : billedMaterials;
+  const materialsSource = realMaterialsActual != null
+    ? (realMaterialsActual > billedMaterials ? 'actual vendor bills + expenses (exceeds estimate -- real overrun)' : 'estimate-derived (full materials not yet purchased)')
+    : 'estimate-derived (raw billed) — no real purchases logged yet';
 
   const paySnap = await coll('jobs').doc(jobId).collection('subcontractorPayments').get();
   let loggedLabor = 0;
