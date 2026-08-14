@@ -2088,16 +2088,20 @@ function loadPlans(jobId) {
   const list = document.getElementById('plansList');
   if (!list) return;
   list.innerHTML = '<div class="small muted" style="padding:12px">Loading plans…</div>';
-  // Load Plan docs + Contract docs (signed proposals) for this job
-  Promise.all([
-    coll('documents').where('jobId','==',jobId).where('category','==','Plan').get(),
-    coll('documents').where('jobId','==',jobId).where('category','==','Contract').get()
-  ]).then(([planSnap, contractSnap]) => {
-    const plans = [];
-    planSnap.forEach(d => plans.push({ id: d.id, ...d.data() }));
-    contractSnap.forEach(d => plans.push({ id: d.id, ...d.data() }));
-    renderPlans(plans);
-  }).catch(() => renderPlans([]));
+  // Plans & Blueprints shows only actual plan/blueprint uploads. Signed
+  // proposals (category: 'Contract', auto-generated when a customer signs
+  // via the portal) used to be merged in here too, which made no sense to
+  // Travis when he ran into it -- a signature certificate isn't a jobsite
+  // reference drawing. They're not lost: every document still shows on
+  // the job's Files tab (loadJobDocs) and the standalone Documents page
+  // (loadDocuments) regardless of category, so this only narrows what
+  // Plans itself pulls in.
+  coll('documents').where('jobId','==',jobId).where('category','==','Plan').get()
+    .then(planSnap => {
+      const plans = [];
+      planSnap.forEach(d => plans.push({ id: d.id, ...d.data() }));
+      renderPlans(plans);
+    }).catch(() => renderPlans([]));
 }
 let _currentPlans = [];
 function renderPlans(plans) {
