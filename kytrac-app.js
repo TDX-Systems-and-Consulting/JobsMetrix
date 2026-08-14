@@ -2130,10 +2130,30 @@ async function handlePlanUpload(fileList) {
   for (const file of files) {
     try {
       let dataUrl = null;
-      if (file.size <= DOC_SIZE_LIMIT) dataUrl = await fileToBase64(file);
-      else if (!confirm(`"${file.name}" is over 500KB and can't be stored yet. Save name only?`)) continue;
+      let size = file.size;
+      const isImage = file.type.startsWith('image/');
+
+      if (isImage && file.size > DOC_SIZE_LIMIT) {
+        // Auto-compress oversized images (common with iPhone photos of
+        // blueprints/site drawings) rather than blocking the upload with a
+        // "save name only" prompt -- matches handleDocUpload's behavior.
+        try {
+          const raw = await fileToBase64(file);
+          dataUrl = await compressUntilUnderLimit(raw, DOC_SIZE_LIMIT);
+          size = Math.round((dataUrl.length * 3) / 4);
+        } catch(compressErr) {
+          dataUrl = null; // fall through to metadata-only below
+        }
+      }
+      if (!isImage && file.size > DOC_SIZE_LIMIT) {
+        if (!confirm(`"${file.name}" is ${formatFileSize(file.size)}. Files over 500KB cannot be stored in JOBSMETRIX yet. Save name only (no download)?`)) continue;
+        dataUrl = null;
+      } else if (!isImage) {
+        dataUrl = await fileToBase64(file);
+      }
+
       await coll('documents').add({
-        name: file.name, type: file.type||'application/octet-stream', size: file.size,
+        name: file.name, type: file.type||'application/octet-stream', size,
         category: 'Plan', jobId: conCurrentJobId, jobName: job?.name || '', dataUrl,
         uploadedAt: firebase.firestore.FieldValue.serverTimestamp(),
         uploadedDate: new Date().toISOString().split('T')[0],
@@ -5446,7 +5466,13 @@ function conLoadLogs(jobId) {
   if (!conDb) return;
   coll('jobs').doc(jobId).collection('logs').orderBy('date','desc').onSnapshot(snap => {
     conLogs = [];
-    snap.forEach(doc => conLogs.push({ id: doc.id, ...doc.data() }));
+    snap.forEach(doc => {
+      const data = doc.data();
+      // Same crew-log-vs-system-activity filter as the global Daily Logs
+      // page -- see loadGlobalLogs() for the full explanation.
+      if (data.type) return;
+      conLogs.push({ id: doc.id, ...data });
+    });
     renderLogList();
   });
 }
@@ -7168,20 +7194,45 @@ async function loadGlobalNotes() {
   const isOwnerOrFullAccess = conUserRole === 'Owner' || window._hasFullAccess;
 
   const allNotes = [];
-  // Skip collection group query (needs Firestore index) — go straight to per-job
-  for (const job of conJobs.slice(0, 30)) {
+  // Fetch every job's notes IN PARALLEL rather than one at a time. The old
+  // sequential-await loop meant a single slow or stalled request (up to 30
+  // jobs x 2 round trips in the worst case) blocked every job after it,
+  // which is what made this page appear to hang on "Loading..." forever.
+  // A hard per-job timeout on top of that means a request that never
+  // resolves OR rejects (a genuine network stall, not just a slow one)
+  // still can't hold the whole page hostage -- Promise.allSettled alone
+  // would still wait forever for a promise that never settles at all, so
+  // the timeout is what actually guarantees this page always finishes.
+  const withTimeout = (promise, ms) => Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
+  ]);
+  const noteFetches = conJobs.slice(0, 30).map(async job => {
     try {
-      const snap = await coll('jobs').doc(job.id).collection('jobNotes')
-        .orderBy('createdMs', 'desc').limit(20).get();
-      snap.forEach(d => allNotes.push({ id: d.id, ...d.data(), jobId: job.id, jobName: job.name }));
+      const snap = await withTimeout(
+        coll('jobs').doc(job.id).collection('jobNotes').orderBy('createdMs', 'desc').limit(20).get(),
+        8000
+      );
+      return { job, snap };
     } catch(e) {
-      // orderBy may fail without index — try without
+      // orderBy may fail without index (or the first attempt timed out) — try without
       try {
-        const snap2 = await coll('jobs').doc(job.id).collection('jobNotes').limit(20).get();
-        snap2.forEach(d => allNotes.push({ id: d.id, ...d.data(), jobId: job.id, jobName: job.name }));
-      } catch(e2) {}
+        const snap2 = await withTimeout(
+          coll('jobs').doc(job.id).collection('jobNotes').limit(20).get(),
+          8000
+        );
+        return { job, snap: snap2 };
+      } catch(e2) {
+        return null;
+      }
     }
-  }
+  });
+  const results = await Promise.allSettled(noteFetches);
+  results.forEach(r => {
+    if (r.status !== 'fulfilled' || !r.value) return;
+    const { job, snap } = r.value;
+    snap.forEach(d => allNotes.push({ id: d.id, ...d.data(), jobId: job.id, jobName: job.name }));
+  });
   allNotes.sort((a, b) => (b.createdMs || 0) - (a.createdMs || 0));
 
   // Get read state for current user
@@ -8429,13 +8480,34 @@ window.saveLog = async function() {
     createdAt: firebase.firestore.FieldValue.serverTimestamp()
   };
   coll('jobs').doc(conCurrentJobId).collection('logs').add(subDoc(data))
-    .then(() => {
+    .then(async () => {
       _logPhotoPending = [];
       kClose('addLogModal');
-      switchDetailTab('logs', null);
+      // If this log was the one required to unblock a clock-out, and it's
+      // for the same job the pending clock-out is for, finish the clock-out
+      // now. Guarded by jobId match so an unrelated log saved from a
+      // different job's Daily Logs tab can't accidentally complete a stale
+      // pending clock-out.
+      if (_pendingClockOut && _pendingClockOut.entry?.jobId === conCurrentJobId) {
+        const entry = _pendingClockOut.entry;
+        _pendingClockOut = null;
+        await performClockOut(entry);
+      } else {
+        switchDetailTab('logs', null);
+      }
     })
     .catch(e => alert('Error: ' + e.message));
 };
+
+// Closing/cancelling the Add Log modal without saving must NOT leave a
+// stale _pendingClockOut around -- the user is still clocked in (nothing
+// was lost), and a later, unrelated log save elsewhere shouldn't complete
+// a clock-out this action never confirmed.
+function cancelAddLogModal() {
+  _pendingClockOut = null;
+  kClose('addLogModal');
+}
+window.cancelAddLogModal = cancelAddLogModal;
 
 // ── Patch openAddLogModal to clear photos ──
 const _origOpenAddLogModal = window.openAddLogModal;
@@ -14526,7 +14598,66 @@ function handleClockToggle() {
 
 let _clockFeatures = [];
 
-function clockIn() {
+// ── GPS verification for Clock In ──────────────────────────────────
+// Wraps navigator.geolocation in a Promise with a hard timeout so a
+// stalled GPS request can't hang the clock-in flow indefinitely, only
+// ever resolves or rejects.
+function getCurrentPositionAsync(timeoutMs) {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) { reject(new Error('Geolocation not supported on this device')); return; }
+    navigator.geolocation.getCurrentPosition(
+      pos => resolve(pos),
+      err => reject(err),
+      { enableHighAccuracy: true, timeout: timeoutMs || 12000, maximumAge: 0 }
+    );
+  });
+}
+
+// Straight-line distance in feet between two lat/lon points (haversine).
+// Good enough for an on-site/off-site flag -- this isn't routing, it's a
+// sanity check against the jobsite address.
+function haversineDistanceFeet(lat1, lon1, lat2, lon2) {
+  const R_MILES = 3958.8;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat/2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2) ** 2;
+  const miles = R_MILES * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return miles * 5280;
+}
+
+// Resolves a job's site coordinates, reusing the exact same cached-then-
+// Nominatim-geocode pattern renderJobMap() already uses (job.geoLat/geoLon
+// persisted to Firestore so a job is only ever geocoded once). Returns
+// null (never throws) if the job has no address or geocoding fails --
+// callers treat "no coordinates available" as "can't check distance,"
+// not as a reason to block clock-in.
+async function getJobCoordinates(job) {
+  if (!job) return null;
+  if (typeof job.geoLat === 'number' && typeof job.geoLon === 'number') {
+    return { lat: job.geoLat, lon: job.geoLon };
+  }
+  if (_geoCache[job.address || '']) return _geoCache[job.address];
+  const addr = job.address || '';
+  if (!addr) return null;
+  try {
+    const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(addr);
+    const r = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    const results = await r.json();
+    if (!Array.isArray(results) || !results.length) return null;
+    const lat = parseFloat(results[0].lat), lon = parseFloat(results[0].lon);
+    if (isNaN(lat) || isNaN(lon)) return null;
+    _geoCache[addr] = { lat, lon };
+    if (conDb) coll('jobs').doc(job.id).update({ geoLat: lat, geoLon: lon }).catch(() => {});
+    return { lat, lon };
+  } catch(e) {
+    return null;
+  }
+}
+
+const OFFSITE_THRESHOLD_FEET = 500;
+
+async function clockIn() {
   const jobId = document.getElementById('clockJobSelect')?.value || '';
   if (!jobId) { alert('Please select a job first.'); return; }
   if (!conDb || !conCurrentUser) return;
@@ -14535,8 +14666,33 @@ function clockIn() {
   const selVal = document.getElementById('clockPhaseSelect')?.value || '';
   const [epicId, featureId] = selVal ? selVal.split('|') : ['', ''];
   const feature = featureId ? _clockFeatures.find(f => f.id === featureId) : null;
-  const now = new Date();
 
+  // GPS is required to clock in -- per Travis's spec, a failed/denied/
+  // unavailable location BLOCKS clock-in (crew needs to enable location
+  // services), while a successful location that's simply far from the
+  // jobsite does NOT block -- it just gets flagged for review.
+  const clockBtn = document.getElementById('clockBtn');
+  if (clockBtn) { clockBtn.disabled = true; clockBtn.style.opacity = '0.6'; }
+  let position;
+  try {
+    position = await getCurrentPositionAsync(12000);
+  } catch(e) {
+    if (clockBtn) { clockBtn.disabled = false; clockBtn.style.opacity = ''; }
+    alert('Location access is required to clock in. Please enable location services for this site and try again.\n\n(' + (e.message || 'Location unavailable') + ')');
+    return;
+  }
+
+  const userLat = position.coords.latitude;
+  const userLon = position.coords.longitude;
+  let offSite = false;
+  let distanceFt = null;
+  const siteCoords = await getJobCoordinates(job);
+  if (siteCoords) {
+    distanceFt = Math.round(haversineDistanceFeet(userLat, userLon, siteCoords.lat, siteCoords.lon));
+    offSite = distanceFt > OFFSITE_THRESHOLD_FEET;
+  }
+
+  const now = new Date();
   const entry = {
     userId: conCurrentUser.uid,
     userEmail: conCurrentUser.email || '',
@@ -14547,6 +14703,10 @@ function clockIn() {
     phaseName: feature?.name || '',
     clockIn: firebase.firestore.FieldValue.serverTimestamp(),
     clockInISO: now.toISOString(),
+    clockInLat: userLat,
+    clockInLon: userLon,
+    offSite,
+    distanceFt,
     clockOut: null,
     notes: document.getElementById('clockNotes')?.value.trim() || '',
     date: now.toISOString().split('T')[0],
@@ -14556,32 +14716,85 @@ function clockIn() {
 
   coll('timeentries').add(entry)
     .then(() => { _clockStart = now; startClockTicker(); })
-    .catch(e => alert('Error clocking in: ' + e.message));
+    .catch(e => alert('Error clocking in: ' + e.message))
+    .finally(() => { if (clockBtn) { clockBtn.disabled = false; clockBtn.style.opacity = ''; } });
 }
 
-function clockOut() {
+// Set while a clock-out is waiting on a required Daily Log — cleared once
+// the log is saved (see the patched saveLog() further down, which checks
+// this and completes the clock-out automatically) or if the user cancels
+// out of the Add Log modal without saving, in which case they're still
+// clocked in and nothing was lost.
+let _pendingClockOut = null;
+
+// Checks whether a genuine crew-submitted Daily Log (no `type` field --
+// see loadGlobalLogs() for why that's the reliable signal) already exists
+// for this job today. Small, single-day, single-job result set, so a
+// client-side filter after the date query is cheap and needs no new index.
+async function hasTodayDailyLog(jobId, dateStr) {
+  if (!conDb || !jobId) return false;
+  try {
+    const snap = await coll('jobs').doc(jobId).collection('logs')
+      .where('date', '==', dateStr).get();
+    let found = false;
+    snap.forEach(doc => { if (!doc.data().type) found = true; });
+    return found;
+  } catch(e) {
+    // If the check itself fails, don't trap the crew out of clocking out
+    // over a network hiccup -- fail open here specifically.
+    return true;
+  }
+}
+
+async function clockOut() {
   if (!_clockedInEntry || !conDb) return;
+  const jobId = _clockedInEntry.jobId;
+  const dateStr = _clockedInEntry.date || new Date().toISOString().split('T')[0];
+
+  const clockBtn = document.getElementById('clockBtn');
+  if (clockBtn) { clockBtn.disabled = true; clockBtn.style.opacity = '0.6'; }
+  const alreadyLogged = await hasTodayDailyLog(jobId, dateStr);
+  if (clockBtn) { clockBtn.disabled = false; clockBtn.style.opacity = ''; }
+
+  if (!alreadyLogged) {
+    // Required, not optional -- per Travis's spec, clocking out is blocked
+    // until today's Daily Log (with the option to attach photos) is saved.
+    _pendingClockOut = { entry: _clockedInEntry };
+    alert('Before you clock out, add today\'s Daily Log for this job (crew, notes, and photos if you have any). Save it to finish clocking out.');
+    openAddLogModal();
+    return;
+  }
+
+  await performClockOut(_clockedInEntry);
+}
+
+// The actual clock-out write, split out from clockOut() so both the normal
+// path and the "resume after the required Daily Log was saved" path in
+// saveLog() can call the same completion logic.
+async function performClockOut(entry) {
+  if (!entry || !conDb) return;
   const now = new Date();
-  const clockInTime = _clockedInEntry.clockInISO ? new Date(_clockedInEntry.clockInISO) : new Date(now - 3600000);
+  const clockInTime = entry.clockInISO ? new Date(entry.clockInISO) : new Date(now - 3600000);
   const hours = Math.round((now - clockInTime) / 3600000 * 100) / 100;
   const notes = document.getElementById('clockNotes');
   const notesValue = notes ? notes.value.trim() : '';
 
-  coll('timeentries').doc(_clockedInEntry.id).update({
-    clockOut: firebase.firestore.FieldValue.serverTimestamp(),
-    clockOutISO: now.toISOString(),
-    hours,
-    notes: notesValue,
-    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-  }).then(() => {
+  try {
+    await coll('timeentries').doc(entry.id).update({
+      clockOut: firebase.firestore.FieldValue.serverTimestamp(),
+      clockOutISO: now.toISOString(),
+      hours,
+      notes: notesValue,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
     stopClockTicker();
     // A clock-out note is field-crew activity on the job same as a
     // manually-added Daily Log — push it into that same collection so it
     // shows up in the Daily Logs tab/feed and counts toward "logged
     // today" staleness checks, not just the Time Log table.
-    if (notesValue && _clockedInEntry.jobId) {
-      coll('jobs').doc(_clockedInEntry.jobId).collection('logs').add(subDoc({
-        date: _clockedInEntry.date || now.toISOString().split('T')[0],
+    if (notesValue && entry.jobId) {
+      coll('jobs').doc(entry.jobId).collection('logs').add(subDoc({
+        date: entry.date || now.toISOString().split('T')[0],
         weather: '',
         crew: '',
         notes: notesValue,
@@ -14591,7 +14804,9 @@ function clockOut() {
       })).catch(() => {});
     }
     if (notes) notes.value = '';
-  }).catch(e => alert('Error clocking out: ' + e.message));
+  } catch(e) {
+    alert('Error clocking out: ' + e.message);
+  }
 }
 
 // ── Feature selectors for time entry (Epic/Feature/Task model) ──
@@ -14953,7 +15168,7 @@ function renderTimeLog() {
       <td style="font-size:.82rem;color:var(--amber)">${esc(e.jobName||'—')}</td>
       <td style="font-size:.78rem;color:#60a5fa">${e.phaseName ? '⚡ '+esc(e.phaseName) : '<span style="color:var(--muted)">—</span>'}</td>
       <td style="font-size:.82rem">${e.date||'—'}</td>
-      <td style="font-size:.82rem">${inTime}</td>
+      <td style="font-size:.82rem">${inTime}${e.offSite ? ` <span title="${e.distanceFt != null ? e.distanceFt + ' ft from jobsite' : 'Off-site'}" style="background:rgba(239,83,80,.15);color:#ef5350;font-size:.65rem;font-weight:800;padding:2px 6px;border-radius:5px;margin-left:4px;white-space:nowrap">📍 OFF-SITE</span>` : ''}</td>
       <td style="font-size:.82rem">${outTime || '<span class="clocked-in-badge" style="font-size:.68rem">● Live</span>'}</td>
       <td style="text-align:right;font-weight:700;color:${e.hours?'#a3f2d2':'var(--muted)'}">
         ${e.hours ? e.hours.toFixed(2)+'h' : '—'}
@@ -16235,6 +16450,14 @@ function loadGlobalLogs() {
     .onSnapshot(snap => {
       globalLogs = [];
       snap.forEach(doc => {
+        const data = doc.data();
+        // The 'logs' subcollection also holds system-generated activity
+        // (status changes, invoice events, proposal views, etc.) -- those
+        // all carry an explicit `type`. A genuine crew-submitted Daily Log
+        // (via saveLog()) never sets `type` at all, so that's the reliable
+        // signal for "this belongs on the Daily Logs page" vs "this belongs
+        // on the Activity feed only."
+        if (data.type) return;
         const jobId = doc.ref.parent.parent.id;
         const job = conJobs.find(j => j.id === jobId);
         globalLogs.push({
@@ -16243,7 +16466,7 @@ function loadGlobalLogs() {
           jobName: job?.name || 'Unknown Job',
           jobNumber: job?.jobNumber || '',
           jobStatus: job?.status || '',
-          ...doc.data()
+          ...data
         });
       });
       renderGlobalLogs();
@@ -16264,11 +16487,13 @@ function loadGlobalLogsFallback() {
       .orderBy('date', 'desc').limit(20).get()
       .then(snap => {
         snap.forEach(doc => {
+          const data = doc.data();
+          if (data.type) return; // same filter as the primary path above
           globalLogs.push({
             id: doc.id, jobId: job.id,
             jobName: job.name, jobNumber: job.jobNumber || '',
             jobStatus: job.status || '',
-            ...doc.data()
+            ...data
           });
         });
       })
@@ -26957,21 +27182,18 @@ function loadJobActivity(jobId, mode) {
 
   Promise.all([logsP, invP, phaseP, docsP]).then(done).catch(done);
 }
+// Consolidated into the real Notes system (jobNotes collection) rather than
+// writing a second, disconnected kind of "note" into the shared logs/activity
+// collection via a plain prompt(). Every "Log Note" entry point in the app
+// now opens the same rich Add Note modal and lands in the same place, so
+// there's exactly one notes system instead of two.
 function addJobActivity(type) {
   if (!conCurrentJobId) return;
-  const note = prompt('Add a note to this job:');
-  if (!note?.trim()) return;
-  coll('jobs').doc(conCurrentJobId).collection('logs').add({
-    date: new Date().toISOString().split('T')[0],
-    notes: note.trim(),
-    userName: conCurrentUser?.displayName || conCurrentUser?.email || 'Unknown',
-    type: 'note',
-    companyId: currentCompanyId,
-    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-  }).then(() => {
-    loadJobActivity(conCurrentJobId);
-    renderLogList();
-  });
+  if (type === 'note') {
+    switchDetailTab('jobnotes', null);
+    openAddJobNote();
+    return;
+  }
 }
 window.addJobActivity = addJobActivity;
 

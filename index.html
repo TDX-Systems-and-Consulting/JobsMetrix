@@ -3308,7 +3308,7 @@
   <!-- ── Add Daily Log Modal ── -->
   <div id="addLogModal" class="modal-overlay">
     <div class="modal-box" style="max-width:560px">
-      <div class="modal-head"><h3 style="margin:0">Daily Log</h3><button class="btn" onclick="kClose('addLogModal')">Close</button></div>
+      <div class="modal-head"><h3 style="margin:0">Daily Log</h3><button class="btn" onclick="cancelAddLogModal()">Close</button></div>
       <div class="modal-body">
         <div class="form-grid">
           <div><label class="small muted">Date</label><input id="logDate" type="date" /></div>
@@ -3334,7 +3334,7 @@
         </div>
       </div>
       <div class="modal-foot">
-        <button class="btn" onclick="kClose('addLogModal')">Cancel</button>
+        <button class="btn" onclick="cancelAddLogModal()">Cancel</button>
         <button class="btn-amber" onclick="saveLog()">Save Log</button>
       </div>
     </div>
