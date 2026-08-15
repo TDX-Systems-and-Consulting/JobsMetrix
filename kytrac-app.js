@@ -8409,11 +8409,19 @@ function removeLogPhoto(idx) {
 // Store photos as base64 in Firestore (small photos) or show warning for large
 async function uploadLogPhotos() {
   if (!_logPhotoPending.length) return [];
-  // Compress to max ~200KB each before storing in Firestore
+  // Compress each photo to fit safely under Firestore's ~1MB field limit.
+  // This used to be a single fixed-pass compressImage(dataUrl, 800, 0.7)
+  // with no size check on the result -- fine for most phone photos, but a
+  // detailed, texture-heavy site photo (exactly the kind taken of
+  // demolition debris) could still come out over the limit, and nothing
+  // caught that before handing it to Firestore. compressUntilUnderLimit()
+  // is the same robust, already-proven helper used elsewhere in the app:
+  // it steps down width/quality repeatedly until the result actually
+  // fits, instead of gambling on one fixed setting.
   const results = [];
   for (const p of _logPhotoPending) {
     try {
-      const compressed = await compressImage(p.dataUrl, 800, 0.7);
+      const compressed = await compressUntilUnderLimit(p.dataUrl, 900000);
       results.push({ dataUrl: compressed, name: p.name, uploadedAt: new Date().toISOString() });
     } catch(e) {
       results.push({ dataUrl: p.dataUrl, name: p.name, uploadedAt: new Date().toISOString() });
@@ -8480,46 +8488,69 @@ function closeLightbox() {
 
 // ── Patch saveLog to include photos ──
 const _origSaveLog = window.saveLog;
+// Guards against exactly what happened in the field: repeated taps on
+// "Save Log" while a save is still in progress used to fire a fresh,
+// fully independent save attempt every single time -- racing Firestore
+// writes against each other, any of which could silently interfere with
+// the others. Combined with zero top-level error handling, a real
+// worker got stuck unable to clock out with no error message at all,
+// no matter how many times they tapped Save.
+let _savingLog = false;
 window.saveLog = async function() {
+  if (_savingLog) return; // ignore a second tap while the first save is still running
   if (!conCurrentJobId || !conDb) return;
   const date = document.getElementById('logDate').value;
   if (!date) { alert('Date is required.'); return; }
 
-  // Upload photos first
-  let photos = [];
-  if (_logPhotoPending.length > 0) {
-    try { photos = await uploadLogPhotos(); }
-    catch(e) { console.warn('Photo upload error:', e); }
-  }
+  _savingLog = true;
+  const saveBtn = document.querySelector('#addLogModal .btn-amber');
+  const originalBtnText = saveBtn ? saveBtn.textContent : null;
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving\u2026'; saveBtn.style.opacity = '0.6'; }
 
-  const data = {
-    date,
-    weather: document.getElementById('logWeather').value,
-    crew: document.getElementById('logCrew').value.trim(),
-    notes: document.getElementById('logNotes').value.trim(),
-    issues: document.getElementById('logIssues').value.trim(),
-    photos,
-    createdBy: conCurrentUser ? conCurrentUser.email : 'unknown',
-    createdAt: firebase.firestore.FieldValue.serverTimestamp()
-  };
-  coll('jobs').doc(conCurrentJobId).collection('logs').add(subDoc(data))
-    .then(async () => {
-      _logPhotoPending = [];
-      kClose('addLogModal');
-      // If this log was the one required to unblock a clock-out, and it's
-      // for the same job the pending clock-out is for, finish the clock-out
-      // now. Guarded by jobId match so an unrelated log saved from a
-      // different job's Daily Logs tab can't accidentally complete a stale
-      // pending clock-out.
-      if (_pendingClockOut && _pendingClockOut.entry?.jobId === conCurrentJobId) {
-        const entry = _pendingClockOut.entry;
-        _pendingClockOut = null;
-        await performClockOut(entry);
-      } else {
-        switchDetailTab('logs', null);
-      }
-    })
-    .catch(e => alert('Error: ' + e.message));
+  try {
+    // Upload photos first
+    let photos = [];
+    if (_logPhotoPending.length > 0) {
+      try { photos = await uploadLogPhotos(); }
+      catch(e) { console.warn('Photo upload error:', e); }
+    }
+
+    const data = {
+      date,
+      weather: document.getElementById('logWeather').value,
+      crew: document.getElementById('logCrew').value.trim(),
+      notes: document.getElementById('logNotes').value.trim(),
+      issues: document.getElementById('logIssues').value.trim(),
+      photos,
+      createdBy: conCurrentUser ? conCurrentUser.email : 'unknown',
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    };
+    await coll('jobs').doc(conCurrentJobId).collection('logs').add(subDoc(data));
+
+    _logPhotoPending = [];
+    kClose('addLogModal');
+    // If this log was the one required to unblock a clock-out, and it's
+    // for the same job the pending clock-out is for, finish the clock-out
+    // now. Guarded by jobId match so an unrelated log saved from a
+    // different job's Daily Logs tab can't accidentally complete a stale
+    // pending clock-out.
+    if (_pendingClockOut && _pendingClockOut.entry?.jobId === conCurrentJobId) {
+      const entry = _pendingClockOut.entry;
+      _pendingClockOut = null;
+      await performClockOut(entry);
+    } else {
+      switchDetailTab('logs', null);
+    }
+  } catch(e) {
+    // Nothing in here used to be caught at all -- any unexpected error
+    // (a bad DOM reference, a Firestore write that's too large, a
+    // network hiccup) just vanished with zero feedback, leaving the
+    // person tapping Save into the void. Now it always surfaces.
+    alert('Error saving Daily Log: ' + (e?.message || e) + '\n\nYour entry was NOT saved -- please try again.');
+  } finally {
+    _savingLog = false;
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = originalBtnText; saveBtn.style.opacity = ''; }
+  }
 };
 
 // Closing/cancelling the Add Log modal without saving must NOT leave a
