@@ -1185,7 +1185,7 @@
         <span class="kt-nav-icon">👷</span> Contractors
       </button>
 
-      <div class="kt-nav-section">Financials</div>
+      <div class="kt-nav-section" id="navSectionFinancials">Financials</div>
       <button class="kt-nav-item" onclick="ktNav('costing',this)">
         <span class="kt-nav-icon">💰</span> Job Costing
       </button>
@@ -1207,7 +1207,7 @@
 
     </nav>
 
-      <div class="kt-nav-section">Account</div>
+      <div class="kt-nav-section" id="navSectionAccount">Account</div>
       <button class="kt-nav-item" onclick="ktNav('settings',this)">
         <span class="kt-nav-icon">⚙️</span> Company Settings
       </button>
@@ -1244,11 +1244,6 @@
     <!-- ── PAGE: DASHBOARD ── -->
     <div style="flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0">
     <div class="kt-page active" id="ktPageDashboard">
-
-      <!-- Restricted view notice -->
-      <div id="homeRestrictedNotice" style="display:none;background:rgba(96,165,250,.08);border:1px solid rgba(96,165,250,.25);border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:.8rem;color:#93c5fd">
-        Showing your assigned jobs only. Company-wide financials, pipeline, and labor cost data aren't shown for your role.
-      </div>
 
       <!-- Row 1: Operations (counts & percentages) -->
       <div class="kt-stats" id="conStats" style="margin-bottom:10px">
@@ -4802,7 +4797,7 @@
 
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
-<script src="kytrac-app.js?v=202608151139"></script>
+<script src="kytrac-app.js?v=202608151148"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW

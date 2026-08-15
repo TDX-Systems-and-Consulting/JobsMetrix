@@ -419,9 +419,15 @@ function renderJobsBoard() {
   board.innerHTML = '';
 
   const colsToShow = _showClosedLanes ? KANBAN_COLUMNS : KANBAN_COLUMNS.filter(c => !c.hidden);
+  // Field Techs only ever see jobs they're actually on (crew member,
+  // superintendent, or PM) -- this board previously showed every job in
+  // the company to every role with zero filtering, the same gap as the
+  // sidebar itself.
+  const myJobIds = isFieldTechRestricted() ? getMyJobIds() : null;
 
   colsToShow.forEach(col => {
-    const jobs = conJobs.filter(j => col.statuses.includes(j.status));
+    let jobs = conJobs.filter(j => col.statuses.includes(j.status));
+    if (myJobIds) jobs = jobs.filter(j => myJobIds.has(j.id));
     const el = document.createElement('div');
     el.className = 'kt-col';
     el.style.borderTopColor = col.color;
@@ -9902,7 +9908,8 @@ function renderHomeDashboard() {
   const fullAccess = isOwnerOrAdmin();
 
   const toggle = (id, show) => { const el = document.getElementById(id); if (el) el.style.display = show ? '' : 'none'; };
-  toggle('homeRestrictedNotice', !fullAccess);
+  // homeRestrictedNotice banner removed per Travis -- the hidden tiles
+  // below already make the restriction obvious without a callout.
   // Every one of these carries company-wide $ or pipeline data the
   // banner above explicitly promises a restricted role won't see.
   // Real bug found here: 'statMarginWrap' doesn't exist anywhere in the
@@ -14204,6 +14211,29 @@ function applyRolePermissions() {
     'settings': canSeeSettings,
   };
 
+  // Field Technician sidebar allowlist -- confirmed with Travis directly
+  // (a real Field Tech test account had the FULL sidebar: Change Orders,
+  // Master Schedule, Documents, Customers, Vendors, Contractors, Reports,
+  // and Purchase Orders all fully visible, none of which a field crew
+  // member needs day to day). Kept, not hidden: Home, Notes, Messages,
+  // Jobs (now filtered to assigned-only, see renderJobsBoard), To-Dos,
+  // Daily Logs, Calendar, Time -- everything a field tech actually uses.
+  // Job-specific Plans/Documents are still reachable through Jobs -> their
+  // assigned job -> Plans tab (already in FIELD_TECH_ALLOWED_TABS), so a
+  // separate company-wide Documents link isn't needed on top of that.
+  if (isFieldTechRestricted()) {
+    Object.assign(navItems, {
+      'globalChangeOrders': false,
+      'masterschedule': false,
+      'documents': false,
+      'customers': false,
+      'vendors': false,
+      'contractors': false,
+      'reports': false,
+      'purchaseorders': false,
+    });
+  }
+
   document.querySelectorAll('.kt-nav-item').forEach(btn => {
     const onclick = btn.getAttribute('onclick') || '';
     Object.entries(navItems).forEach(([key, visible]) => {
@@ -14211,6 +14241,23 @@ function applyRolePermissions() {
         btn.style.display = visible ? '' : 'none';
       }
     });
+  });
+
+  // A sidebar section header (e.g. "Financials", "Account") left sitting
+  // alone with every item underneath it hidden looks broken -- this can
+  // happen for more than just Field Technicians (Sales/Marketing Staff
+  // also lack costing/invoicing/catalog access, emptying "Financials" the
+  // same way; anyone who isn't Owner/PM empties "Account"). Generic fix:
+  // walk each section header and hide it too if none of its own items
+  // are visible, rather than hardcoding this to one specific role.
+  document.querySelectorAll('.kt-nav-section').forEach(sectionEl => {
+    let sib = sectionEl.nextElementSibling;
+    let anyVisible = false;
+    while (sib && sib.classList && sib.classList.contains('kt-nav-item')) {
+      if (sib.style.display !== 'none') anyVisible = true;
+      sib = sib.nextElementSibling;
+    }
+    sectionEl.style.display = anyVisible ? '' : 'none';
   });
 
   // Hide + New Job for read-only roles
