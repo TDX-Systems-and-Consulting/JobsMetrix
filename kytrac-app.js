@@ -6111,13 +6111,19 @@ function saveEntryInfo() {
 }
 window.saveEntryInfo = saveEntryInfo;
 
-// Financials tab is locked to Travis's specific login, not just
-// "Owner role" — he was explicit this needs to be airtight regardless
-// of how roles get assigned/reassigned later. Hardcoded email check,
-// not a role flag, so there's no ambiguity about who this applies to.
-const FINANCIALS_TAB_ALLOWED_EMAIL = 'travis@7pillarsgroup.org';
+// Financials tab is locked to an exact, hardcoded email allowlist, not a
+// role flag — Travis was explicit this needs to be airtight regardless
+// of how roles get assigned/reassigned later. Originally just Travis;
+// opened up to Jason on his explicit instruction ("only Jason and I have
+// the financials") -- still a hard two-person allowlist, not tied to
+// the 'Owner' role, so it stays exactly these two even if someone else
+// is ever made an Owner for other reasons.
+const FINANCIALS_TAB_ALLOWED_EMAILS = new Set([
+  'travis@7pillarsgroup.org',
+  'jason@7pillarsgroup.org',
+]);
 function canViewFinancialsTab() {
-  return (conCurrentUser?.email || '').toLowerCase() === FINANCIALS_TAB_ALLOWED_EMAIL;
+  return FINANCIALS_TAB_ALLOWED_EMAILS.has((conCurrentUser?.email || '').toLowerCase());
 }
 
 // Broader than canViewFinancialsTab() above (which is a hard, single-email
