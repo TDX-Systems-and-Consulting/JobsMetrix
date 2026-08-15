@@ -9903,11 +9903,36 @@ function renderHomeDashboard() {
 
   const toggle = (id, show) => { const el = document.getElementById(id); if (el) el.style.display = show ? '' : 'none'; };
   toggle('homeRestrictedNotice', !fullAccess);
+  // Every one of these carries company-wide $ or pipeline data the
+  // banner above explicitly promises a restricted role won't see.
+  // Real bug found here: 'statMarginWrap' doesn't exist anywhere in the
+  // HTML (the real id is statAvgMarginTile) -- getElementById() on a
+  // nonexistent id returns null, and toggle()'s `if (el)` guard means
+  // that silently did nothing, so Avg Margin was never actually hidden.
+  // Five more tiles (Collected/Spent/Net MTD, Avg Job Value, Outstanding
+  // Invoices) had NO hide call at all -- confirmed live on a real
+  // Field Technician test account: the banner said financials weren't
+  // shown while $28,459 Collected, $4,085 Spent, +$24,374 Net, 12.4%
+  // Avg Margin, and $18,644 Avg Job Value were all fully visible right
+  // underneath it.
   toggle('statContractWrap', fullAccess);
-  toggle('statMarginWrap', fullAccess);
+  toggle('statAvgMarginTile', fullAccess);
+  toggle('statCollectedTile', fullAccess);
+  toggle('statSpentTile', fullAccess);
+  toggle('statNetTile', fullAccess);
+  toggle('statAvgJobValTile', fullAccess);
+  toggle('statOutstandingTile', fullAccess);
+  // "Pipeline... data" is the banner's own wording -- Estimates Pending
+  // and Close Rate are pipeline-stage metrics same as the Pipeline card
+  // itself (homePipelineCard), which was already correctly gated.
+  toggle('statEstPendingTile', fullAccess);
+  toggle('statCloseRateTile', fullAccess);
   toggle('homePipelineCard', fullAccess);
+  // "Labor Eff" tile referenced here (statLaborEffTile) doesn't exist
+  // anywhere in the HTML -- harmless (nothing to leak since nothing
+  // renders), but dead/orphaned code, removed rather than left sitting
+  // here looking like it does something.
   toggle('homeInfoGrid', fullAccess);
-  toggle('statLaborEffTile', fullAccess);
 
   const myJobIds = fullAccess ? null : getMyJobIds();
   const closedStatuses = ['Closed Completed','Closed Lost'];
