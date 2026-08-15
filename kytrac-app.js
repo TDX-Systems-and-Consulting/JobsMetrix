@@ -171,6 +171,7 @@ window.kClose = kClose;
 // ── NAVIGATION ──
 const KT_PAGES = {
   dashboard:          { el:'ktPageDashboard',          title:'🏠 Home' },
+  fieldtechhome:      { el:'ktPageFieldTechHome',      title:'🏠 Home' },
   globalNotes:        { el:'ktPageGlobalNotes',        title:'📋 Notes' },
   globalMessages:     { el:'ktPageGlobalMessages',     title:'💬 Messages' },
   globalChangeOrders: { el:'ktPageGlobalChangeOrders', title:'🔄 Change Orders' },
@@ -534,6 +535,7 @@ function ktNav(key, btn) {
     else conRenderList();
   }
   if(key==='dashboard') { conRenderBoard(); conRenderStats(); renderHomeDashboard(); }
+  if(key==='fieldtechhome') { renderFieldTechHome(); }
   if(key==='catalog') renderCatalog();
   if(key==='calendar') { loadGlobalPhases(); loadCalendarEvents(); buildTeamColors(); renderCalendar(); loadGCalStatus(); loadTimeOffRequests(); }
   if(key==='masterschedule') { renderMasterSchedulePage(); }
@@ -9904,6 +9906,46 @@ function renderMasterGantt() {
 }
 window.renderMasterGantt = renderMasterGantt;
 
+// ── Field Technician simplified home (Time / My Job / Calendar /
+// Messages / To-Do) -- replaces the full dashboard entirely for this
+// role, per Travis: no left sidebar, just these as big tappable tiles.
+function renderFieldTechHome() {
+  const jobBox = document.getElementById('ftJobTileContent');
+  if (!jobBox) return; // page not in the DOM yet
+
+  const closedStatuses = ['Closed Completed', 'Closed Lost'];
+  const myJobIds = getMyJobIds();
+  const myJobs = conJobs.filter(j => myJobIds.has(j.id) && !closedStatuses.includes(j.status));
+
+  if (!myJobs.length) {
+    jobBox.innerHTML = `<div style="padding:14px 0;color:var(--muted);font-style:italic;text-align:center">No job assigned yet</div>`;
+  } else if (myJobs.length === 1) {
+    const j = myJobs[0];
+    jobBox.innerHTML = `
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px">${esc(j.name || 'Job')}</div>
+      <div style="color:var(--muted);font-size:.85rem">${esc(j.address || '')}</div>
+      <div style="margin-top:6px;font-size:.78rem;color:var(--amber);font-weight:700">${esc(j.status || '')}</div>`;
+  } else {
+    // More than one active assignment -- list them, each opens directly.
+    jobBox.innerHTML = myJobs.map(j => `
+      <div onclick="event.stopPropagation();openJobDetail('${j.id}')" style="padding:8px 0;border-bottom:1px solid var(--line);cursor:pointer">
+        <div style="font-weight:700">${esc(j.name || 'Job')}</div>
+        <div style="color:var(--muted);font-size:.78rem">${esc(j.status || '')}</div>
+      </div>`).join('');
+  }
+  window._ftMyJobs = myJobs;
+}
+
+// The "My Job" tile itself -- opens directly into the single assigned
+// job, or does nothing extra for 0/many (those cases already render
+// their own clickable rows/empty state inside the tile via
+// renderFieldTechHome() above).
+function openMyFieldTechJob() {
+  const jobs = window._ftMyJobs || [];
+  if (jobs.length === 1) openJobDetail(jobs[0].id);
+}
+window.openMyFieldTechJob = openMyFieldTechJob;
+
 function renderHomeDashboard() {
   const fullAccess = isOwnerOrAdmin();
 
@@ -14268,6 +14310,36 @@ function applyRolePermissions() {
   // Show/hide team management section
   const teamSection = document.getElementById('teamSection');
   if (teamSection) teamSection.style.display = role === 'Owner' ? 'block' : 'none';
+
+  // Field Techs get a completely different, minimal experience per
+  // Travis: no left sidebar at all, just a 5-tile home screen (Time,
+  // their assigned job, Calendar, Messages, To-Do). Toggled both ways
+  // (not just "hide for Field Tech") so switching between test accounts
+  // without a full page reload correctly restores the normal sidebar
+  // for everyone else too.
+  const isFT = isFieldTechRestricted();
+  const sidebarEl = document.getElementById('ktSidebar');
+  const mainEl = document.querySelector('.kt-main');
+  const menuBtn = document.querySelector('.kt-menu-btn');
+  const ftHomeBtn = document.getElementById('ktFieldTechHomeBtn');
+  if (sidebarEl) sidebarEl.style.display = isFT ? 'none' : '';
+  if (mainEl) {
+    // .kt-main has a hardcoded margin-left/width sized for the sidebar
+    // (not flex-based spacing) -- display:none on the sidebar alone
+    // would leave an empty gap rather than actually reflowing.
+    mainEl.style.marginLeft = isFT ? '0' : '';
+    mainEl.style.width = isFT ? '100%' : '';
+  }
+  if (menuBtn) menuBtn.style.display = isFT ? 'none' : '';
+  if (ftHomeBtn) ftHomeBtn.style.display = isFT ? '' : 'none';
+  if (isFT) {
+    // Land a Field Tech on their simplified home instead of the normal
+    // (still-default-active-in-the-static-HTML) full dashboard.
+    const dashEl = document.getElementById('ktPageDashboard');
+    if (dashEl && dashEl.classList.contains('active')) {
+      ktNav('fieldtechhome', null);
+    }
+  }
 }
 
 // Expose team functions

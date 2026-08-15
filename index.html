@@ -1238,6 +1238,44 @@
       <div class="kt-topbar-actions">
         <input class="kt-search" placeholder="Search jobs..." id="ktSearchInput" oninput="ktFilterJobs(this.value)" />
         <button class="btn-amber" id="ktNewJobBtn" onclick="openNewJobModal()">+ New Job</button>
+        <button class="btn-amber" id="ktFieldTechHomeBtn" onclick="ktNav('fieldtechhome', null)" style="display:none">🏠 Home</button>
+      </div>
+    </div>
+
+    <!-- ── PAGE: FIELD TECH SIMPLIFIED HOME ── -->
+    <div class="kt-page" id="ktPageFieldTechHome" style="padding:20px;overflow-y:auto">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;max-width:900px;margin:0 auto">
+
+        <div onclick="ktNav('time', null)" class="kt-card" style="padding:24px;cursor:pointer;text-align:center;transition:transform .1s" onmousedown="this.style.transform='scale(.97)'" onmouseup="this.style.transform=''" onmouseleave="this.style.transform=''">
+          <div style="font-size:2.2rem;margin-bottom:8px">⏱</div>
+          <div style="font-size:1.15rem;font-weight:800">Time</div>
+          <div style="color:var(--muted);font-size:.82rem;margin-top:4px">Clock in / out</div>
+        </div>
+
+        <div onclick="openMyFieldTechJob()" class="kt-card" style="padding:24px;cursor:pointer;text-align:center;transition:transform .1s" onmousedown="this.style.transform='scale(.97)'" onmouseup="this.style.transform=''" onmouseleave="this.style.transform=''">
+          <div style="font-size:2.2rem;margin-bottom:8px">🔧</div>
+          <div style="font-size:1.15rem;font-weight:800;margin-bottom:8px">My Job</div>
+          <div id="ftJobTileContent" style="text-align:left"></div>
+        </div>
+
+        <div onclick="ktNav('calendar', null)" class="kt-card" style="padding:24px;cursor:pointer;text-align:center;transition:transform .1s" onmousedown="this.style.transform='scale(.97)'" onmouseup="this.style.transform=''" onmouseleave="this.style.transform=''">
+          <div style="font-size:2.2rem;margin-bottom:8px">📅</div>
+          <div style="font-size:1.15rem;font-weight:800">Calendar</div>
+          <div style="color:var(--muted);font-size:.82rem;margin-top:4px">Your schedule</div>
+        </div>
+
+        <div onclick="ktNav('globalMessages', null)" class="kt-card" style="padding:24px;cursor:pointer;text-align:center;transition:transform .1s" onmousedown="this.style.transform='scale(.97)'" onmouseup="this.style.transform=''" onmouseleave="this.style.transform=''">
+          <div style="font-size:2.2rem;margin-bottom:8px">💬</div>
+          <div style="font-size:1.15rem;font-weight:800">Messages</div>
+          <div style="color:var(--muted);font-size:.82rem;margin-top:4px">Talk to the office</div>
+        </div>
+
+        <div onclick="ktNav('todos', null)" class="kt-card" style="padding:24px;cursor:pointer;text-align:center;transition:transform .1s" onmousedown="this.style.transform='scale(.97)'" onmouseup="this.style.transform=''" onmouseleave="this.style.transform=''">
+          <div style="font-size:2.2rem;margin-bottom:8px">✅</div>
+          <div style="font-size:1.15rem;font-weight:800">To-Do</div>
+          <div style="color:var(--muted);font-size:.82rem;margin-top:4px">Your tasks</div>
+        </div>
+
       </div>
     </div>
 
@@ -4797,7 +4835,7 @@
 
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
-<script src="kytrac-app.js?v=202608151148"></script>
+<script src="kytrac-app.js?v=202608151810"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW
