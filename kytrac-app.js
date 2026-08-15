@@ -11767,13 +11767,53 @@ window.pushInvoiceToQuickBooks = pushInvoiceToQuickBooks;
 async function computeLockedBucketSplit(job) {
   const rc = await computeRealJobCost(job.id);
   const revenue = getJobValue(job) || 0;
-  const materials = rc.materials;
-  const labor = rc.labor;
-  const overhead = revenue * 0.18;
-  const marketing = revenue * 0.015;
-  const remainAfterMOM = revenue - materials - labor - overhead - marketing;
-  const flex = remainAfterMOM * 0.20;
-  const remainAfterFlex = remainAfterMOM - flex;
+  const realSubcontractorTotal = rc.labor;
+  // Materials Billed to Customer -- the marked-up estimate figure, NOT
+  // real spend (rc.materials, used below for the returned "materials"
+  // field, stays the real/actual cost -- everything else in the app
+  // that displays "materials" keeps meaning the same thing it always
+  // has). This is Travis's rebuilt formula: Labor Billed derives from
+  // what the customer was actually billed for materials, matching the
+  // JTXD Job Margin Calculator exactly.
+  const { materials: materialsBilled } = await fetchEstimateCostSplitFresh(job.id);
+
+  // Labor Billed (implied) = whatever's left of the customer price
+  // after Materials Billed.
+  const laborBilled = revenue - materialsBilled;
+
+  // Subcontractor Pay target (62% of Labor Billed, JTXD keeps 38%) vs.
+  // what was actually signed/paid -- the gap (JTXD Payroll Support)
+  // runs either direction: JTXD keeps the difference if the real sub
+  // cost came in under the target, or eats the overage if it ran over.
+  const subPayTarget = laborBilled * 0.62;
+  const jtxdPayrollSupport = subPayTarget - realSubcontractorTotal;
+  const jxtdProjectedPay = laborBilled * 0.38;
+
+  // Crew Food/Gas Expense -- Travis's real policy: $150/Friday lunch +
+  // $50/week gas, 2-week minimum before either charges at all, scaled
+  // off "Chosen Benchmark" days. JOBSMETRIX has no field to capture a
+  // Chosen Benchmark per job yet (it only exists as a manual entry in
+  // the spreadsheet) -- defaults to $0 here, same safe fallback the
+  // blank spreadsheet template uses, until there's somewhere real to
+  // log/store that number per job.
+  const crewFood = 0;
+  const crewGas = 0;
+
+  const jtxdActual = jxtdProjectedPay + jtxdPayrollSupport - crewFood - crewGas;
+
+  // Overhead/Marketing/Flex/Taxes now cascade off JTXD Actual -- what
+  // JTXD really keeps after subcontractor pay settles -- instead of
+  // off raw Revenue. Materials and Labor are pass-through money that's
+  // never really the company's to begin with; on a small job that pass-
+  // through can be most of the contract, and taking 18%+10% off the
+  // FULL revenue can exceed what's actually left over (confirmed on a
+  // real $2,698 job: 28% of revenue was $755 against only $656 truly
+  // retained). Same formula Travis's calculator now uses.
+  const overhead = jtxdActual * 0.18;
+  const marketing = jtxdActual * 0.10;
+  const remainAfterOhMkt = jtxdActual - overhead - marketing;
+  const flex = remainAfterOhMkt * 0.10;
+  const remainAfterFlex = remainAfterOhMkt - flex;
   const taxes = remainAfterFlex * 0.275;
   // Real Stripe processing fees (card ~2.9%+$0.30, ACH/US bank
   // account meaningfully less) come straight out of Retained Earnings
@@ -11784,11 +11824,13 @@ async function computeLockedBucketSplit(job) {
   // invoice, recorded by the webhook from the real balance transaction
   // at the moment of payment), not an estimated rate -- exact, not
   // approximated, and correctly reflects ACH's lower real cost too.
+  // The spreadsheet has no equivalent visibility into this, so it's a
+  // genuine, deliberate difference in scope, not a mismatch to fix.
   const stripeFees = await getJobStripeFeesTotal(job.id);
   const retainedEarnings = remainAfterFlex - taxes - stripeFees;
   const r = v => Math.round(v * 100) / 100;
   return {
-    revenue: r(revenue), materials: r(materials), labor: r(labor),
+    revenue: r(revenue), materials: r(rc.materials), labor: r(realSubcontractorTotal),
     overhead: r(overhead), marketing: r(marketing), flex: r(flex),
     taxes: r(taxes), stripeFees: r(stripeFees), retainedEarnings: r(retainedEarnings),
   };
