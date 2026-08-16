@@ -22681,7 +22681,7 @@ function computeProposalData(job, itemized) {
         if (item.visibleToCustomer === false) return null;
         const price = (item.qty || 1) * (item.unitPrice || item.unitCost || 0);
         if (price <= 0) return null;
-        return { label: toGenericLabel(item.desc || item.name), price, notes: item.notes || '' };
+        return { label: itemDescriptionText(item.desc || item.name), price, notes: item.notes || '' };
       }).filter(Boolean);
 
       return {
@@ -22699,7 +22699,7 @@ function computeProposalData(job, itemized) {
       if (item.visibleToCustomer === false) return null;
       const price = (item.qty || 1) * (item.unitPrice || item.unitCost || 0);
       if (price <= 0) return null;
-      const label = toGenericLabel(item.desc);
+      const label = itemDescriptionText(item.desc);
       return { label, price, notes: item.notes || '' };
     }).filter(Boolean);
 
@@ -23578,6 +23578,24 @@ function toGenericLabel(name) {
   return (name || '').split(' (')[0].replace(/\s*×\d+$/, '').trim() || 'Work';
 }
 
+// toGenericLabel() above is deliberately for short catalog/product NAMES
+// -- stripping everything after " (" removes trailing brand/model/size
+// specs, e.g. "Ceiling Fan Install (Hunter Bay Breeze, 52-inch)" ->
+// "Ceiling Fan Install". Real bug found and fixed here: that same
+// function was also being used on full freeform item DESCRIPTIONS
+// (item.desc) in both the customer proposal and the crew punch list --
+// multi-sentence scope text that can legitimately contain a
+// parenthetical mid-sentence. "Remove all old roof shingles (both
+// layers). Haul away all old roofing shingles..." was silently
+// truncated to just "Remove all old roof shingles" on both documents,
+// discarding the rest of the actual scope of work, not just visually
+// clipping it. This keeps the trailing "×N" quantity-suffix cleanup
+// (still useful on a description) without the parenthetical-stripping
+// that only makes sense for short names.
+function itemDescriptionText(desc) {
+  return (desc || '').replace(/\s*×\d+$/, '').trim() || 'Work';
+}
+
 // Finds the Low/Medium/High grade word for a subgroup, derived from any
 // item inside it tagged with bundleTier (set when added via Smart Add).
 function subgroupGradeLabel(sub) {
@@ -23717,7 +23735,7 @@ function printPunchList() {
 
     const directRows = (group.directItems||[]).filter(i => i.costType !== 'Labor' && (i.unit||'').toLowerCase() !== 'hr').map(item => {
       const gradeWord = item.bundleTier ? ({ low: 'Low Grade', med: 'Medium Grade', high: 'High Grade' }[item.bundleTier] || '') : '';
-      const label = gradeWord ? toGenericLabel(item.desc) + ' — ' + gradeWord : toGenericLabel(item.desc);
+      const label = gradeWord ? itemDescriptionText(item.desc) + ' — ' + gradeWord : itemDescriptionText(item.desc);
       return `<tr>
         <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;width:24px"><div style="width:18px;height:18px;border:2px solid #374151;border-radius:3px;display:inline-block"></div></td>
         <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;font-weight:600">${esc(label)}</td>
