@@ -23232,31 +23232,31 @@ window.printProposal = printProposal;
 // for actually looking at what you're about to send/print, not printing
 // it. Previously the ONLY way to see the proposal at all was to hit
 // Print, which immediately threw up the browser's print dialog.
+// Shows the proposal in-app instead of a new tab/window -- window.open()
+// used to leave mobile users (especially inside a PWA/webview) with no
+// back button and no way to close it, forcing them to close the whole
+// app. An in-page modal always has a real Close button, period.
 function viewProposal() {
   const job = conJobs.find(j => j.id === conCurrentJobId);
   const co = companyProfile;
   const itemized = !!document.getElementById('proposalItemizedToggle')?.checked;
 
-  const win = window.open('', '_blank');
-  if (win) win.document.write('<html><body style="font-family:sans-serif;padding:40px;text-align:center;color:#666">Loading proposal…</body></html>');
+  const showInModal = (html) => {
+    document.getElementById('viewProposalIframe').srcdoc = html;
+    kOpen('viewProposalModal');
+  };
 
   if (!estGroups || !estGroups.length) {
     conLoadEstimate(conCurrentJobId);
     setTimeout(() => {
       const data = computeProposalData(job, itemized);
-      if (!win) { alert('Your browser blocked the popup — check your popup/pop-up blocker settings for this site and try again.'); return; }
-      win.document.open();
-      win.document.write(renderProposalDocumentHtml(data, job, co, false));
-      win.document.close();
+      showInModal(renderProposalDocumentHtml(data, job, co, false));
     }, 1500);
     return;
   }
 
   const data = computeProposalData(job, itemized);
-  if (!win) { alert('Your browser blocked the popup — check your popup/pop-up blocker settings for this site and try again.'); return; }
-  win.document.open();
-  win.document.write(renderProposalDocumentHtml(data, job, co, false));
-  win.document.close();
+  showInModal(renderProposalDocumentHtml(data, job, co, false));
 }
 window.viewProposal = viewProposal;
 

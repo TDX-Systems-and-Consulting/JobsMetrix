@@ -3879,6 +3879,27 @@
     </div>
   </div>
 
+  <!-- ── View Proposal (in-app, not a new tab) ──────────────────────────
+       Was window.open() -- on mobile, especially inside a PWA/webview,
+       that new context can end up with no back button and no way to
+       close it, leaving the only option "close app, start over." An
+       in-page modal always has a real, reliable Close button no matter
+       what platform quirks a new tab/window runs into. -->
+  <div id="viewProposalModal" class="modal-overlay">
+    <div class="modal-box" style="max-width:900px;max-height:95vh;display:flex;flex-direction:column">
+      <div class="modal-head" style="flex-shrink:0">
+        <h3 style="margin:0">👁️ Proposal</h3>
+        <div style="display:flex;gap:8px">
+          <button class="btn" onclick="document.getElementById('viewProposalIframe').contentWindow.print()">🖨 Print</button>
+          <button class="btn" onclick="kClose('viewProposalModal')">✕ Close</button>
+        </div>
+      </div>
+      <div class="modal-body" style="flex:1;overflow:hidden;padding:0">
+        <iframe id="viewProposalIframe" style="width:100%;height:100%;border:none;background:#fff"></iframe>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Add/Edit Estimate Line Item Modal ── -->
   <div id="addEstItemModal" class="modal-overlay">
     <div class="modal-box" style="max-width:620px;max-height:90vh;display:flex;flex-direction:column">
@@ -4835,7 +4856,7 @@
 
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
-<script src="kytrac-app.js?v=202608152350"></script>
+<script src="kytrac-app.js?v=202608161238"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW
