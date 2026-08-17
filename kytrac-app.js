@@ -3071,6 +3071,68 @@ function renderJobMap(job) {
     });
 }
 
+// ── Fix a bad/wrong job pin ──────────────────────────────────────────
+// getJobCoordinates() caches job.geoLat/geoLon PERMANENTLY once set --
+// a single bad Nominatim match (ambiguous or incomplete address, wrong
+// town, wrong street) never self-corrects and silently poisons every
+// future off-site GPS check for that job (Time Log AND Crew Map both
+// read the same cached value). This is the only way to correct it short
+// of editing Firestore data directly.
+function toggleFixJobPin() {
+  const panel = document.getElementById('fixJobPinPanel');
+  if (!panel) return;
+  const opening = panel.style.display === 'none';
+  panel.style.display = opening ? 'block' : 'none';
+  if (opening) {
+    const job = conJobs.find(j => j.id === conCurrentJobId);
+    const latEl = document.getElementById('fixJobPinLat');
+    const lonEl = document.getElementById('fixJobPinLon');
+    if (job && typeof job.geoLat === 'number' && latEl) latEl.value = job.geoLat;
+    if (job && typeof job.geoLon === 'number' && lonEl) lonEl.value = job.geoLon;
+  }
+}
+window.toggleFixJobPin = toggleFixJobPin;
+
+async function useCurrentLocationForJobPin() {
+  if (!conCurrentJobId || !conDb) return;
+  try {
+    const position = await getCurrentPositionAsync(12000);
+    await saveJobPinCoords(position.coords.latitude, position.coords.longitude);
+  } catch(e) {
+    alert('Could not get your location: ' + (e.message || e) + '\n\nMake sure location services are enabled for this site.');
+  }
+}
+window.useCurrentLocationForJobPin = useCurrentLocationForJobPin;
+
+function saveManualJobPin() {
+  const lat = parseFloat(document.getElementById('fixJobPinLat')?.value);
+  const lon = parseFloat(document.getElementById('fixJobPinLon')?.value);
+  if (isNaN(lat) || isNaN(lon)) { alert('Enter both a latitude and longitude.'); return; }
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) { alert('That doesn\'t look like a valid latitude/longitude.'); return; }
+  saveJobPinCoords(lat, lon);
+}
+window.saveManualJobPin = saveManualJobPin;
+
+async function saveJobPinCoords(lat, lon) {
+  if (!conCurrentJobId || !conDb) return;
+  try {
+    await coll('jobs').doc(conCurrentJobId).update({ geoLat: lat, geoLon: lon });
+    const job = conJobs.find(j => j.id === conCurrentJobId);
+    if (job) { job.geoLat = lat; job.geoLon = lon; }
+    // Also clear this job out of the Crew Map's per-page-life coordinate
+    // cache so a corrected pin is picked up immediately instead of
+    // showing the stale wrong one until the next full page reload.
+    if (typeof _crewMapJobCoordsCache === 'object') delete _crewMapJobCoordsCache[conCurrentJobId];
+    if (job) renderJobMap(job);
+    const panel = document.getElementById('fixJobPinPanel');
+    if (panel) panel.style.display = 'none';
+    alert('Pin location saved. Every future on-site/off-site GPS check for this job will use the corrected location.');
+  } catch(e) {
+    alert('Error saving pin location: ' + e.message);
+  }
+}
+
+
 function openJobDetail(jobId, defaultTab) {
   if (isFieldTechRestricted() && (!defaultTab || defaultTab === 'dashboard')) defaultTab = 'phases';
   const job = conJobs.find(j => j.id === jobId);

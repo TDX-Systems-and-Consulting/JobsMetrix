@@ -4297,6 +4297,26 @@
                 <div class="small muted">Loading map...</div>
               </div>
               <div id="detailMapAddress" style="padding:10px 14px;font-size:.8rem;color:var(--muted);border-top:1px solid var(--line)"></div>
+              <div style="padding:0 14px 10px">
+                <a onclick="toggleFixJobPin()" style="font-size:.72rem;color:var(--amber);cursor:pointer;text-decoration:none">📍 Pin looks wrong? Fix it →</a>
+              </div>
+              <div id="fixJobPinPanel" style="display:none;padding:12px 14px;border-top:1px solid var(--line);background:rgba(0,0,0,.15)">
+                <div class="small muted" style="margin-bottom:8px;line-height:1.4">
+                  The map pin is geocoded from the address once, then cached forever — a bad match (wrong street, wrong town) never self-corrects and throws off every future off-site GPS check for this job. Fix it once here.
+                </div>
+                <button class="btn-amber" onclick="useCurrentLocationForJobPin()" style="width:100%;margin-bottom:8px;font-size:.8rem">📍 Use my current GPS location (best if you're standing on-site)</button>
+                <div style="display:flex;gap:8px;align-items:flex-end">
+                  <div style="flex:1">
+                    <label class="small muted" style="display:block;margin-bottom:4px">Latitude</label>
+                    <input id="fixJobPinLat" type="number" step="0.000001" style="width:100%;font-size:.8rem" />
+                  </div>
+                  <div style="flex:1">
+                    <label class="small muted" style="display:block;margin-bottom:4px">Longitude</label>
+                    <input id="fixJobPinLon" type="number" step="0.000001" style="width:100%;font-size:.8rem" />
+                  </div>
+                  <button class="btn" onclick="saveManualJobPin()" style="font-size:.8rem;padding:8px 14px">Save</button>
+                </div>
+              </div>
             </div>
 
             <!-- Weather -->
@@ -4918,7 +4938,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202608172002"></script>
+<script src="kytrac-app.js?v=202608172010"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW
