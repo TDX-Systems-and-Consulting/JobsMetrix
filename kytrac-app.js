@@ -3124,9 +3124,16 @@ async function saveJobPinCoords(lat, lon) {
     // showing the stale wrong one until the next full page reload.
     if (typeof _crewMapJobCoordsCache === 'object') delete _crewMapJobCoordsCache[conCurrentJobId];
     if (job) renderJobMap(job);
+    // If anyone's currently clocked in on this job, Crew Map's Live mode
+    // now recomputes on-site/off-site fresh every render (see
+    // renderCrewMapFromLive) instead of trusting the snapshot baked in
+    // at clock-in time -- so refresh it now instead of leaving their dot
+    // showing the old wrong distance until some unrelated change happens
+    // to trigger a re-render.
+    if (typeof refreshCrewMapIfLive === 'function') refreshCrewMapIfLive();
     const panel = document.getElementById('fixJobPinPanel');
     if (panel) panel.style.display = 'none';
-    alert('Pin location saved. Every future on-site/off-site GPS check for this job will use the corrected location.');
+    alert('Pin location saved. Anyone currently clocked in on this job will update immediately on Crew Map; every future clock-in/out uses the corrected location too.');
   } catch(e) {
     alert('Error saving pin location: ' + e.message);
   }
@@ -15004,11 +15011,29 @@ window.setCrewMapMode = setCrewMapMode;
 
 // Live mode reads off the same allTimeEntries array loadTimeEntries()
 // already keeps current via its onSnapshot listener -- no separate query.
-function renderCrewMapFromLive() {
+async function renderCrewMapFromLive() {
   if (!document.getElementById('ktPageCrewMap')?.classList.contains('active')) return;
-  const entries = (allTimeEntries || []).filter(e => !e.clockOut);
+  const rawEntries = (allTimeEntries || []).filter(e => !e.clockOut);
   const title = document.getElementById('crewMapListTitle');
-  if (title) title.textContent = `Currently clocked in (${entries.length})`;
+  if (title) title.textContent = `Currently clocked in (${rawEntries.length})`;
+  // Live mode must reflect the CURRENT jobsite pin, not whatever it was
+  // at the moment someone clocked in -- offSite/distanceFt on the entry
+  // itself are a one-time snapshot written by clockIn() and never
+  // updated again. Real scenario this fixed: a job's pin gets corrected
+  // (see fixJobPin below) while someone's still clocked in on it -- their
+  // dot and badge used to keep showing the stale pre-fix distance until
+  // they clocked out and back in. Recompute fresh here every render
+  // instead. History mode intentionally does NOT do this -- a past shift
+  // should keep showing what was true then, not get silently rewritten
+  // by a pin correction made after the fact.
+  const entries = await Promise.all(rawEntries.map(async e => {
+    if (typeof e.clockInLat !== 'number' || typeof e.clockInLon !== 'number' || !e.jobId) return e;
+    const job = conJobs.find(j => j.id === e.jobId);
+    const coords = await getJobCoordinates(job);
+    if (!coords) return e; // no current coords available -- fall back to the stored snapshot
+    const distanceFt = Math.round(haversineDistanceFeet(e.clockInLat, e.clockInLon, coords.lat, coords.lon));
+    return { ...e, offSite: distanceFt > OFFSITE_THRESHOLD_FEET, distanceFt };
+  }));
   renderCrewMapMarkers(entries);
   renderCrewMapList(entries);
 }
