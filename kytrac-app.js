@@ -8512,7 +8512,17 @@ const _origSaveLog = window.saveLog;
 let _savingLog = false;
 window.saveLog = async function() {
   if (_savingLog) return; // ignore a second tap while the first save is still running
-  if (!conCurrentJobId || !conDb) return;
+  // This used to be `if (!conCurrentJobId || !conDb) return;` -- a totally
+  // silent bail-out with zero feedback. That's exactly what caused a real
+  // "hit Save, nothing happens" freeze in the field: the clock-out flow
+  // opened this modal without ever setting conCurrentJobId (now fixed at
+  // the source in clockOut()). Keeping a hard guard here too, but it must
+  // never again fail without telling the person something went wrong.
+  if (!conDb) { alert('Not connected -- check your internet connection and try again.'); return; }
+  if (!conCurrentJobId) {
+    alert('Could not tell which job this log belongs to. Please close this and try again -- if it keeps happening, screenshot this and send it to Travis.');
+    return;
+  }
   const date = document.getElementById('logDate').value;
   if (!date) { alert('Date is required.'); return; }
 
@@ -15005,6 +15015,15 @@ async function clockOut() {
   if (!alreadyLogged) {
     // Required, not optional -- per Travis's spec, clocking out is blocked
     // until today's Daily Log (with the option to attach photos) is saved.
+    // saveLog() saves against `conCurrentJobId`, which normally only gets
+    // set by opening a job's detail page (openJobDetail()). Field Techs
+    // clock in/out from the standalone Home dashboard Time tile and never
+    // visit a job detail page, so conCurrentJobId was staying null/stale
+    // here -- saveLog()'s first guard (`if (!conCurrentJobId...) return;`)
+    // then silently no-opped on Save with zero feedback: the exact
+    // "hit Save, nothing happens" freeze reported from the field. Set it
+    // explicitly here, same pattern already used by pickJobForLog().
+    conCurrentJobId = jobId;
     _pendingClockOut = { entry: _clockedInEntry };
     alert('Before you clock out, add today\'s Daily Log for this job (crew, notes, and photos if you have any). Save it to finish clocking out.');
     openAddLogModal();
