@@ -185,6 +185,7 @@ const KT_PAGES = {
   calendar:           { el:'ktPageCalendar',           title:'📅 Calendar' },
   masterschedule:     { el:'ktPageMasterschedule',     title:'📊 Master Schedule' },
   time:               { el:'ktPageTime',               title:'⏱ Time Tracking' },
+  crewmap:            { el:'ktPageCrewMap',             title:'🗺 Crew Map' },
   documents:          { el:'ktPageDocuments',          title:'📁 Documents' },
   todos:              { el:'ktPageTodos',              title:'✅ To-Dos' },
   customers:          { el:'ktPageCustomers',          title:'👥 Customers' },
@@ -497,6 +498,15 @@ function renderJobsBoard() {
 window.renderJobsBoard = renderJobsBoard;
 
 function ktNav(key, btn) {
+  // Hard block, checked before anything else renders -- refuses even a
+  // direct/forced ktNav('crewmap',...) call from the browser console, not
+  // just hiding the nav button. Silently redirects to Dashboard instead of
+  // revealing the page exists. Same pattern as switchDetailTab's financials/
+  // subs block.
+  if (key === 'crewmap' && !canViewCrewMap()) {
+    key = 'dashboard';
+    btn = document.querySelector('.kt-nav-item');
+  }
   Object.values(KT_PAGES).forEach(p => {
     const el = document.getElementById(p.el);
     if(el) el.classList.remove('active');
@@ -540,6 +550,7 @@ function ktNav(key, btn) {
   if(key==='calendar') { loadGlobalPhases(); loadCalendarEvents(); buildTeamColors(); renderCalendar(); loadGCalStatus(); loadTimeOffRequests(); }
   if(key==='masterschedule') { renderMasterSchedulePage(); }
   if(key==='time') { loadTimeEntries(); renderTimeLog(); renderTodaySummary(); populateTimeFilters(); }
+  if(key==='crewmap') { initCrewMap(); }
   if(key==='logs') { loadGlobalLogs(); renderGlobalLogs(); }
   if(key==='todos') { loadTodos(); populateTodoJobFilter(); populateTodoAssigneeFilter(); renderTodos(); }
   if(key==='customers') { loadCustomers(); renderCustomers(); }
@@ -6152,6 +6163,17 @@ function canViewJobMoney() {
 // field already on every role instead of hardcoding a role list, so this
 // stays correct if roles are ever added or reordered.
 function canCreateChangeOrders() {
+  if (currentUserTeamData?.fullAccessOverride) return true;
+  if (currentUserRole === 'Owner') return true;
+  const role = KYTRAC_ROLES[currentUserRole];
+  return !!role && role.level >= KYTRAC_ROLES['Team Lead'].level;
+}
+
+// Crew Map shows every clocked-in/out crew member's live GPS location --
+// same sensitivity level as Change Orders (Team Lead's level and up), not
+// something a Field Technician or Crew Member should see about their
+// coworkers.
+function canViewCrewMap() {
   if (currentUserTeamData?.fullAccessOverride) return true;
   if (currentUserRole === 'Owner') return true;
   const role = KYTRAC_ROLES[currentUserRole];
@@ -14303,6 +14325,7 @@ function applyRolePermissions() {
     'costing': canSeeCosting,
     'catalog': canSeeCatalog,
     'settings': canSeeSettings,
+    'crewmap': canViewCrewMap(),
   };
 
   // Field Technician sidebar allowlist -- confirmed with Travis directly
@@ -14325,6 +14348,7 @@ function applyRolePermissions() {
       'contractors': false,
       'reports': false,
       'purchaseorders': false,
+      'crewmap': false,
     });
   }
 
@@ -14836,12 +14860,230 @@ function loadTimeEntries() {
       renderTodaySummary();
       updateTimeBadge();
       populateTimeFilters();
+      refreshCrewMapIfLive();
     }, () => {});
 }
 
 function updateTimeBadge() {
   const badge = document.getElementById('navTimeBadge');
   if (badge) badge.style.display = _clockedInEntry ? 'inline-flex' : 'none';
+}
+
+// ═══════════════════ CREW MAP ═══════════════════
+// Plots clock-in (and, since the clock-out GPS fix above, clock-out)
+// locations on a Leaflet/OpenStreetMap map -- no Google Maps JS API key
+// needed, consistent with the OSM approach already used for job-address
+// maps and geocoding elsewhere in the app. Two modes:
+//   - Live: crew currently clocked in right now (clockOut == null),
+//     fed off the same always-on onSnapshot listener loadTimeEntries()
+//     already runs at app init, so it updates in real time.
+//   - History: a one-off date-range query (+ optional job filter), shows
+//     both the clock-in AND clock-out point per shift, connected by a
+//     thin line, so Travis can see where someone actually was for a
+//     given day/job rather than only "right now."
+let _crewMap = null;
+let _crewMapLayer = null;
+let _crewMapMode = 'live';
+let _crewMapJobCoordsCache = {}; // jobId -> {lat, lon} | null, resolved once per page-life
+
+function initCrewMap() {
+  if (!canViewCrewMap()) return;
+  if (!_crewMap) {
+    const el = document.getElementById('crewMapEl');
+    if (!el || typeof L === 'undefined') return;
+    _crewMap = L.map(el).setView([38.6270, -90.1994], 10); // defaults to St. Louis area; fitBounds() below re-centers on real data
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(_crewMap);
+    _crewMapLayer = L.layerGroup().addTo(_crewMap);
+  } else {
+    // Leaflet mis-sizes itself if initialized while its container was
+    // display:none (which it was, on any earlier visit to another page).
+    setTimeout(() => _crewMap.invalidateSize(), 50);
+  }
+
+  // Populate the job filter dropdown for History mode
+  const jobSel = document.getElementById('crewMapJobFilter');
+  if (jobSel && jobSel.options.length <= 1) {
+    conJobs.forEach(j => {
+      const opt = document.createElement('option');
+      opt.value = j.id;
+      opt.textContent = j.name || j.jobNumber || j.id;
+      jobSel.appendChild(opt);
+    });
+  }
+  // Default History date range to today, same as Daily Logs conventions elsewhere
+  const today = new Date().toISOString().split('T')[0];
+  const fromEl = document.getElementById('crewMapDateFrom');
+  const toEl = document.getElementById('crewMapDateTo');
+  if (fromEl && !fromEl.value) fromEl.value = today;
+  if (toEl && !toEl.value) toEl.value = today;
+
+  setCrewMapMode(_crewMapMode);
+}
+
+function setCrewMapMode(mode) {
+  _crewMapMode = mode;
+  const liveBtn = document.getElementById('crewMapModeLiveBtn');
+  const histBtn = document.getElementById('crewMapModeHistoryBtn');
+  const histControls = document.getElementById('crewMapHistoryControls');
+  if (liveBtn) liveBtn.className = mode === 'live' ? 'btn-amber' : 'btn';
+  if (histBtn) histBtn.className = mode === 'history' ? 'btn-amber' : 'btn';
+  if (histControls) histControls.style.display = mode === 'history' ? 'flex' : 'none';
+
+  if (mode === 'live') {
+    renderCrewMapFromLive();
+  } else {
+    loadCrewMapHistory();
+  }
+}
+window.setCrewMapMode = setCrewMapMode;
+
+// Live mode reads off the same allTimeEntries array loadTimeEntries()
+// already keeps current via its onSnapshot listener -- no separate query.
+function renderCrewMapFromLive() {
+  if (!document.getElementById('ktPageCrewMap')?.classList.contains('active')) return;
+  const entries = (allTimeEntries || []).filter(e => !e.clockOut);
+  const title = document.getElementById('crewMapListTitle');
+  if (title) title.textContent = `Currently clocked in (${entries.length})`;
+  renderCrewMapMarkers(entries);
+  renderCrewMapList(entries);
+}
+
+// Called by loadTimeEntries()'s onSnapshot whenever live data changes, so
+// the map updates in real time while someone is actually looking at it.
+function refreshCrewMapIfLive() {
+  if (_crewMapMode === 'live' && _crewMap) renderCrewMapFromLive();
+}
+
+async function loadCrewMapHistory() {
+  if (!conDb) return;
+  const listEl = document.getElementById('crewMapList');
+  const dateFrom = document.getElementById('crewMapDateFrom')?.value;
+  const dateTo = document.getElementById('crewMapDateTo')?.value;
+  const jobFilter = document.getElementById('crewMapJobFilter')?.value || '';
+  if (!dateFrom || !dateTo) { alert('Pick a From and To date.'); return; }
+  if (listEl) listEl.innerHTML = '<div class="small muted" style="text-align:center;padding:20px">Loading…</div>';
+
+  try {
+    let q = coll('timeentries').where('date', '>=', dateFrom).where('date', '<=', dateTo);
+    const snap = await q.get();
+    let entries = [];
+    snap.forEach(doc => entries.push({ id: doc.id, ...doc.data() }));
+    if (jobFilter) entries = entries.filter(e => e.jobId === jobFilter);
+    // Only entries with an actual clock-in GPS point are mappable -- manual
+    // hours entries (no clockIn at all) have nothing to plot.
+    entries = entries.filter(e => typeof e.clockInLat === 'number' && typeof e.clockInLon === 'number');
+
+    const title = document.getElementById('crewMapListTitle');
+    if (title) title.textContent = `${dateFrom === dateTo ? dateFrom : dateFrom + ' → ' + dateTo} (${entries.length} shift${entries.length !== 1 ? 's' : ''})`;
+    renderCrewMapMarkers(entries);
+    renderCrewMapList(entries);
+  } catch(e) {
+    if (listEl) listEl.innerHTML = '<div class="small muted" style="text-align:center;padding:20px;color:#ef5350">Error loading: ' + esc(e.message) + '</div>';
+  }
+}
+window.loadCrewMapHistory = loadCrewMapHistory;
+
+function crewMapPersonLabel(e) {
+  return e.userName || e.userEmail || 'Unknown';
+}
+
+function crewMapFmtTime(iso) {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+  catch(e) { return ''; }
+}
+
+async function renderCrewMapMarkers(entries) {
+  if (!_crewMap || !_crewMapLayer) return;
+  _crewMapLayer.clearLayers();
+  const bounds = [];
+
+  // Job site pins (deduped), resolved via the same cached-then-geocode
+  // helper the job detail map already uses -- never re-geocodes a job
+  // that's already been located once this page-life or has cached coords.
+  const jobIds = [...new Set(entries.map(e => e.jobId).filter(Boolean))];
+  for (const jobId of jobIds) {
+    let coords = _crewMapJobCoordsCache[jobId];
+    if (coords === undefined) {
+      const job = conJobs.find(j => j.id === jobId);
+      coords = await getJobCoordinates(job);
+      _crewMapJobCoordsCache[jobId] = coords;
+    }
+    if (coords) {
+      const job = conJobs.find(j => j.id === jobId);
+      L.marker([coords.lat, coords.lon], {
+        icon: L.divIcon({ html: '📍', className: 'crewmap-emoji-icon', iconSize: [24, 24] })
+      }).bindPopup(`<b>${esc(job?.name || 'Job site')}</b><br>${esc(job?.address || '')}`).addTo(_crewMapLayer);
+      bounds.push([coords.lat, coords.lon]);
+    }
+  }
+
+  entries.forEach(e => {
+    if (typeof e.clockInLat === 'number' && typeof e.clockInLon === 'number') {
+      const color = e.offSite ? '#ef5350' : '#1dbb87';
+      L.circleMarker([e.clockInLat, e.clockInLon], {
+        radius: 8, color: '#fff', weight: 2, fillColor: color, fillOpacity: 0.9
+      }).bindPopup(
+        `<b>${esc(crewMapPersonLabel(e))}</b><br>` +
+        `${esc(e.jobName || '')}<br>` +
+        `Clocked in ${crewMapFmtTime(e.clockInISO)}${e.offSite ? ` — <span style="color:#ef5350;font-weight:700">OFF-SITE${e.distanceFt != null ? ' (' + e.distanceFt + ' ft)' : ''}</span>` : ' — on-site'}`
+      ).addTo(_crewMapLayer);
+      bounds.push([e.clockInLat, e.clockInLon]);
+    }
+    if (typeof e.clockOutLat === 'number' && typeof e.clockOutLon === 'number') {
+      L.circleMarker([e.clockOutLat, e.clockOutLon], {
+        radius: 7, color: '#fff', weight: 2, fillColor: '#3b82f6', fillOpacity: 0.9
+      }).bindPopup(
+        `<b>${esc(crewMapPersonLabel(e))}</b><br>` +
+        `${esc(e.jobName || '')}<br>` +
+        `Clocked out ${crewMapFmtTime(e.clockOutISO)}${e.offSiteOut ? ` — <span style="color:#ef5350;font-weight:700">OFF-SITE${e.distanceFtOut != null ? ' (' + e.distanceFtOut + ' ft)' : ''}</span>` : ' — on-site'}`
+      ).addTo(_crewMapLayer);
+      bounds.push([e.clockOutLat, e.clockOutLon]);
+      if (typeof e.clockInLat === 'number') {
+        L.polyline([[e.clockInLat, e.clockInLon], [e.clockOutLat, e.clockOutLon]], {
+          color: '#94a3b8', weight: 1.5, dashArray: '4,5', opacity: 0.6
+        }).addTo(_crewMapLayer);
+      }
+    }
+  });
+
+  if (bounds.length === 1) {
+    _crewMap.setView(bounds[0], 15);
+  } else if (bounds.length > 1) {
+    _crewMap.fitBounds(bounds, { padding: [30, 30], maxZoom: 16 });
+  }
+}
+
+function renderCrewMapList(entries) {
+  const listEl = document.getElementById('crewMapList');
+  if (!listEl) return;
+  if (!entries.length) {
+    listEl.innerHTML = '<div class="small muted" style="text-align:center;padding:20px">Nobody to show for this view.</div>';
+    return;
+  }
+  listEl.innerHTML = entries.map(e => {
+    const inBadge = typeof e.clockInLat === 'number'
+      ? (e.offSite
+          ? `<span style="background:rgba(239,83,80,.15);color:#ef5350;font-size:.65rem;font-weight:800;padding:2px 6px;border-radius:5px">📍 IN — OFF-SITE${e.distanceFt != null ? ' (' + e.distanceFt + ' ft)' : ''}</span>`
+          : `<span style="background:rgba(29,187,135,.15);color:#1dbb87;font-size:.65rem;font-weight:800;padding:2px 6px;border-radius:5px">📍 IN — on-site</span>`)
+      : '';
+    const outBadge = e.clockOut
+      ? (typeof e.clockOutLat === 'number'
+          ? (e.offSiteOut
+              ? `<span style="background:rgba(239,83,80,.15);color:#ef5350;font-size:.65rem;font-weight:800;padding:2px 6px;border-radius:5px;margin-left:6px">📍 OUT — OFF-SITE${e.distanceFtOut != null ? ' (' + e.distanceFtOut + ' ft)' : ''}</span>`
+              : `<span style="background:rgba(59,130,246,.15);color:#3b82f6;font-size:.65rem;font-weight:800;padding:2px 6px;border-radius:5px;margin-left:6px">📍 OUT — on-site</span>`)
+          : `<span style="background:rgba(148,163,184,.15);color:#94a3b8;font-size:.65rem;font-weight:800;padding:2px 6px;border-radius:5px;margin-left:6px">OUT — no GPS (clocked out before this feature)</span>`)
+      : `<span style="background:rgba(148,163,184,.15);color:#94a3b8;font-size:.65rem;font-weight:800;padding:2px 6px;border-radius:5px;margin-left:6px">Still clocked in</span>`;
+    return `<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid rgba(217,119,6,.12)">
+      <div style="min-width:140px;font-weight:700;color:#eaf0fb;font-size:.85rem">${esc(crewMapPersonLabel(e))}</div>
+      <div style="flex:1;min-width:120px;font-size:.8rem;color:var(--muted)">${esc(e.jobName || '')}</div>
+      <div style="font-size:.76rem;color:var(--muted)">${crewMapFmtTime(e.clockInISO)}${e.clockOutISO ? ' – ' + crewMapFmtTime(e.clockOutISO) : ''}</div>
+      ${inBadge}${outBadge}
+    </div>`;
+  }).join('');
 }
 
 function handleClockToggle() {
@@ -15044,10 +15286,43 @@ async function performClockOut(entry) {
   const notes = document.getElementById('clockNotes');
   const notesValue = notes ? notes.value.trim() : '';
 
+  // GPS at clock-out, mirroring the same required-not-blocking-on-distance
+  // policy already used at clock-in: a failed/denied/unavailable location
+  // blocks the clock-out (crew needs to enable location services), but a
+  // successful location that's simply far from the jobsite does not block
+  // -- it only gets flagged, same as clock-in's off-site flag. This gives
+  // the Crew Map an "out" point for every shift, not just an "in" point.
+  const clockBtn = document.getElementById('clockBtn');
+  if (clockBtn) { clockBtn.disabled = true; clockBtn.style.opacity = '0.6'; }
+  let position;
+  try {
+    position = await getCurrentPositionAsync(12000);
+  } catch(e) {
+    if (clockBtn) { clockBtn.disabled = false; clockBtn.style.opacity = ''; }
+    alert('Location access is required to clock out. Please enable location services for this site and try again.\n\n(' + (e.message || 'Location unavailable') + ')');
+    return;
+  }
+  if (clockBtn) { clockBtn.disabled = false; clockBtn.style.opacity = ''; }
+
+  const userLat = position.coords.latitude;
+  const userLon = position.coords.longitude;
+  let offSiteOut = false;
+  let distanceFtOut = null;
+  const job = conJobs.find(j => j.id === entry.jobId);
+  const siteCoords = await getJobCoordinates(job);
+  if (siteCoords) {
+    distanceFtOut = Math.round(haversineDistanceFeet(userLat, userLon, siteCoords.lat, siteCoords.lon));
+    offSiteOut = distanceFtOut > OFFSITE_THRESHOLD_FEET;
+  }
+
   try {
     await coll('timeentries').doc(entry.id).update({
       clockOut: firebase.firestore.FieldValue.serverTimestamp(),
       clockOutISO: now.toISOString(),
+      clockOutLat: userLat,
+      clockOutLon: userLon,
+      offSiteOut,
+      distanceFtOut,
       hours,
       notes: notesValue,
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()

@@ -1098,6 +1098,7 @@
       background-position: 12px center;
     }
   </style>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
 </head>
 <body>
 
@@ -1177,6 +1178,9 @@
       <button class="kt-nav-item" onclick="ktNav('time',this)">
         <span class="kt-nav-icon">⏱</span> Time
         <span class="kt-nav-badge" id="navTimeBadge" style="display:none;background:#1dbb87">●</span>
+      </button>
+      <button class="kt-nav-item" onclick="ktNav('crewmap',this)">
+        <span class="kt-nav-icon">🗺</span> Crew Map
       </button>
       <button class="kt-nav-item" onclick="ktNav('documents',this)">
         <span class="kt-nav-icon">📁</span> Documents
@@ -1763,6 +1767,52 @@
           <label class="small muted">Notes</label>
           <input id="editTimeNotes" type="text" style="width:100%;margin-bottom:16px" />
           <button class="btn-amber" onclick="saveEditTimeEntry()" style="width:100%">Save Changes</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── PAGE: CREW MAP ── -->
+    <div class="kt-page" id="ktPageCrewMap">
+      <div class="kt-card" style="margin-bottom:16px">
+        <div class="kt-card-body" style="padding:16px 20px;display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end">
+          <div style="display:flex;gap:8px">
+            <button id="crewMapModeLiveBtn" class="btn-amber" onclick="setCrewMapMode('live')" style="padding:8px 16px;font-size:.84rem">🔴 Live</button>
+            <button id="crewMapModeHistoryBtn" class="btn" onclick="setCrewMapMode('history')" style="padding:8px 16px;font-size:.84rem">🕓 History</button>
+          </div>
+          <div id="crewMapHistoryControls" style="display:none;gap:12px;align-items:flex-end;flex-wrap:wrap">
+            <div>
+              <label class="small muted" style="display:block;margin-bottom:5px">From</label>
+              <input id="crewMapDateFrom" type="date" style="font-size:.85rem" />
+            </div>
+            <div>
+              <label class="small muted" style="display:block;margin-bottom:5px">To</label>
+              <input id="crewMapDateTo" type="date" style="font-size:.85rem" />
+            </div>
+            <div>
+              <label class="small muted" style="display:block;margin-bottom:5px">Job</label>
+              <select id="crewMapJobFilter" style="font-size:.85rem;min-width:180px">
+                <option value="">All jobs</option>
+              </select>
+            </div>
+            <button class="btn-amber" onclick="loadCrewMapHistory()" style="padding:8px 16px;font-size:.84rem">Load</button>
+          </div>
+          <div style="margin-left:auto;font-size:.76rem;color:var(--muted);display:flex;gap:14px;flex-wrap:wrap">
+            <span>🟢 Clocked in, on-site</span>
+            <span>🔴 Clocked in, off-site</span>
+            <span>🔵 Clock-out point</span>
+            <span>📍 Jobsite</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="kt-card" style="margin-bottom:16px">
+        <div id="crewMapEl" style="height:520px;width:100%;border-radius:0 0 12px 12px;background:#0b1220"></div>
+      </div>
+
+      <div class="kt-card">
+        <div class="kt-card-head"><h3 id="crewMapListTitle">Currently clocked in</h3></div>
+        <div class="kt-card-body" id="crewMapList" style="padding:14px 20px">
+          <div class="small muted" style="text-align:center;padding:20px">Loading…</div>
         </div>
       </div>
     </div>
@@ -4867,7 +4917,8 @@
 
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
-<script src="kytrac-app.js?v=202608171122"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="kytrac-app.js?v=202608172002"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW
