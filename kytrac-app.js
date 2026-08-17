@@ -20580,6 +20580,14 @@ window.loadJobBidRequests = loadJobBidRequests;
 
 let estGroups = []; // [{id, name, order, collapsed, subgroups:[{id, name, order, items:[...]}]}]
 let _estItemDraftKey = null;
+// Holds the labor-side data {desc, unit, unitCost} for whatever catalog
+// item was just picked, IF that catalog entry has both a materials and
+// a labor price bundled into it. There is no separate "Labor - X"
+// catalog entry to search for in these cases — the labor price lives
+// as a sub-field on the same object — so this lets the checkbox in the
+// modal add it as a real second line item on Save, instead of a note
+// pointing the user at a search result that doesn't exist.
+let _pendingCatalogLaborLine = null;
 let _estItemDraftTimer = null;
 // Debounced draft-autosave for the Add/Edit Line Item form — separate
 // from the actual per-item Firestore save (Save Item button), which
@@ -22253,9 +22261,31 @@ function selectEstItemCatalogResult(i) {
   setVal('estItemUnitCost', primary.unitCost || '');
   document.getElementById('estItemCostType').value = isLaborPrimary ? 'Labor' : 'Materials';
   onEstItemCostTypeChange();
+
+  const laborWrap = document.getElementById('estItemLaborLineWrap');
+  const laborToggle = document.getElementById('estItemLaborLineToggle');
+  const laborLabel = document.getElementById('estItemLaborLineLabel');
   if (m.materials && m.labor) {
-    setVal('estItemNotes', 'Catalog also has a labor line for this item ("' + m.labor.desc + '") — add it separately if needed.');
+    // This catalog item bundles a labor price inside the same object —
+    // it is NOT a separate searchable entry, so re-searching for it
+    // (e.g. "Labor - WM 231...") will never find anything. Stash it and
+    // offer a checkbox to add it as a real second line item on Save.
+    _pendingCatalogLaborLine = {
+      desc: m.labor.desc || m.name,
+      unit: m.labor.unit || 'hr',
+      unitCost: m.labor.unitCost || 0
+    };
+    setVal('estItemNotes', 'From catalog: "' + m.name + '"');
+    if (laborWrap && laborToggle && laborLabel) {
+      laborLabel.textContent = '+ Also add labor line: "' + _pendingCatalogLaborLine.desc + '" — $' + Number(_pendingCatalogLaborLine.unitCost).toFixed(2) + '/' + _pendingCatalogLaborLine.unit;
+      laborToggle.checked = true;
+      laborWrap.style.display = 'flex';
+    }
+  } else {
+    _pendingCatalogLaborLine = null;
+    if (laborWrap) laborWrap.style.display = 'none';
   }
+
   document.getElementById('estItemCatalogSearch').value = '';
   document.getElementById('estItemCatalogResults').innerHTML = '';
   calcEstItemPreview();
@@ -22267,6 +22297,12 @@ function openAddEstItemModal(itemId, groupId, subgroupId, subSubgroupId) {
   const catResultsEl = document.getElementById('estItemCatalogResults');
   if (catSearchEl) catSearchEl.value = '';
   if (catResultsEl) catResultsEl.innerHTML = '';
+  // Reset the labor-line-from-catalog checkbox every time the modal is
+  // (re)opened, so a leftover pick from a previous item never bleeds
+  // into a new one (e.g. editing an existing item afterward).
+  _pendingCatalogLaborLine = null;
+  const laborWrapReset = document.getElementById('estItemLaborLineWrap');
+  if (laborWrapReset) laborWrapReset.style.display = 'none';
   _editingEstItemId = itemId || null;
   _editingGroupId = groupId || null;
   _editingSubgroupId = subgroupId || null;
@@ -22544,7 +22580,35 @@ function saveEstItem() {
     ? colRef.doc(_editingEstItemId).update(data)
     : colRef.add({ ...data, order: 0, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
 
+  // If this item was picked from a catalog entry that bundles both a
+  // materials AND a labor price, and the "also add labor line"
+  // checkbox is checked, write the labor side as its own second line
+  // item in the same group/subgroup — using the exact catalog labor
+  // price, not re-derived from anything on this form.
+  const laborToggle = document.getElementById('estItemLaborLineToggle');
+  const laborWrap = document.getElementById('estItemLaborLineWrap');
+  const shouldAddLaborLine = laborWrap && laborWrap.style.display !== 'none' && laborToggle && laborToggle.checked && _pendingCatalogLaborLine && !_editingEstItemId;
+  const laborLineData = shouldAddLaborLine ? { ..._pendingCatalogLaborLine } : null;
+
   promise.then(() => {
+    if (laborLineData) {
+      const laborMarkup = getDefaultMarkupForCostType('Labor');
+      return colRef.add({
+        desc: laborLineData.desc,
+        qty: 1,
+        unit: laborLineData.unit,
+        costType: 'Labor',
+        unitCost: laborLineData.unitCost,
+        markup: laborMarkup,
+        unitPrice: laborLineData.unitCost * (1 + laborMarkup / 100),
+        phase: data.phase,
+        notes: 'From catalog: labor line for "' + desc + '"',
+        order: 0,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    }
+  }).then(() => {
+    _pendingCatalogLaborLine = null;
     clearEstItemDraft();
     kClose('addEstItemModal');
     loadEstimate(conCurrentJobId);
