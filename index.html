@@ -153,6 +153,18 @@
       flex-direction: column;
       position: fixed;
       left: 0; top: 0; bottom: 0;
+      /* position:fixed takes this out of normal document flow, so it
+         does NOT inherit body's `padding-top: env(safe-area-inset-top)`
+         -- it was pinning straight to the true screen edge and sliding
+         the logo/build-info text right under the iPhone status bar
+         (notch/Dynamic Island), overlapping the time/battery icons on
+         open. Fixed-position elements need their own safe-area padding. */
+      padding-top: env(safe-area-inset-top);
+      /* Same reasoning at the bottom edge -- the account row (Travis /
+         Owner) was sitting flush against the true screen bottom, which
+         risks the iOS home-indicator gesture bar covering it on
+         notched iPhones. */
+      padding-bottom: env(safe-area-inset-bottom);
       z-index: 100;
       transition: transform .25s;
     }
@@ -4939,7 +4951,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202608191321"></script>
+<script src="kytrac-app.js?v=202608191422"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW
