@@ -540,6 +540,15 @@ function ktNav(key, btn) {
   // Jobs list/board itself), hide it everywhere else by default.
   const NEW_JOB_VISIBLE_ON = ['dashboard', 'jobs'];
   if (newJobBtn) newJobBtn.style.display = NEW_JOB_VISIBLE_ON.includes(key) ? '' : 'none';
+  // Crew Map is a full page like any other (Home, Time, etc.) -- leaving
+  // it normally means picking something else from the sidebar, same as
+  // leaving any page. On mobile that's real friction: the sidebar
+  // collapses after a selection, so getting back means reopening the
+  // hamburger menu just to escape a full-screen interactive map. One-tap
+  // close button, same idea as ktFieldTechHomeBtn's persistent Home
+  // button for the same underlying "no easy way back" problem.
+  const crewMapCloseBtn = document.getElementById('ktCrewMapCloseBtn');
+  if (crewMapCloseBtn) crewMapCloseBtn.style.display = key === 'crewmap' ? '' : 'none';
   // Trigger renders
   if(key==='globalNotes') loadGlobalNotes();
   if(key==='globalMessages') loadGlobalMessages();
