@@ -114,7 +114,13 @@ async function retryQueuedPhotoUploads() {
         // it'll just queue again at the Firestore layer instead of
         // this one, and either way we drop the Storage-queue entry
         // since the blob itself made it up.
-        if (item.docId) {
+        if (item.writeBack === 'logPhotoArray' && item.jobId && item.logId) {
+          await coll('jobs').doc(item.jobId).collection('logs').doc(item.logId).update({
+            photos: firebase.firestore.FieldValue.arrayUnion({
+              storageUrl: url, name: item.name || 'photo', uploadedAt: new Date().toISOString()
+            })
+          }).catch(() => {});
+        } else if (item.docId) {
           await coll('documents').doc(item.docId).update({
             storageUrl: url, pendingUpload: false, dataUrl: null
           }).catch(() => {});
@@ -123,7 +129,7 @@ async function retryQueuedPhotoUploads() {
       } catch (e) {
         // Still failing (still offline, or a real error) — leave it
         // queued and try the rest; next retry pass will pick it back up.
-        console.warn('Queued photo upload retry failed, will retry again later:', item.fileName, e.message);
+        console.warn('Queued photo upload retry failed, will retry again later:', item.fileName || item.name, e.message);
       }
     }
   } finally {
@@ -8512,24 +8518,52 @@ function removeLogPhoto(idx) {
 }
 
 // Store photos as base64 in Firestore (small photos) or show warning for large
-async function uploadLogPhotos() {
-  if (!_logPhotoPending.length) return [];
-  // Compress each photo to fit safely under Firestore's ~1MB field limit.
-  // This used to be a single fixed-pass compressImage(dataUrl, 800, 0.7)
-  // with no size check on the result -- fine for most phone photos, but a
-  // detailed, texture-heavy site photo (exactly the kind taken of
-  // demolition debris) could still come out over the limit, and nothing
-  // caught that before handing it to Firestore. compressUntilUnderLimit()
-  // is the same robust, already-proven helper used elsewhere in the app:
-  // it steps down width/quality repeatedly until the result actually
-  // fits, instead of gambling on one fixed setting.
+// Uploads every pending Daily Log photo to Firebase Storage and returns
+// lightweight {storageUrl, name, uploadedAt} references -- NOT the raw
+// base64 image data. This replaced embedding compressed base64 directly
+// in the Firestore log document, which is what caused a real field
+// failure: Firestore has a hard ~1,048,576-byte-per-document limit, and
+// while each photo was individually kept under 900KB, that budget never
+// accounted for MULTIPLE photos in the same log (base64 also inflates
+// size ~33% over the raw bytes) -- two or three photos together could
+// and did blow straight past the document limit, and the whole Daily
+// Log (photos AND the notes/crew/weather text alongside them) failed to
+// save. Storage objects have no such tiny ceiling, and the Firestore
+// doc now stays trivially small (a short URL string) no matter how many
+// photos are attached.
+async function uploadLogPhotosToStorage(jobId, logId, pendingPhotos) {
   const results = [];
-  for (const p of _logPhotoPending) {
+  for (const p of pendingPhotos) {
+    let blob, path;
     try {
-      const compressed = await compressUntilUnderLimit(p.dataUrl, 900000);
-      results.push({ dataUrl: compressed, name: p.name, uploadedAt: new Date().toISOString() });
+      const compressed = await compressImage(p.dataUrl, 1600, 0.82).catch(() => p.dataUrl);
+      blob = dataUrlToBlob(compressed);
+      const safeName = (p.name || 'photo').replace(/[^a-z0-9.\-_]/gi, '_');
+      // Storage security rules only allow companies/{companyId}/jobs/{jobId}/photos/{fileName}
+      // (see storage.rules) -- reusing that exact existing path rather
+      // than inventing a new nested one means this ships without also
+      // needing a separate `firebase deploy --only storage` rules
+      // change. The logId + dailylog prefix keeps these distinguishable
+      // from other job photos in the same bucket path.
+      path = `companies/${currentCompanyId}/jobs/${jobId}/photos/dailylog-${logId}-${uid('photo')}-${safeName}`;
     } catch(e) {
-      results.push({ dataUrl: p.dataUrl, name: p.name, uploadedAt: new Date().toISOString() });
+      console.warn('Could not process log photo for upload:', p.name, e);
+      continue;
+    }
+    try {
+      const url = await uploadToStorage(path, blob);
+      results.push({ storageUrl: url, name: p.name || 'photo', uploadedAt: new Date().toISOString() });
+    } catch(uploadErr) {
+      // Offline or a Storage hiccup -- don't lose the photo, queue it
+      // for the same offline-retry system already used elsewhere
+      // (see retryQueuedPhotoUploads), tagged so the retry knows to
+      // append it to THIS log's photos array once it finally uploads
+      // instead of writing to the unrelated 'documents' collection.
+      try {
+        await queuePhotoUpload({ id: uid('logphoto'), path, blob, writeBack: 'logPhotoArray', jobId, logId, name: p.name || 'photo' });
+      } catch(queueErr) {
+        console.warn('Could not upload or queue log photo:', p.name, queueErr);
+      }
     }
   }
   return results;
@@ -8552,15 +8586,13 @@ function compressImage(dataUrl, maxWidth, quality) {
   });
 }
 
-// A single compressImage() pass (1600px/0.8, or whatever's passed) can
-// still land over Firestore's hard 1,048,487-byte-per-field limit —
-// real phone photos vary a lot in how well they compress, and base64
-// itself adds ~33% overhead on top of the encoded byte size, so
-// "usually fine" isn't the same as "always fine." This steps DOWN
-// width and quality repeatedly until the result actually fits, with
-// headroom, rather than gambling on one fixed setting and letting the
-// Firestore write throw for whichever photo happens to be more
-// detailed/complex than most.
+// A single compressImage() pass can still land over a target byte
+// budget -- real phone photos vary a lot in how well they compress, and
+// base64 itself adds ~33% overhead. Steps DOWN width/quality repeatedly
+// until the result actually fits. Still used by Documents/Plans image
+// uploads (see DOC_SIZE_LIMIT call sites) -- Daily Log photos no longer
+// use this themselves since they upload to Storage instead (see
+// uploadLogPhotosToStorage), which has no comparable tiny ceiling.
 async function compressUntilUnderLimit(rawDataUrl, limitBytes) {
   const steps = [
     [1600, 0.8], [1200, 0.7], [900, 0.6], [700, 0.5], [500, 0.4], [350, 0.3],
@@ -8573,11 +8605,18 @@ async function compressUntilUnderLimit(rawDataUrl, limitBytes) {
   return result; // last-resort smallest attempt, even if still over (rare)
 }
 
-// Render photos in a log entry
+// Render photos in a log entry -- supports both the new storageUrl-based
+// photos (see uploadLogPhotosToStorage above) and old dataUrl-based
+// photos already saved in existing log documents from before this fix,
+// so historical Daily Logs don't break.
 function renderLogPhotos(photos) {
   if (!photos || !photos.length) return '';
   return `<div class="photo-grid" style="margin-top:8px">
-    ${photos.map(p => `<img src="${p.dataUrl}" class="photo-thumb" onclick="openLightbox('${p.dataUrl.replace(/'/g,"\\'")}') " />`).join('')}
+    ${photos.map(p => {
+      const src = p.storageUrl || p.dataUrl || '';
+      if (!src) return '';
+      return `<img src="${src}" class="photo-thumb" onclick="openLightbox('${src.replace(/'/g,"\\'")}')" />`;
+    }).join('')}
   </div>`;
 }
 
@@ -8623,38 +8662,47 @@ window.saveLog = async function() {
   if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving\u2026'; saveBtn.style.opacity = '0.6'; }
 
   try {
-    // Upload photos first
-    let photos = [];
-    if (_logPhotoPending.length > 0) {
-      try { photos = await uploadLogPhotos(); }
-      catch(e) { console.warn('Photo upload error:', e); }
-    }
-
     const data = {
       date,
       weather: document.getElementById('logWeather').value,
       crew: document.getElementById('logCrew').value.trim(),
       notes: document.getElementById('logNotes').value.trim(),
       issues: document.getElementById('logIssues').value.trim(),
-      photos,
+      photos: [], // filled in afterward -- see below
       createdBy: conCurrentUser ? conCurrentUser.email : 'unknown',
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
     };
-    await coll('jobs').doc(conCurrentJobId).collection('logs').add(subDoc(data));
+    const logRef = await coll('jobs').doc(conCurrentJobId).collection('logs').add(subDoc(data));
 
+    // Photos are uploaded to Storage and attached to the log doc AFTER
+    // the log itself is safely saved, deliberately -- a slow upload,
+    // spotty signal, or a photo-processing error must never block or
+    // fail saving the actual Daily Log text, and must never re-block
+    // clocking out (which is exactly the frustrating dead-end the
+    // clock-out-freeze fix earlier was about). If a photo can't upload
+    // right now it gets queued for automatic retry instead of lost.
+    const pendingPhotos = _logPhotoPending.slice();
     _logPhotoPending = [];
+    const jobIdForPhotos = conCurrentJobId;
+    const logIdForPhotos = logRef.id;
+
     kClose('addLogModal');
-    // If this log was the one required to unblock a clock-out, and it's
-    // for the same job the pending clock-out is for, finish the clock-out
-    // now. Guarded by jobId match so an unrelated log saved from a
-    // different job's Daily Logs tab can't accidentally complete a stale
-    // pending clock-out.
     if (_pendingClockOut && _pendingClockOut.entry?.jobId === conCurrentJobId) {
       const entry = _pendingClockOut.entry;
       _pendingClockOut = null;
       await performClockOut(entry);
     } else {
       switchDetailTab('logs', null);
+    }
+
+    if (pendingPhotos.length) {
+      uploadLogPhotosToStorage(jobIdForPhotos, logIdForPhotos, pendingPhotos).then(photos => {
+        if (photos.length) {
+          coll('jobs').doc(jobIdForPhotos).collection('logs').doc(logIdForPhotos).update({
+            photos: firebase.firestore.FieldValue.arrayUnion(...photos)
+          }).catch(e => console.warn('Failed to attach uploaded log photos:', e));
+        }
+      });
     }
   } catch(e) {
     // Nothing in here used to be caught at all -- any unexpected error
