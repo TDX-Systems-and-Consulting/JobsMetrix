@@ -8113,6 +8113,100 @@ function addCOLineItem() {
 }
 window.addCOLineItem = addCOLineItem;
 
+// ── Catalog search for Change Order line items ──
+// Change Orders previously only had free-typed line items (desc/qty/
+// unit/cost all manually typed) -- no way to pull real priced catalog
+// items the way the Estimate tab's "Add Line Item" already could. This
+// reuses the SAME flat catalog index the Estimate search uses
+// (getFlatCatalogIndex), so it's the identical underlying data, just
+// wired to push straight into _coLineItems since a Change Order line is
+// already a live array with its own "+ Add Blank Line" pattern -- no
+// separate form-then-save step needed like the Estimate modal has.
+function toggleCOCatalogSearch() {
+  const wrap = document.getElementById('coCatalogSearchWrap');
+  if (!wrap) return;
+  const opening = wrap.style.display === 'none';
+  wrap.style.display = opening ? 'block' : 'none';
+  if (opening) {
+    setTimeout(() => document.getElementById('coCatalogSearch')?.focus(), 50);
+  } else {
+    document.getElementById('coCatalogSearch').value = '';
+    document.getElementById('coCatalogResults').innerHTML = '';
+  }
+}
+window.toggleCOCatalogSearch = toggleCOCatalogSearch;
+
+function filterCOCatalogSearch() {
+  const input = document.getElementById('coCatalogSearch');
+  const resultsEl = document.getElementById('coCatalogResults');
+  if (!input || !resultsEl) return;
+  const q = input.value.toLowerCase().trim();
+  if (!q) { resultsEl.innerHTML = ''; return; }
+  const words = q.split(/\s+/).filter(Boolean);
+  const index = getFlatCatalogIndex();
+  const matches = index.filter(i => {
+    const name = i.name.toLowerCase();
+    return words.every(w => name.includes(w));
+  }).slice(0, 15); // cap — a broad query like "labor" could match hundreds
+
+  if (!matches.length) {
+    resultsEl.innerHTML = '<div class="small muted" style="padding:8px;font-style:italic">No matches in the catalog.</div>';
+    return;
+  }
+  resultsEl.innerHTML = matches.map((m, i) => {
+    const hasMat = !!m.materials, hasLab = !!m.labor;
+    const priceStr = hasMat ? '$' + Number(m.materials.unitCost||0).toFixed(2) : (hasLab ? '$' + Number(m.labor.unitCost||0).toFixed(2) : '');
+    return `<div onclick="selectCOCatalogResult(${i})" class="est-catalog-result-row" style="padding:10px;border-radius:8px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <div style="min-width:0">
+        <div style="font-size:.84rem;font-weight:600;color:#eaf0fb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(m.name)}</div>
+        <div style="font-size:.7rem;color:var(--amber)">${esc(m.trade)}${hasMat&&hasLab?' · materials + labor (both added)':hasLab?' · labor':' · materials'}</div>
+      </div>
+      <div style="font-size:.82rem;color:var(--muted);white-space:nowrap;flex-shrink:0">${priceStr}</div>
+    </div>`;
+  }).join('');
+  window._coCatalogMatches = matches;
+}
+window.filterCOCatalogSearch = filterCOCatalogSearch;
+
+function selectCOCatalogResult(i) {
+  const m = (window._coCatalogMatches || [])[i];
+  if (!m) return;
+  if (m.materials) {
+    const markup = getDefaultMarkupForCostType('Materials');
+    const unitCost = m.materials.unitCost || 0;
+    _coLineItems.push({
+      desc: m.materials.desc || m.name,
+      qty: 1,
+      unit: m.materials.unit || 'ea',
+      costType: 'Materials',
+      unitCost,
+      unitPrice: Math.round(unitCost * (1 + markup / 100) * 1000) / 1000
+    });
+  }
+  if (m.labor) {
+    // Same reasoning as the Estimate tab's labor-line fix: a catalog
+    // item that bundles both a materials and labor price is not two
+    // separate searchable entries -- the labor side has no name of its
+    // own to find later. Add both right away rather than leaving the
+    // labor price stranded and unreachable.
+    const markup = getDefaultMarkupForCostType('Labor');
+    const unitCost = m.labor.unitCost || 0;
+    _coLineItems.push({
+      desc: m.labor.desc || ('Labor - ' + m.name),
+      qty: 1,
+      unit: m.labor.unit || 'hr',
+      costType: 'Labor',
+      unitCost,
+      unitPrice: Math.round(unitCost * (1 + markup / 100) * 1000) / 1000
+    });
+  }
+  document.getElementById('coCatalogSearch').value = '';
+  document.getElementById('coCatalogResults').innerHTML = '';
+  renderCOLineItems();
+  calcCOTotal();
+}
+window.selectCOCatalogResult = selectCOCatalogResult;
+
 function calcCOTotal() {
   const total = _coLineItems.reduce((s, i) => s + (i.qty||1) * (i.unitPrice||0), 0);
   const el = document.getElementById('coTotalDisplay');
@@ -8147,6 +8241,16 @@ function openAddCOModal() {
   document.getElementById('coCustomerDecisionBy').value = '';
   document.getElementById('deleteCOBtn').style.display = 'none';
   _coLineItems = [];
+  // Reset any leftover catalog search from a previously-open Change
+  // Order -- deliberately here (fires once, on open) rather than inside
+  // renderCOLineItems, since that also runs after every catalog pick
+  // and blank-line add -- closing the search panel after each item
+  // would make adding several catalog items in a row (2 cabinets +
+  // crown molding, say) require reopening it every single time.
+  const catWrap1 = document.getElementById('coCatalogSearchWrap');
+  if (catWrap1) catWrap1.style.display = 'none';
+  document.getElementById('coCatalogSearch').value = '';
+  document.getElementById('coCatalogResults').innerHTML = '';
   renderCOLineItems();
   calcCOTotal();
   _applyCOModalPermissionLock('Submitted');
@@ -8170,6 +8274,10 @@ function openEditCO(id) {
   document.getElementById('coCustomerDecisionBy').value = co.customerDecisionBy || '';
   document.getElementById('deleteCOBtn').style.display = 'inline-flex';
   _coLineItems = co.lineItems ? JSON.parse(JSON.stringify(co.lineItems)) : [];
+  const catWrap2 = document.getElementById('coCatalogSearchWrap');
+  if (catWrap2) catWrap2.style.display = 'none';
+  document.getElementById('coCatalogSearch').value = '';
+  document.getElementById('coCatalogResults').innerHTML = '';
   renderCOLineItems();
   calcCOTotal();
   _applyCOModalPermissionLock(status);
