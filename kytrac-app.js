@@ -8038,6 +8038,14 @@ function renderCOList() {
     // Contextual action buttons — what happens next depends on where this CO
     // currently sits in the real-world workflow.
     let actions = `<button class="btn" style="padding:4px 10px;font-size:.76rem" onclick="openEditCO('${co.id}')">Edit</button>`;
+    // View / Print / Email — same document actions the Estimate/Proposal
+    // tab offers, available for any CO once it's actually a real document
+    // (i.e. has been priced) rather than a bare, unpriced customer request.
+    if (status !== 'Submitted') {
+      actions += `<button class="btn" style="padding:4px 10px;font-size:.76rem;background:rgba(var(--surface-subtle-rgb),.8);color:var(--text)" onclick="viewChangeOrder('${co.id}')">👁️ View</button>`;
+      actions += `<button class="btn" style="padding:4px 10px;font-size:.76rem" onclick="printChangeOrder('${co.id}')">📄 Print</button>`;
+      actions += `<button class="btn" style="padding:4px 10px;font-size:.76rem;background:linear-gradient(135deg,rgba(37,99,235,.18),rgba(29,78,216,.12));color:#93c5fd;border-color:rgba(37,99,235,.3)" onclick="emailChangeOrderToCustomer('${co.id}')">📧 Email</button>`;
+    }
     if (status === 'Submitted' && canPrice) {
       actions += `<button class="btn btn-amber" style="padding:4px 10px;font-size:.76rem" onclick="openEditCO('${co.id}')">💲 Price This CO</button>`;
     }
@@ -24134,6 +24142,233 @@ function confirmSendProposalEmail() {
   }).catch(e => finish('Error sending email: ' + e.message));
 }
 window.confirmSendProposalEmail = confirmSendProposalEmail;
+
+// ═══════════════════════════════════════════════════════════════════════
+// Change Order document — View / Print / Email, same pattern as the
+// Proposal flow above (renderProposalDocumentHtml / printProposal /
+// viewProposal / sendProposalViaEmail). Reuses the same shared modals
+// (viewProposalModal, emailPreviewModal) rather than new markup — those
+// modals are already generic (the invoice/sub-agreement/lien-waiver
+// flows do the same thing), so no HTML duplication needed.
+// ═══════════════════════════════════════════════════════════════════════
+
+function renderChangeOrderDocumentHtml(co, job, comp, autoPrint) {
+  const amt = Number(co.amount || 0);
+  const amtDisplay = (amt < 0 ? '-$' + Math.abs(amt).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})
+                               : '$' + amt.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}));
+
+  const items = co.lineItems || [];
+  const itemsHtml = items.length ? `
+  <table class="payment-table" style="margin-top:20px">
+    <thead><tr><th>Description</th><th style="text-align:center">Qty</th><th style="text-align:right">Amount</th></tr></thead>
+    <tbody>
+      ${items.map(it => {
+        const lineTotal = (Number(it.qty)||1) * (Number(it.unitPrice)||0);
+        return `<tr>
+          <td>${esc(it.desc || '')}</td>
+          <td style="text-align:center">${it.qty || 1} ${esc(it.unit||'')}</td>
+          <td style="text-align:right">$${lineTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table>` : '';
+
+  const scheduleHtml = co.days ? `<div class="intro" style="margin-bottom:0"><strong>Schedule Impact:</strong> +${co.days} day${co.days!=1?'s':''} added to the project schedule.</div>` : '';
+
+  return `<!DOCTYPE html><html><head><title>Change Order — ${esc(job?.name||'')}</title>
+  <style>
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; color-adjust: exact !important; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; max-width: 820px; margin: 0 auto; padding: 48px 40px; color: #1f2937; line-height: 1.5; }
+    .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 24px; margin-bottom: 8px; border-bottom: 4px solid #d97706; }
+    .co-name { font-size: 1.25rem; font-weight: 800; color: #111827; }
+    .co-contact { color: #6b7280; font-size: .82rem; margin-top: 2px; }
+    .doc-title { font-size: 1.7rem; font-weight: 800; color: #d97706; letter-spacing: .03em; text-align: right; }
+    .doc-meta { text-align: right; font-size: .85rem; color: #6b7280; margin-top: 4px; }
+    .prepared-for { margin: 28px 0 24px; padding: 16px 20px; background: #f9fafb; border-radius: 10px; border: 1px solid #e5e7eb; }
+    .prepared-for .label { font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; color: #9ca3af; font-weight: 700; margin-bottom: 4px; }
+    .prepared-for .name { font-size: 1.05rem; font-weight: 700; color: #111827; }
+    .co-title-block { margin: 24px 0; }
+    .co-title-block .heading { font-size: 1.1rem; font-weight: 800; color: #111827; margin-bottom: 8px; }
+    .intro { color: #4b5563; font-size: .92rem; margin-bottom: 20px; white-space: pre-line; }
+    .payment-table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+    .payment-table th { text-align: left; background: #f3f4f6; padding: 8px 12px; font-weight: 700; color: #4b5563; border-bottom: 2px solid #e5e7eb; }
+    .payment-table td { padding: 8px 12px; border-bottom: 1px solid #e5e7eb; color: #1f2937; }
+    .total-box { margin-top: 28px; padding: 20px 24px; background: #1f2937; color: #fff; border-radius: 10px; display: flex; justify-content: space-between; align-items: center; }
+    .total-box .label { font-size: 1rem; font-weight: 700; letter-spacing: .04em; }
+    .total-box .amount { font-size: 1.6rem; font-weight: 800; color: #fbbf24; }
+    .terms-note { margin-top: 24px; padding-top: 16px; border-top: 1px solid #e5e7eb; font-size: .8rem; color: #6b7280; line-height: 1.55; }
+    .signatures { display: flex; gap: 40px; margin-top: 48px; }
+    .sig-block { flex: 1; }
+    .sig-line { border-bottom: 1.5px solid #9ca3af; height: 42px; margin-bottom: 6px; }
+    .sig-label { font-size: .8rem; color: #6b7280; }
+    .footer { margin-top: 48px; padding-top: 18px; border-top: 1px solid #e5e7eb; color: #9ca3af; font-size: .72rem; text-align: center; line-height: 1.6; }
+    @media print { body { padding: 20px 30px; } }
+  </style></head><body>
+
+  <div class="header">
+    <div>
+      ${comp.logo?`<img src="${comp.logo}" style="height:52px;object-fit:contain;margin-bottom:8px"><br>`:''}
+      <div class="co-name">${esc(comp.companyName||'')}</div>
+      <div class="co-contact">${esc(comp.phone||'')} · ${esc(comp.email||'')}${comp.address?' · '+esc(comp.address):''}</div>
+      ${comp.license?`<div class="co-contact">License #${esc(comp.license)}</div>`:''}
+    </div>
+    <div>
+      <div class="doc-title">CHANGE ORDER</div>
+      <div class="doc-meta">${esc(co.coNumber||'')}${job?.jobNumber ? ' · Job ' + esc(job.jobNumber) : ''}</div>
+      <div class="doc-meta">${co.date ? new Date(co.date+'T00:00:00').toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'}) : new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'})}</div>
+    </div>
+  </div>
+
+  <div class="prepared-for">
+    <div class="label">Prepared For</div>
+    <div class="name">${esc(job?.client||'')}</div>
+    <div class="co-contact">${esc(job?.address||'')}</div>
+  </div>
+
+  <div class="co-title-block">
+    <div class="heading">${esc(co.title || 'Change Order')}</div>
+    ${co.reason ? `<div class="intro">${esc(co.reason)}</div>` : ''}
+    ${scheduleHtml}
+  </div>
+
+  ${itemsHtml}
+
+  <div class="total-box">
+    <div class="label">TOTAL CHANGE ORDER AMOUNT</div>
+    <div class="amount">${amtDisplay}</div>
+  </div>
+
+  <div class="terms-note">
+    This Change Order modifies the original signed Proposal/Contract for this project. All other terms and conditions of the original agreement remain in full effect unless explicitly modified above.
+  </div>
+
+  <div class="signatures">
+    <div class="sig-block">
+      <div class="sig-line"></div>
+      <div class="sig-label">Customer Signature &nbsp;·&nbsp; Date</div>
+    </div>
+    <div class="sig-block">
+      <div class="sig-line"></div>
+      <div class="sig-label">${esc(comp.companyName||'Company')} Representative &nbsp;·&nbsp; Date</div>
+    </div>
+  </div>
+
+  <div class="footer">
+    ${esc(comp.companyName||'')} · ${esc(comp.phone||'')} · ${esc(comp.email||'')}${comp.license?' · License #'+esc(comp.license):''}
+  </div>
+
+  ${autoPrint !== false ? '<script>window.onload = () => setTimeout(() => window.print(), 250);<\\/script>' : ''}</body></html>`;
+}
+window.renderChangeOrderDocumentHtml = renderChangeOrderDocumentHtml;
+
+// Same mobile popup-blocker fix as printProposal: open the window
+// synchronously first, fill content in after.
+function printChangeOrder(coId) {
+  const job = conJobs.find(j => j.id === conCurrentJobId);
+  const co = conCOs.find(c => c.id === coId);
+  if (!co) { alert('Change order not found.'); return; }
+
+  const win = window.open('', '_blank');
+  if (win) win.document.write('<html><body style="font-family:sans-serif;padding:40px;text-align:center;color:#666">Loading change order…</body></html>');
+
+  const html = renderChangeOrderDocumentHtml(co, job, companyProfile, true);
+  if (!win) { alert('Your browser blocked the popup — check your popup/pop-up blocker settings for this site and try again.'); return; }
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
+}
+window.printChangeOrder = printChangeOrder;
+
+// Reuses the shared viewProposalModal — that modal is already generic
+// (title + iframe + a built-in Print button), so no new markup needed.
+function viewChangeOrder(coId) {
+  const job = conJobs.find(j => j.id === conCurrentJobId);
+  const co = conCOs.find(c => c.id === coId);
+  if (!co) { alert('Change order not found.'); return; }
+
+  const html = renderChangeOrderDocumentHtml(co, job, companyProfile, false);
+  const titleEl = document.getElementById('viewProposalModalTitle');
+  if (titleEl) titleEl.textContent = '👁️ ' + (co.title || 'Change Order');
+  document.getElementById('viewProposalIframe').srcdoc = html;
+  kOpen('viewProposalModal');
+}
+window.viewChangeOrder = viewChangeOrder;
+
+let _pendingCOEmail = null;
+
+// Reuses the shared emailPreviewModal — same preview-before-send pattern
+// as sendProposalViaEmail/emailInvoiceToCustomer: repoint the shared
+// Confirm button to this doc type's own confirm function so the other
+// email flows are undisturbed.
+function emailChangeOrderToCustomer(coId) {
+  const job = conJobs.find(j => j.id === conCurrentJobId);
+  const co = conCOs.find(c => c.id === coId);
+  if (!co) { alert('Change order not found.'); return; }
+  if (!job.email) { alert('This job has no customer email on file. Add one in the job details first.'); return; }
+  if (!conFunctions) { alert("Email sending isn't set up yet — deploy the Cloud Functions first."); return; }
+
+  const toName = job.client || job.name || 'Valued Customer';
+  const jobNum = job.jobNumber || '';
+  const amt = Number(co.amount || 0);
+  const amtDisplay = (amt < 0 ? '-$' + Math.abs(amt).toLocaleString() : '$' + amt.toLocaleString());
+  const subject = `Change Order from ${companyProfile?.companyName || 'JTXD Contracting'}${jobNum ? ' — Job ' + jobNum : ''}`;
+  const bodyHtml = `
+    <p>Hi ${toName},</p>
+    <p>${companyProfile?.companyName || 'JTXD Contracting'} has sent you a Change Order${jobNum ? ' for job <strong>' + jobNum + '</strong>' : ''}: <strong>${esc(co.title||'')}</strong>.</p>
+    <p><strong>Amount: ${amtDisplay}</strong>${co.days ? ` &nbsp;·&nbsp; +${co.days} day${co.days!=1?'s':''} to schedule` : ''}</p>
+    <p>Please see the attached document for full details.</p>
+    <p>Thank you for choosing ${companyProfile?.companyName || 'JTXD Contracting'}.</p>
+  `;
+
+  const coHtml = renderChangeOrderDocumentHtml(co, job, companyProfile, false);
+  document.getElementById('emailPreviewProposalFrame').srcdoc = coHtml;
+
+  _pendingCOEmail = { job, co, toName, subject, bodyHtml };
+  document.getElementById('emailPreviewTo').textContent = job.email + (toName ? ' (' + toName + ')' : '');
+  document.getElementById('emailPreviewSubject').textContent = subject;
+  document.getElementById('emailPreviewBody').innerHTML = bodyHtml;
+
+  const confirmBtn = document.getElementById('emailPreviewConfirmBtn');
+  if (confirmBtn) confirmBtn.onclick = confirmSendChangeOrderEmail;
+
+  kOpen('emailPreviewModal');
+}
+window.emailChangeOrderToCustomer = emailChangeOrderToCustomer;
+
+function confirmSendChangeOrderEmail() {
+  const pending = _pendingCOEmail;
+  if (!pending) { kClose('emailPreviewModal'); return; }
+  const { job, co, toName, subject, bodyHtml } = pending;
+
+  const confirmBtn = document.getElementById('emailPreviewConfirmBtn');
+  if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = 'Sending…'; }
+
+  const finish = (msg) => {
+    if (confirmBtn) {
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = '✅ Confirm & Send';
+      confirmBtn.onclick = confirmSendProposalEmail; // restore default so the proposal flow is undisturbed
+    }
+    kClose('emailPreviewModal');
+    _pendingCOEmail = null;
+    if (msg) alert(msg);
+  };
+
+  conFunctions.httpsCallable('sendJobspanEmail')({
+    to: job.email,
+    toName,
+    subject,
+    bodyHtml,
+    jobId: conCurrentJobId,
+    docType: 'changeOrder'
+  }).then(() => {
+    finish('Change order emailed to ' + job.email + '.');
+    if (typeof logActivity === 'function') {
+      logActivity(conCurrentJobId, `Change Order "${co.title||''}" emailed to ${job.email}`, job.name || '');
+    }
+  }).catch(e => finish('Error sending email: ' + e.message));
+}
+window.confirmSendChangeOrderEmail = confirmSendChangeOrderEmail;
 
 function printEstimate() {
   const job = conJobs.find(j => j.id === conCurrentJobId);
