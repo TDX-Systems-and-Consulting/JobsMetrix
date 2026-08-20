@@ -1,0 +1,21 @@
+# Auto-deploys JOBSMETRIX to Firebase Hosting on every push to main.
+# Set up so Travis never needs a laptop/local Firebase CLI to ship a
+# change again -- a push to main *is* the deploy from here on.
+name: Deploy to Firebase Hosting on push to main
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: '${{ secrets.GITHUB_TOKEN }}'
+          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_KYTRAC_72D91 }}'
+          channelId: live
+          projectId: kytrac-72d91
