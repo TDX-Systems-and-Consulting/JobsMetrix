@@ -21799,6 +21799,86 @@ function calcGroupTotals(items) {
   return { cost, price, profit, margin };
 }
 
+// Every room (group) → category (subgroup) → sub-category (subsub) →
+// item, one row each, with the Materials/Labor split and a subtotal
+// row after every category — same breakdown Travis asked for on the
+// Roofing group, just for the whole estimate at once. Opens directly
+// in Excel (CSV, same pattern as exportReport() for the Reports tab).
+function exportEstimateBreakdown() {
+  if (!estGroups.length) { alert('No estimate line items to export yet.'); return; }
+
+  const job = conJobs.find(j => j.id === conCurrentJobId);
+  const csvRow = (...fields) => fields.map(f => '"'+String(f??'').replace(/"/g,'""')+'"').join(',') + '\n';
+  const money = n => Math.round((n||0)*100)/100;
+
+  let csv = '';
+  csv += csvRow('Job', job ? `${job.jobNumber||''} ${job.name||''}`.trim() : '');
+  csv += csvRow('Exported', new Date().toLocaleString());
+  csv += '\n';
+  csv += csvRow('Room','Category','Sub-Category','Item','Qty','Unit','Type','Unit Cost','Total Cost','Unit Price','Total Price','Margin %');
+
+  let grandCost = 0, grandPrice = 0;
+
+  const itemRow = (roomName, catName, subName, item) => {
+    const qty = item.qty || 1;
+    const uc = item.unitCost || 0;
+    const up = item.unitPrice || uc*(1+(item.markup||0)/100);
+    const totalCost = qty*uc, totalPrice = qty*up;
+    const margin = totalPrice > 0 ? (totalPrice-totalCost)/totalPrice*100 : 0;
+    csv += csvRow(roomName, catName, subName, item.desc||item.name||'', qty, item.unit||'', item.costType||'',
+      money(uc), money(totalCost), money(up), money(totalPrice), Math.round(margin));
+    return { cost: totalCost, price: totalPrice };
+  };
+
+  // Writes a Materials subtotal / Labor subtotal / Category total block
+  // right after a category's items — mirrors what Travis asked for on
+  // Roofing specifically, applied to every category in the estimate.
+  const subtotalBlock = (label, items) => {
+    let matCost=0, matPrice=0, labCost=0, labPrice=0;
+    items.forEach(it => {
+      const qty = it.qty||1, uc = it.unitCost||0, up = it.unitPrice || uc*(1+(it.markup||0)/100);
+      if ((it.costType||'') === 'Labor') { labCost += qty*uc; labPrice += qty*up; }
+      else { matCost += qty*uc; matPrice += qty*up; }
+    });
+    csv += csvRow('','','','MATERIALS SUBTOTAL','','','', '', money(matCost), '', money(matPrice), '');
+    csv += csvRow('','','','LABOR SUBTOTAL','','','', '', money(labCost), '', money(labPrice), '');
+    csv += csvRow('','','',label+' TOTAL','','','', '', money(matCost+labCost), '', money(matPrice+labPrice), '');
+    csv += '\n';
+  };
+
+  estGroups.forEach(group => {
+    const roomName = group.name || 'General';
+    (group.directItems||[]).forEach(it => itemRow(roomName, '(direct)', '', it));
+    if ((group.directItems||[]).length) subtotalBlock(roomName+' (direct)', group.directItems);
+
+    (group.subgroups||[]).forEach(sub => {
+      const catName = sub.name || '';
+      (sub.items||[]).forEach(it => itemRow(roomName, catName, '', it));
+      if ((sub.items||[]).length) subtotalBlock(`${roomName} — ${catName}`, sub.items);
+
+      (sub.subgroups||[]).forEach(subsub => {
+        const subName = subsub.name || '';
+        (subsub.items||[]).forEach(it => itemRow(roomName, catName, subName, it));
+        if ((subsub.items||[]).length) subtotalBlock(`${roomName} — ${catName} — ${subName}`, subsub.items);
+      });
+    });
+
+    const t = calcGroupTotals(getAllItemsInGroup(group));
+    grandCost += t.cost; grandPrice += t.price;
+  });
+
+  csv += csvRow('','','','GRAND TOTAL (all rooms)','','','', '', money(grandCost), '', money(grandPrice), Math.round(grandPrice>0?(grandPrice-grandCost)/grandPrice*100:0));
+
+  const blob = new Blob([csv], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  const jobNum = job?.jobNumber ? job.jobNumber.replace(/[^a-zA-Z0-9-]/g,'') : 'job';
+  a.download = `estimate-breakdown-${jobNum}-${new Date().toISOString().split('T')[0]}.csv`;
+  a.click();
+}
+window.exportEstimateBreakdown = exportEstimateBreakdown;
+
+
 // ── Friends & Family Labor Discount ──────────────────────────────────
 // Reduces the CUSTOMER-FACING price on every Labor line item by a flat
 // %, while leaving unitCost untouched — so real labor cost/margin

@@ -4619,6 +4619,7 @@
             <button class="btn" onclick="openAddEstItemModal(null)" style="padding:6px 14px;font-size:.82rem">+ Item</button>
             <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
               <button class="btn" onclick="printEstimate()" style="padding:6px 14px;font-size:.82rem" title="Shows itemized cost/price/margin - for your own reference only">🖨 Print (Internal)</button>
+              <button class="btn" onclick="exportEstimateBreakdown()" style="padding:6px 14px;font-size:.82rem" title="Every room / category / item with Materials vs Labor cost &amp; price, as a CSV you can open directly in Excel">📊 Export Breakdown (Excel)</button>
               <button class="btn" onclick="viewProposal()" style="padding:6px 14px;font-size:.82rem;background:rgba(var(--surface-subtle-rgb),.8);color:var(--text)">👁️ View Proposal</button>
               <button class="btn-amber" onclick="printProposal()" style="padding:6px 14px;font-size:.82rem">📄 Print Proposal (Customer)</button>
               <button class="btn" onclick="sendProposalViaEmail(this)" style="padding:6px 14px;font-size:.82rem;background:linear-gradient(135deg,rgba(37,99,235,.18),rgba(29,78,216,.12));color:#93c5fd;border-color:rgba(37,99,235,.3)">📧 Send via Email</button>
@@ -4995,7 +4996,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202608201805"></script>
+<script src="kytrac-app.js?v=202608202123"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW
