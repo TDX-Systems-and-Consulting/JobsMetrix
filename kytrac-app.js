@@ -561,7 +561,14 @@ function ktNav(key, btn) {
   }
   if(key==='dashboard') { conRenderBoard(); conRenderStats(); renderHomeDashboard(); }
   if(key==='fieldtechhome') { renderFieldTechHome(); }
-  if(key==='catalog') renderCatalog();
+  if(key==='catalog') {
+    renderCatalog();
+    // Clear any leftover reference-catalog search from a previous visit
+    const catRefSearchEl = document.getElementById('catRefSearch');
+    const catRefResultsEl = document.getElementById('catRefResults');
+    if (catRefSearchEl) catRefSearchEl.value = '';
+    if (catRefResultsEl) catRefResultsEl.innerHTML = '';
+  }
   if(key==='calendar') { loadGlobalPhases(); loadCalendarEvents(); buildTeamColors(); renderCalendar(); loadGCalStatus(); loadTimeOffRequests(); }
   if(key==='masterschedule') { renderMasterSchedulePage(); }
   if(key==='time') { loadTimeEntries(); renderTimeLog(); renderTodaySummary(); populateTimeFilters(); }
@@ -8214,6 +8221,75 @@ function calcCOTotal() {
   return total;
 }
 window.calcCOTotal = calcCOTotal;
+
+// ── Cost Catalog page: search the built-in reference catalog ──
+// "Your Catalog" (catalogItems, Firestore-backed) starts empty and is
+// 100% manual entry -- there was no way to search the real, already-
+// priced national catalog (CATALOG_DATA, same data Smart Add and the
+// Estimate/Change Order search already use) from this page, so it was
+// worthless for anyone who hadn't already hand-typed their own list.
+// This searches that same flat index and, on pick, prefills the
+// existing Add Catalog Item form (one save path, not a second one) so
+// the real price becomes an actual editable entry in Your Catalog with
+// one tap instead of typing it from scratch.
+function filterCatRefSearch() {
+  const input = document.getElementById('catRefSearch');
+  const resultsEl = document.getElementById('catRefResults');
+  if (!input || !resultsEl) return;
+  const q = input.value.toLowerCase().trim();
+  if (!q) { resultsEl.innerHTML = ''; return; }
+  const words = q.split(/\s+/).filter(Boolean);
+  const index = getFlatCatalogIndex();
+  const matches = index.filter(i => {
+    const name = i.name.toLowerCase();
+    return words.every(w => name.includes(w));
+  }).slice(0, 20); // cap — a broad query like "labor" could match hundreds
+
+  if (!matches.length) {
+    resultsEl.innerHTML = '<div class="small muted" style="padding:8px;font-style:italic">No matches in the reference catalog.</div>';
+    return;
+  }
+  resultsEl.innerHTML = matches.map((m, i) => {
+    const hasMat = !!m.materials, hasLab = !!m.labor;
+    const priceStr = hasMat ? '$' + Number(m.materials.unitCost||0).toFixed(2) : (hasLab ? '$' + Number(m.labor.unitCost||0).toFixed(2) : '');
+    return `<div onclick="addFromCatRefResult(${i})" class="est-catalog-result-row" style="padding:10px;border-radius:8px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <div style="min-width:0">
+        <div style="font-size:.84rem;font-weight:600;color:#eaf0fb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(m.name)}</div>
+        <div style="font-size:.7rem;color:var(--amber)">${esc(m.trade)}${hasMat&&hasLab?' · materials + labor':hasLab?' · labor':' · materials'}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-shrink:0">
+        <div style="font-size:.82rem;color:var(--muted);white-space:nowrap">${priceStr}</div>
+        <button class="btn" style="padding:3px 10px;font-size:.72rem" onclick="event.stopPropagation();addFromCatRefResult(${i})">+ Add</button>
+      </div>
+    </div>`;
+  }).join('');
+  window._catRefMatches = matches;
+}
+window.filterCatRefSearch = filterCatRefSearch;
+
+function addFromCatRefResult(i) {
+  const m = (window._catRefMatches || [])[i];
+  if (!m) return;
+  const primary = m.materials || m.labor;
+  const isLaborPrimary = !m.materials && !!m.labor;
+  openCatalogItemModal(); // opens blank, resets the form to its defaults
+  document.getElementById('catItemDesc').value = primary.desc || m.name;
+  document.getElementById('catItemCategory').value = isLaborPrimary ? 'Labor' : 'Materials';
+  onCatItemCategoryChange();
+  document.getElementById('catItemUnit').value = primary.unit || 'ea';
+  document.getElementById('catItemCost').value = primary.unitCost || '';
+  document.getElementById('catItemMarkup').value = getDefaultMarkupForCostType(isLaborPrimary ? 'Labor' : 'Materials');
+  if (m.materials && m.labor) {
+    // Same underlying data shape as the Estimate/CO catalog fixes: a
+    // bundled labor price here has no name of its own to search for
+    // separately -- flag it so it doesn't just quietly disappear, even
+    // though (unlike Estimate line items) there's no dedicated
+    // "also add" checkbox on this simpler single-item form.
+    document.getElementById('catItemNotes').value = 'Catalog also has a labor price for this item: "' + m.labor.desc + '" — $' + Number(m.labor.unitCost).toFixed(2) + '/' + (m.labor.unit||'hr') + '. Add it as a separate catalog entry too if you want it trackable on its own.';
+  }
+  if (typeof calcCatPreview === 'function') calcCatPreview();
+}
+window.addFromCatRefResult = addFromCatRefResult;
 
 function onCOStatusManualChange() { /* reserved for future validation */ }
 window.onCOStatusManualChange = onCOStatusManualChange;
