@@ -8091,7 +8091,7 @@ function renderCOLineItems() {
     container.innerHTML = '<div class="small muted" style="padding:10px 0;font-style:italic">No line items yet.</div>';
   } else {
     container.innerHTML = _coLineItems.map((item, i) => `
-      <div style="display:grid;grid-template-columns:2fr 55px 60px 90px 80px 80px 22px;gap:6px;align-items:center;margin-bottom:6px">
+      <div style="display:grid;grid-template-columns:2fr 55px 60px 90px 80px 80px 22px;gap:6px;align-items:center;margin-bottom:6px;min-width:600px">
         <input value="${esc(item.desc||'')}" placeholder="Description" style="font-size:.8rem;padding:6px;background:rgba(8,19,37,.8);border:1px solid rgba(110,145,210,.15);border-radius:6px;color:#eaf0fb"
           onchange="_coLineItems[${i}].desc=this.value" />
         <input type="number" value="${item.qty||1}" min="0" step="any" style="font-size:.8rem;padding:6px;text-align:right;background:rgba(8,19,37,.8);border:1px solid rgba(110,145,210,.15);border-radius:6px;color:#eaf0fb"
@@ -23928,6 +23928,8 @@ function viewProposal() {
   const itemized = !!document.getElementById('proposalItemizedToggle')?.checked;
 
   const showInModal = (html) => {
+    const titleEl = document.getElementById('viewProposalModalTitle');
+    if (titleEl) titleEl.textContent = '👁️ Proposal';
     document.getElementById('viewProposalIframe').srcdoc = html;
     kOpen('viewProposalModal');
   };
@@ -24136,7 +24138,6 @@ window.confirmSendProposalEmail = confirmSendProposalEmail;
 function printEstimate() {
   const job = conJobs.find(j => j.id === conCurrentJobId);
   const co = companyProfile;
-  const win = window.open('', '_blank');
 
   let allCost = 0, allPrice = 0;
   const groupRows = estGroups.map(group => {
@@ -24209,7 +24210,7 @@ function printEstimate() {
   const profit = allPrice - allCost;
   const margin = allPrice > 0 ? (profit/allPrice*100).toFixed(1) : '0.0';
 
-  win.document.write(`<!DOCTYPE html><html><head><title>Estimate — ${esc(job?.name||'')}</title>
+  const html = `<!DOCTYPE html><html><head><title>Estimate — ${esc(job?.name||'')}</title>
   <style>body{font-family:Arial,sans-serif;max-width:800px;margin:40px auto;padding:0 20px;color:#111}
   table{width:100%;border-collapse:collapse}td{border-bottom:1px solid #e5e7eb}
   .header{display:flex;justify-content:space-between;border-bottom:3px solid #d97706;padding-bottom:16px;margin-bottom:20px}
@@ -24249,9 +24250,24 @@ function printEstimate() {
   <div style="margin-top:32px;padding-top:16px;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:.75rem;text-align:center">
     ${esc(co.companyName||'')} · ${esc(co.phone||'')} · ${esc(co.email||'')}
     ${co.license?'<br>License #'+esc(co.license):''}
-  </div>
-  <script>window.print();<\/script></body></html>`);
-  win.document.close();
+  </div></body></html>`;
+
+  // Was window.open('', '_blank') writing raw HTML into a brand-new
+  // browser tab -- on mobile (especially inside a PWA/webview) that
+  // produces a stranded tab with no back button and no way to close it,
+  // the exact same failure mode already found and fixed for View
+  // Proposal. Reusing that same proven in-app modal (iframe + srcdoc,
+  // real Close button, already fixed for the notch/safe-area issue)
+  // instead of opening a new window. Deliberately does NOT call
+  // window.print() automatically on load like the old version did --
+  // that's what triggered the OS print dialog immediately in the old
+  // popup, which is exactly why there seemed to be "no way to close" on
+  // mobile (the print sheet was covering the screen). The modal's own
+  // 🖨 Print button covers that instead, only when the person wants it.
+  const titleEl = document.getElementById('viewProposalModalTitle');
+  if (titleEl) titleEl.textContent = '🖨 Estimate (Internal)';
+  document.getElementById('viewProposalIframe').srcdoc = html;
+  kOpen('viewProposalModal');
 }
 
 // ── PUNCH LIST PRINT ──
