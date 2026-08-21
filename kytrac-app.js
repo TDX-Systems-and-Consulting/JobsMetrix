@@ -28224,56 +28224,94 @@ const GUIDED_SCRIPTS = {
 
 let _guidedCategory = null, _guidedRoom = null, _guidedTrade = null, _guidedPhaseLabel = null;
 let _guidedScript = null, _guidedStepIdx = 0, _guidedCtx = {}, _guidedCart = [];
-let _guidedPendingStep = null; // step waiting on a shared-qty or ownQty/select answer
+
+// Back navigation: a stack of full-state snapshots, one pushed right
+// before every forward move. "Back" pops the most recent snapshot and
+// re-renders exactly that screen with exactly the ctx/cart it had at
+// the time -- so answering a question wrong and hitting Back rewinds
+// one question, it doesn't restart the whole flow.
+let _guidedHistory = [];
+
+function guidedSnapshot(screen) {
+  return {
+    screen,
+    ctx: { ..._guidedCtx }, cart: [..._guidedCart],
+    category: _guidedCategory, room: _guidedRoom, trade: _guidedTrade, phaseLabel: _guidedPhaseLabel,
+    script: _guidedScript, stepIdx: _guidedStepIdx
+  };
+}
+function guidedPush(screen) { _guidedHistory.push(guidedSnapshot(screen)); guidedUpdateBackBtn(); }
+function guidedUpdateBackBtn() {
+  const btn = document.getElementById('guidedBackBtn');
+  if (btn) btn.style.display = _guidedHistory.length ? 'inline-block' : 'none';
+}
 
 function openGuidedAdd() {
   _guidedCategory = null; _guidedRoom = null; _guidedTrade = null; _guidedPhaseLabel = null;
-  _guidedScript = null; _guidedStepIdx = 0; _guidedCtx = {}; _guidedCart = []; _guidedPendingStep = null;
+  _guidedScript = null; _guidedStepIdx = 0; _guidedCtx = {}; _guidedCart = []; _guidedHistory = [];
+  guidedRenderCategoryScreen();
+  kOpen('guidedAddModal');
+}
+window.openGuidedAdd = openGuidedAdd;
+
+function guidedRenderCategoryScreen() {
   document.getElementById('guidedBreadcrumb').textContent = 'What are we working on today?';
   const cats = Object.keys(ROOM_STRUCTURE);
   document.getElementById('guidedBody').innerHTML = `
     <div style="font-weight:700;margin-bottom:10px">Where is the work?</div>
     <select id="guidedCatSelect" onchange="guidedPickCategory(this.value)" style="width:100%;padding:10px;font-size:.9rem;margin-bottom:10px">
       <option value="">Select an area…</option>
-      ${cats.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
+      ${cats.map(c => `<option value="${esc(c)}" ${c===_guidedCategory?'selected':''}>${esc(c)}</option>`).join('')}
     </select>`;
   document.getElementById('guidedFooter').innerHTML = '';
-  document.getElementById('guidedBackBtn').style.display = 'none';
-  kOpen('guidedAddModal');
+  guidedUpdateBackBtn();
 }
-window.openGuidedAdd = openGuidedAdd;
 
-function guidedPickCategory(cat) {
-  if (!cat) return;
-  _guidedCategory = cat;
-  const rooms = Object.keys(ROOM_STRUCTURE[cat]?.rooms || {});
-  document.getElementById('guidedBreadcrumb').textContent = cat + ' — what are we working on?';
+function guidedRenderRoomScreen() {
+  const rooms = Object.keys(ROOM_STRUCTURE[_guidedCategory]?.rooms || {});
+  document.getElementById('guidedBreadcrumb').textContent = _guidedCategory + ' — what are we working on?';
   document.getElementById('guidedBody').innerHTML = `
     <div style="font-weight:700;margin-bottom:10px">Which room or area?</div>
     <select id="guidedRoomSelect" onchange="guidedPickRoom(this.value)" style="width:100%;padding:10px;font-size:.9rem;margin-bottom:10px">
       <option value="">Select a room…</option>
-      ${rooms.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('')}
+      ${rooms.map(r => `<option value="${esc(r)}" ${r===_guidedRoom?'selected':''}>${esc(r)}</option>`).join('')}
     </select>`;
-  document.getElementById('guidedBackBtn').style.display = 'inline-block';
+  document.getElementById('guidedFooter').innerHTML = '';
+  guidedUpdateBackBtn();
+}
+
+function guidedRenderPhaseScreen() {
+  const phases = ROOM_STRUCTURE[_guidedCategory]?.rooms[_guidedRoom]?.phases || [];
+  document.getElementById('guidedBreadcrumb').textContent = `${_guidedCategory} › ${_guidedRoom}`;
+  document.getElementById('guidedBody').innerHTML = `
+    <div style="font-weight:700;margin-bottom:10px">${esc(_guidedRoom)}, what are we working on?</div>
+    <select id="guidedPhaseSelect" onchange="guidedPickPhase(this.value)" style="width:100%;padding:10px;font-size:.9rem;margin-bottom:10px">
+      <option value="">Select a trade…</option>
+      ${phases.map(p => `<option value="${esc(p.label)}|||${esc(p.trade)}">${esc(p.label)}${GUIDED_SCRIPTS[p.trade] ? '' : ' (not yet available)'}</option>`).join('')}
+    </select>`;
+  document.getElementById('guidedFooter').innerHTML = '';
+  guidedUpdateBackBtn();
+}
+
+function guidedPickCategory(cat) {
+  if (!cat) return;
+  guidedPush({ t: 'category' });
+  _guidedCategory = cat;
+  guidedRenderRoomScreen();
 }
 window.guidedPickCategory = guidedPickCategory;
 
 function guidedPickRoom(room) {
   if (!room) return;
+  guidedPush({ t: 'room' });
   _guidedRoom = room;
-  const phases = ROOM_STRUCTURE[_guidedCategory]?.rooms[room]?.phases || [];
-  document.getElementById('guidedBreadcrumb').textContent = `${_guidedCategory} › ${room}`;
-  document.getElementById('guidedBody').innerHTML = `
-    <div style="font-weight:700;margin-bottom:10px">${esc(room)}, what are we working on?</div>
-    <select id="guidedPhaseSelect" onchange="guidedPickPhase(this.value)" style="width:100%;padding:10px;font-size:.9rem;margin-bottom:10px">
-      <option value="">Select a trade…</option>
-      ${phases.map(p => `<option value="${esc(p.label)}|||${esc(p.trade)}">${esc(p.label)}${GUIDED_SCRIPTS[p.trade] ? '' : ' (not yet available)'}</option>`).join('')}
-    </select>`;
+  guidedRenderPhaseScreen();
 }
 window.guidedPickRoom = guidedPickRoom;
 
 function guidedPickPhase(val) {
   if (!val) return;
+  guidedPush({ t: 'phase' });
   const [label, trade] = val.split('|||');
   _guidedPhaseLabel = label; _guidedTrade = trade;
   const script = GUIDED_SCRIPTS[trade];
@@ -28284,10 +28322,10 @@ function guidedPickPhase(val) {
         Use <strong>⚡ Smart Add</strong> to browse that catalog instead.
       </div>`;
     document.getElementById('guidedFooter').innerHTML = '';
+    guidedUpdateBackBtn();
     return;
   }
   _guidedScript = script; _guidedStepIdx = 0; _guidedCtx = {}; _guidedCart = [];
-  document.getElementById('guidedBreadcrumb').textContent = `${_guidedRoom} › ${label}`;
   guidedRenderStep();
 }
 window.guidedPickPhase = guidedPickPhase;
@@ -28296,6 +28334,7 @@ function guidedRenderStep() {
   const steps = _guidedScript.steps;
   if (_guidedStepIdx >= steps.length) { guidedShowReview(); return; }
   const step = steps[_guidedStepIdx];
+  document.getElementById('guidedBreadcrumb').textContent = `${_guidedRoom} › ${_guidedPhaseLabel}`;
   document.getElementById('guidedBody').innerHTML = `
     <div style="font-size:1.05rem;font-weight:700;margin-bottom:20px">${esc(step.text)}</div>
     <div style="display:flex;gap:10px">
@@ -28304,107 +28343,119 @@ function guidedRenderStep() {
     </div>`;
   document.getElementById('guidedFooter').innerHTML =
     `<span class="small muted">Step ${_guidedStepIdx+1} of ${steps.length}</span>`;
+  guidedUpdateBackBtn();
 }
 
 function guidedAnswer(yes) {
-  const step = _guidedScript.steps[_guidedStepIdx];
-  if (!yes) { _guidedStepIdx++; guidedRenderStep(); return; }
-  guidedResolveYes(step, step.onYes);
+  const idx = _guidedStepIdx;
+  const step = _guidedScript.steps[idx];
+  // Push BEFORE anything changes -- restores to this same yes/no
+  // question, with ctx/cart exactly as they were when it was first shown.
+  guidedPush({ t: 'yesno', stepIdx: idx });
+  if (!yes) { _guidedStepIdx = idx + 1; guidedRenderStep(); return; }
+  guidedResolveYes(idx);
 }
 window.guidedAnswer = guidedAnswer;
 
 // Walks whatever this step's "yes" branch still needs, in order: any
 // shared quantities not yet in ctx, then its own one-off quantity
 // question, then a select (shingle type etc). Once everything is
-// collected, computes this step's items and advances.
-function guidedResolveYes(step, onYes) {
+// collected, computes this step's items and advances. Does NOT push
+// history itself -- each sub-question's submit handler pushes before
+// mutating ctx, so Back always rewinds exactly one question.
+function guidedResolveYes(idx) {
+  const onYes = _guidedScript.steps[idx].onYes;
   const missingShared = (onYes.needs || []).filter(k => _guidedCtx[k] === undefined);
-  if (missingShared.length) {
-    guidedAskSharedQty(missingShared[0], () => guidedResolveYes(step, onYes));
-    return;
-  }
-  if (onYes.ownQty && _guidedCtx[onYes.ownQty.key] === undefined) {
-    guidedAskNumber(onYes.ownQty.label, onYes.ownQty.default, (val) => {
-      _guidedCtx[onYes.ownQty.key] = val;
-      guidedResolveYes(step, onYes);
-    });
-    return;
-  }
-  if (onYes.select && _guidedCtx[onYes.select.key] === undefined) {
-    guidedAskSelect(onYes.select.label, onYes.select.options, (val) => {
-      _guidedCtx[onYes.select.key] = val;
-      guidedResolveYes(step, onYes);
-    });
-    return;
-  }
+  if (missingShared.length) { guidedRenderSharedQty(idx, missingShared[0]); return; }
+  if (onYes.ownQty && _guidedCtx[onYes.ownQty.key] === undefined) { guidedRenderOwnQty(idx); return; }
+  if (onYes.select && _guidedCtx[onYes.select.key] === undefined) { guidedRenderSelect(idx); return; }
   const items = onYes.items(_guidedCtx);
   _guidedCart.push(...items);
-  _guidedStepIdx++;
+  _guidedStepIdx = idx + 1;
   guidedRenderStep();
 }
 
-function guidedAskSharedQty(key, onDone) {
+function guidedRenderSharedQty(idx, key) {
   document.getElementById('guidedBody').innerHTML = `
     <div style="font-size:1.05rem;font-weight:700;margin-bottom:14px">${esc(GUIDED_QTY_LABELS[key] || key)}</div>
     <input id="guidedQtyInput" type="number" min="0" step="0.1" style="width:100%;padding:12px;font-size:1rem;margin-bottom:14px" />
-    <button class="btn-amber" style="width:100%;padding:12px" onclick="guidedSubmitSharedQty('${key}')">Next →</button>`;
+    <button class="btn-amber" style="width:100%;padding:12px" onclick="guidedSubmitSharedQty(${idx},'${key}')">Next →</button>`;
   document.getElementById('guidedFooter').innerHTML = '';
-  window._guidedSharedQtyCallback = onDone;
+  guidedUpdateBackBtn();
   setTimeout(() => document.getElementById('guidedQtyInput')?.focus(), 50);
 }
-function guidedSubmitSharedQty(key) {
+function guidedSubmitSharedQty(idx, key) {
   const val = parseFloat(document.getElementById('guidedQtyInput').value);
   if (isNaN(val) || val <= 0) { alert('Enter a number greater than 0.'); return; }
+  guidedPush({ t: 'sharedQty', stepIdx: idx, key });
   _guidedCtx[key] = val;
-  const cb = window._guidedSharedQtyCallback;
-  window._guidedSharedQtyCallback = null;
-  cb();
+  guidedResolveYes(idx);
 }
 window.guidedSubmitSharedQty = guidedSubmitSharedQty;
 
-function guidedAskNumber(label, def, onDone) {
+function guidedRenderOwnQty(idx) {
+  const onYes = _guidedScript.steps[idx].onYes;
   document.getElementById('guidedBody').innerHTML = `
-    <div style="font-size:1.05rem;font-weight:700;margin-bottom:14px">${esc(label)}</div>
-    <input id="guidedQtyInput2" type="number" min="0" step="1" value="${def}" style="width:100%;padding:12px;font-size:1rem;margin-bottom:14px" />
-    <button class="btn-amber" style="width:100%;padding:12px" onclick="guidedSubmitNumber()">Next →</button>`;
+    <div style="font-size:1.05rem;font-weight:700;margin-bottom:14px">${esc(onYes.ownQty.label)}</div>
+    <input id="guidedQtyInput2" type="number" min="0" step="1" value="${onYes.ownQty.default}" style="width:100%;padding:12px;font-size:1rem;margin-bottom:14px" />
+    <button class="btn-amber" style="width:100%;padding:12px" onclick="guidedSubmitNumber(${idx})">Next →</button>`;
   document.getElementById('guidedFooter').innerHTML = '';
-  window._guidedNumberCallback = onDone;
+  guidedUpdateBackBtn();
   setTimeout(() => document.getElementById('guidedQtyInput2')?.focus(), 50);
 }
-function guidedSubmitNumber() {
+function guidedSubmitNumber(idx) {
+  const onYes = _guidedScript.steps[idx].onYes;
   const val = parseFloat(document.getElementById('guidedQtyInput2').value);
   if (isNaN(val) || val < 0) { alert('Enter a number 0 or greater.'); return; }
-  const cb = window._guidedNumberCallback;
-  window._guidedNumberCallback = null;
-  cb(val);
+  guidedPush({ t: 'ownQty', stepIdx: idx });
+  _guidedCtx[onYes.ownQty.key] = val;
+  guidedResolveYes(idx);
 }
 window.guidedSubmitNumber = guidedSubmitNumber;
 
-function guidedAskSelect(label, options, onDone) {
+function guidedRenderSelect(idx) {
+  const onYes = _guidedScript.steps[idx].onYes;
   document.getElementById('guidedBody').innerHTML = `
-    <div style="font-size:1.05rem;font-weight:700;margin-bottom:14px">${esc(label)}</div>
+    <div style="font-size:1.05rem;font-weight:700;margin-bottom:14px">${esc(onYes.select.label)}</div>
     <select id="guidedSelectInput" style="width:100%;padding:12px;font-size:.92rem;margin-bottom:14px">
-      ${options.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}
+      ${onYes.select.options.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}
     </select>
-    <button class="btn-amber" style="width:100%;padding:12px" onclick="guidedSubmitSelect()">Next →</button>`;
+    <button class="btn-amber" style="width:100%;padding:12px" onclick="guidedSubmitSelect(${idx})">Next →</button>`;
   document.getElementById('guidedFooter').innerHTML = '';
-  window._guidedSelectCallback = onDone;
+  guidedUpdateBackBtn();
 }
-function guidedSubmitSelect() {
+function guidedSubmitSelect(idx) {
+  const onYes = _guidedScript.steps[idx].onYes;
   const val = document.getElementById('guidedSelectInput').value;
-  const cb = window._guidedSelectCallback;
-  window._guidedSelectCallback = null;
-  cb(val);
+  guidedPush({ t: 'select', stepIdx: idx });
+  _guidedCtx[onYes.select.key] = val;
+  guidedResolveYes(idx);
 }
 window.guidedSubmitSelect = guidedSubmitSelect;
 
+// Pops the last snapshot and re-renders exactly that screen -- restores
+// ctx/cart/category/room/trade/phase/script/stepIdx as they were at
+// that point, so this always rewinds exactly one question, never the
+// whole flow.
 function guidedBack() {
-  // Simplest safe behavior: back always returns to the picker screens
-  // rather than trying to unwind mid-question state, which could leave
-  // ctx/cart inconsistent. Re-answering is one tap either way.
-  if (_guidedScript) { openGuidedAdd(); return; }
-  if (_guidedRoom) { guidedPickCategory(_guidedCategory); return; }
-  openGuidedAdd();
+  if (!_guidedHistory.length) return;
+  const prev = _guidedHistory.pop();
+  _guidedCtx = prev.ctx; _guidedCart = prev.cart;
+  _guidedCategory = prev.category; _guidedRoom = prev.room;
+  _guidedTrade = prev.trade; _guidedPhaseLabel = prev.phaseLabel;
+  _guidedScript = prev.script; _guidedStepIdx = prev.stepIdx;
+
+  switch (prev.screen.t) {
+    case 'category': guidedRenderCategoryScreen(); break;
+    case 'room':     guidedRenderRoomScreen(); break;
+    case 'phase':    guidedRenderPhaseScreen(); break;
+    case 'yesno':    guidedRenderStep(); break;
+    case 'sharedQty':guidedRenderSharedQty(prev.screen.stepIdx, prev.screen.key); break;
+    case 'ownQty':   guidedRenderOwnQty(prev.screen.stepIdx); break;
+    case 'select':   guidedRenderSelect(prev.screen.stepIdx); break;
+    default:         guidedRenderCategoryScreen();
+  }
+  guidedUpdateBackBtn();
 }
 window.guidedBack = guidedBack;
 
@@ -28444,6 +28495,7 @@ function guidedShowReview() {
   document.getElementById('guidedFooter').innerHTML = allItems.length
     ? `<button class="btn-amber" style="padding:10px 18px" onclick="guidedCommit()">✅ Add to Estimate</button>`
     : '';
+  guidedUpdateBackBtn();
 }
 
 async function guidedCommit() {
