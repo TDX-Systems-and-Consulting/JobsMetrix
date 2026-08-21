@@ -28110,6 +28110,402 @@ async function wizardAddToEstimate() {
   alert(`✅ Added ${itemCount} item${itemCount!==1?'s':''} (${lineCount} line items) to ${roomName} › ${tradeName}`);
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// GUIDED QUESTIONS — "question machine" mode alongside Smart Add's
+// "selection machine" browse mode. Walks a trade's yes/no + quantity
+// script (GUIDED_SCRIPTS) instead of browsing the catalog, then commits
+// to the estimate using the exact same group/subgroup-creation logic as
+// wizardAddToEstimate above.
+//
+// Shared quantities (squares / ridgeLength / eaveLength) are each asked
+// only once per session and reused by every later question that needs
+// them — this was an explicit design decision, not a default.
+//
+// Only Roofing is scripted today. Every other trade's phases still show
+// in the room/phase pickers (so the flow doesn't feel broken), but
+// selecting one explains guided mode isn't built for it yet and points
+// back to Smart Add. Add a new trade by adding a GUIDED_SCRIPTS entry —
+// the engine below is generic and doesn't change.
+// ═══════════════════════════════════════════════════════════════════════
+
+const GUIDED_QTY_LABELS = {
+  squares:    'Total roof size, in squares (1 square = 100 sq ft)',
+  ridgeLength:'Total ridge length (linear feet)',
+  eaveLength: 'Total eave / perimeter length (linear feet)'
+};
+
+const GUIDED_SCRIPTS = {
+  '0900 Roofing': {
+    label: 'Roofing',
+    steps: [
+      {
+        id: 'tearoff', text: 'Is there a tear-off of the existing roof?',
+        onYes: { ownQty: { key:'layers', label:'How many layers are being torn off?', default:1 },
+          needs: ['squares'],
+          items: (ctx) => [{ name:'Labor to tear off existing roofing (per square)', qty: ctx.squares * ctx.layers }]
+        }
+      },
+      {
+        id: 'underlayment', text: 'Install underlayment?',
+        onYes: { needs: ['squares'],
+          items: (ctx) => [
+            { name:'GAF FeltBuster Synthetic Roofing Underlayment (10 sq. roll)', qty: Math.ceil(ctx.squares/10) },
+            { name:'Labor to install underlayment/ice & water shield (per square)', qty: ctx.squares }
+          ]
+        }
+      },
+      {
+        id: 'icewater', text: 'Install ice & water shield (eaves/valleys)?',
+        onYes: { needs: ['squares'],
+          items: (ctx) => [{ name:'GAF WeatherWatch Ice & Water Shield (2 sq. roll)', qty: Math.ceil(ctx.squares/2) }]
+        }
+      },
+      {
+        id: 'shingles', text: 'Install shingles?',
+        onYes: { needs: ['squares','eaveLength'],
+          select: { key:'shingleType', label:'Shingle type', options: [
+            'GAF Timberline HDZ 3-Tab Laminated Architectural Shingles (33.3 sq. ft. / bundle)',
+            'Owens Corning Duration Architectural Shingles (32.8 sq. ft. / bundle)',
+            '3-Tab Asphalt Shingles, Standard (33.3 sq. ft. / bundle)'
+          ]},
+          items: (ctx) => [
+            { name: ctx.shingleType, qty: Math.round(ctx.squares*3) },
+            { name:'Labor to install architectural shingles (per square)', qty: ctx.squares },
+            { name:'GAF Pro-Start Starter Strip Shingles (120 lin. ft. / bundle)', qty: Math.ceil(ctx.eaveLength/120) }
+          ]
+        }
+      },
+      {
+        id: 'ridge', text: 'Install ridge cap & ridge vent?',
+        onYes: { needs: ['ridgeLength'],
+          items: (ctx) => [
+            { name:'GAF Seal-A-Ridge Hip and Ridge Cap Shingles (20 lin. ft. / bundle)', qty: Math.ceil(ctx.ridgeLength/20) },
+            { name:'Air Vent Shingle-Over Ridge Vent, 4 ft. (Aluminum)', qty: Math.ceil(ctx.ridgeLength/4) },
+            { name:'Labor to install ridge vent/ridge cap (per linear foot)', qty: ctx.ridgeLength }
+          ]
+        }
+      },
+      {
+        id: 'vents', text: 'Any additional roof vent penetrations (static vents, pipe boots, etc.)?',
+        onYes: { ownQty: { key:'ventCount', label:'How many penetrations?', default:1 },
+          items: (ctx) => [{ name:'Galvanized Roof Vent Pipe Boot Flashing (1-1/2 in. - 3 in.)', qty: ctx.ventCount }]
+        }
+      },
+      {
+        id: 'dripedge', text: 'Install drip edge flashing along the eaves?',
+        onYes: { needs: ['eaveLength'],
+          items: (ctx) => [{ name:'Gibraltar Building Products 2-3/8 in. x 1-1/2 in. x 10 ft. Painted Aluminum Drip Edge Flashing in Weathered Wood', qty: Math.ceil(ctx.eaveLength/10) }]
+        }
+      },
+      {
+        id: 'gutters', text: 'Replace gutters & downspouts?',
+        onYes: { needs: ['eaveLength'], ownQty: { key:'downspoutCount', label:'How many downspouts?', default:2 },
+          items: (ctx) => [
+            { name:'Amerimax Home Products 5 in. x 10 ft. White Aluminum K-Style Gutter', qty: Math.ceil(ctx.eaveLength/10) },
+            { name:'Amerimax Home Products 3 in. x 4 in. x 10 ft. White Aluminum Downspout', qty: ctx.downspoutCount }
+          ]
+        }
+      },
+      {
+        id: 'decking', text: 'Replace any roof decking / plywood?',
+        onYes: { ownQty: { key:'sheetCount', label:'How many sheets?', default:1 },
+          items: (ctx) => [{ name:'Roof decking replacement, 1/2 in. CDX plywood (per sheet, material + labor)', qty: ctx.sheetCount }]
+        }
+      }
+    ],
+    // Small consumables that scale with roof size — added automatically
+    // once at least one squares-dependent step fired, no question asked.
+    autoItems: (ctx) => ctx.squares ? [
+      { name:'1-1/4 in. Electro-Galvanized Roofing Nails (5 lb. box)', qty: Math.ceil(ctx.squares/30) },
+      { name:'10.3 oz. Roofing and Flashing Sealant, Black', qty: Math.ceil(ctx.squares/20) }
+    ] : []
+  }
+};
+
+let _guidedCategory = null, _guidedRoom = null, _guidedTrade = null, _guidedPhaseLabel = null;
+let _guidedScript = null, _guidedStepIdx = 0, _guidedCtx = {}, _guidedCart = [];
+let _guidedPendingStep = null; // step waiting on a shared-qty or ownQty/select answer
+
+function openGuidedAdd() {
+  _guidedCategory = null; _guidedRoom = null; _guidedTrade = null; _guidedPhaseLabel = null;
+  _guidedScript = null; _guidedStepIdx = 0; _guidedCtx = {}; _guidedCart = []; _guidedPendingStep = null;
+  document.getElementById('guidedBreadcrumb').textContent = 'What are we working on today?';
+  const cats = Object.keys(ROOM_STRUCTURE);
+  document.getElementById('guidedBody').innerHTML = `
+    <div style="font-weight:700;margin-bottom:10px">Where is the work?</div>
+    <select id="guidedCatSelect" onchange="guidedPickCategory(this.value)" style="width:100%;padding:10px;font-size:.9rem;margin-bottom:10px">
+      <option value="">Select an area…</option>
+      ${cats.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
+    </select>`;
+  document.getElementById('guidedFooter').innerHTML = '';
+  document.getElementById('guidedBackBtn').style.display = 'none';
+  kOpen('guidedAddModal');
+}
+window.openGuidedAdd = openGuidedAdd;
+
+function guidedPickCategory(cat) {
+  if (!cat) return;
+  _guidedCategory = cat;
+  const rooms = Object.keys(ROOM_STRUCTURE[cat]?.rooms || {});
+  document.getElementById('guidedBreadcrumb').textContent = cat + ' — what are we working on?';
+  document.getElementById('guidedBody').innerHTML = `
+    <div style="font-weight:700;margin-bottom:10px">Which room or area?</div>
+    <select id="guidedRoomSelect" onchange="guidedPickRoom(this.value)" style="width:100%;padding:10px;font-size:.9rem;margin-bottom:10px">
+      <option value="">Select a room…</option>
+      ${rooms.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('')}
+    </select>`;
+  document.getElementById('guidedBackBtn').style.display = 'inline-block';
+}
+window.guidedPickCategory = guidedPickCategory;
+
+function guidedPickRoom(room) {
+  if (!room) return;
+  _guidedRoom = room;
+  const phases = ROOM_STRUCTURE[_guidedCategory]?.rooms[room]?.phases || [];
+  document.getElementById('guidedBreadcrumb').textContent = `${_guidedCategory} › ${room}`;
+  document.getElementById('guidedBody').innerHTML = `
+    <div style="font-weight:700;margin-bottom:10px">${esc(room)}, what are we working on?</div>
+    <select id="guidedPhaseSelect" onchange="guidedPickPhase(this.value)" style="width:100%;padding:10px;font-size:.9rem;margin-bottom:10px">
+      <option value="">Select a trade…</option>
+      ${phases.map(p => `<option value="${esc(p.label)}|||${esc(p.trade)}">${esc(p.label)}${GUIDED_SCRIPTS[p.trade] ? '' : ' (not yet available)'}</option>`).join('')}
+    </select>`;
+}
+window.guidedPickRoom = guidedPickRoom;
+
+function guidedPickPhase(val) {
+  if (!val) return;
+  const [label, trade] = val.split('|||');
+  _guidedPhaseLabel = label; _guidedTrade = trade;
+  const script = GUIDED_SCRIPTS[trade];
+  if (!script) {
+    document.getElementById('guidedBody').innerHTML = `
+      <div style="text-align:center;padding:24px;color:var(--muted)">
+        Guided Questions isn't built for <strong>${esc(label)}</strong> yet — only Roofing so far.<br><br>
+        Use <strong>⚡ Smart Add</strong> to browse that catalog instead.
+      </div>`;
+    document.getElementById('guidedFooter').innerHTML = '';
+    return;
+  }
+  _guidedScript = script; _guidedStepIdx = 0; _guidedCtx = {}; _guidedCart = [];
+  document.getElementById('guidedBreadcrumb').textContent = `${_guidedRoom} › ${label}`;
+  guidedRenderStep();
+}
+window.guidedPickPhase = guidedPickPhase;
+
+function guidedRenderStep() {
+  const steps = _guidedScript.steps;
+  if (_guidedStepIdx >= steps.length) { guidedShowReview(); return; }
+  const step = steps[_guidedStepIdx];
+  document.getElementById('guidedBody').innerHTML = `
+    <div style="font-size:1.05rem;font-weight:700;margin-bottom:20px">${esc(step.text)}</div>
+    <div style="display:flex;gap:10px">
+      <button class="btn-amber" style="flex:1;padding:14px" onclick="guidedAnswer(true)">Yes</button>
+      <button class="btn" style="flex:1;padding:14px" onclick="guidedAnswer(false)">No</button>
+    </div>`;
+  document.getElementById('guidedFooter').innerHTML =
+    `<span class="small muted">Step ${_guidedStepIdx+1} of ${steps.length}</span>`;
+}
+
+function guidedAnswer(yes) {
+  const step = _guidedScript.steps[_guidedStepIdx];
+  if (!yes) { _guidedStepIdx++; guidedRenderStep(); return; }
+  guidedResolveYes(step, step.onYes);
+}
+window.guidedAnswer = guidedAnswer;
+
+// Walks whatever this step's "yes" branch still needs, in order: any
+// shared quantities not yet in ctx, then its own one-off quantity
+// question, then a select (shingle type etc). Once everything is
+// collected, computes this step's items and advances.
+function guidedResolveYes(step, onYes) {
+  const missingShared = (onYes.needs || []).filter(k => _guidedCtx[k] === undefined);
+  if (missingShared.length) {
+    guidedAskSharedQty(missingShared[0], () => guidedResolveYes(step, onYes));
+    return;
+  }
+  if (onYes.ownQty && _guidedCtx[onYes.ownQty.key] === undefined) {
+    guidedAskNumber(onYes.ownQty.label, onYes.ownQty.default, (val) => {
+      _guidedCtx[onYes.ownQty.key] = val;
+      guidedResolveYes(step, onYes);
+    });
+    return;
+  }
+  if (onYes.select && _guidedCtx[onYes.select.key] === undefined) {
+    guidedAskSelect(onYes.select.label, onYes.select.options, (val) => {
+      _guidedCtx[onYes.select.key] = val;
+      guidedResolveYes(step, onYes);
+    });
+    return;
+  }
+  const items = onYes.items(_guidedCtx);
+  _guidedCart.push(...items);
+  _guidedStepIdx++;
+  guidedRenderStep();
+}
+
+function guidedAskSharedQty(key, onDone) {
+  document.getElementById('guidedBody').innerHTML = `
+    <div style="font-size:1.05rem;font-weight:700;margin-bottom:14px">${esc(GUIDED_QTY_LABELS[key] || key)}</div>
+    <input id="guidedQtyInput" type="number" min="0" step="0.1" style="width:100%;padding:12px;font-size:1rem;margin-bottom:14px" />
+    <button class="btn-amber" style="width:100%;padding:12px" onclick="guidedSubmitSharedQty('${key}')">Next →</button>`;
+  document.getElementById('guidedFooter').innerHTML = '';
+  window._guidedSharedQtyCallback = onDone;
+  setTimeout(() => document.getElementById('guidedQtyInput')?.focus(), 50);
+}
+function guidedSubmitSharedQty(key) {
+  const val = parseFloat(document.getElementById('guidedQtyInput').value);
+  if (isNaN(val) || val <= 0) { alert('Enter a number greater than 0.'); return; }
+  _guidedCtx[key] = val;
+  const cb = window._guidedSharedQtyCallback;
+  window._guidedSharedQtyCallback = null;
+  cb();
+}
+window.guidedSubmitSharedQty = guidedSubmitSharedQty;
+
+function guidedAskNumber(label, def, onDone) {
+  document.getElementById('guidedBody').innerHTML = `
+    <div style="font-size:1.05rem;font-weight:700;margin-bottom:14px">${esc(label)}</div>
+    <input id="guidedQtyInput2" type="number" min="0" step="1" value="${def}" style="width:100%;padding:12px;font-size:1rem;margin-bottom:14px" />
+    <button class="btn-amber" style="width:100%;padding:12px" onclick="guidedSubmitNumber()">Next →</button>`;
+  document.getElementById('guidedFooter').innerHTML = '';
+  window._guidedNumberCallback = onDone;
+  setTimeout(() => document.getElementById('guidedQtyInput2')?.focus(), 50);
+}
+function guidedSubmitNumber() {
+  const val = parseFloat(document.getElementById('guidedQtyInput2').value);
+  if (isNaN(val) || val < 0) { alert('Enter a number 0 or greater.'); return; }
+  const cb = window._guidedNumberCallback;
+  window._guidedNumberCallback = null;
+  cb(val);
+}
+window.guidedSubmitNumber = guidedSubmitNumber;
+
+function guidedAskSelect(label, options, onDone) {
+  document.getElementById('guidedBody').innerHTML = `
+    <div style="font-size:1.05rem;font-weight:700;margin-bottom:14px">${esc(label)}</div>
+    <select id="guidedSelectInput" style="width:100%;padding:12px;font-size:.92rem;margin-bottom:14px">
+      ${options.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}
+    </select>
+    <button class="btn-amber" style="width:100%;padding:12px" onclick="guidedSubmitSelect()">Next →</button>`;
+  document.getElementById('guidedFooter').innerHTML = '';
+  window._guidedSelectCallback = onDone;
+}
+function guidedSubmitSelect() {
+  const val = document.getElementById('guidedSelectInput').value;
+  const cb = window._guidedSelectCallback;
+  window._guidedSelectCallback = null;
+  cb(val);
+}
+window.guidedSubmitSelect = guidedSubmitSelect;
+
+function guidedBack() {
+  // Simplest safe behavior: back always returns to the picker screens
+  // rather than trying to unwind mid-question state, which could leave
+  // ctx/cart inconsistent. Re-answering is one tap either way.
+  if (_guidedScript) { openGuidedAdd(); return; }
+  if (_guidedRoom) { guidedPickCategory(_guidedCategory); return; }
+  openGuidedAdd();
+}
+window.guidedBack = guidedBack;
+
+function guidedShowReview() {
+  const auto = _guidedScript.autoItems ? _guidedScript.autoItems(_guidedCtx) : [];
+  const allItems = [..._guidedCart, ...auto];
+  const catalog = CATALOG_DATA[_guidedTrade] || [];
+  let totalPrice = 0;
+  const rows = allItems.map(entry => {
+    const cat = catalog.find(i => i.name === entry.name);
+    if (!cat) return '';
+    let rowHtml = '';
+    if (cat.materials) {
+      const lineTotal = entry.qty * (cat.materials.unitPrice || 0);
+      totalPrice += lineTotal;
+      rowHtml += `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(110,145,210,.08);font-size:.85rem">
+        <span>${esc(cat.name)} <span class="small muted">(${entry.qty} ${esc(cat.materials.unit||'')})</span></span>
+        <span>$${lineTotal.toFixed(2)}</span></div>`;
+    }
+    if (cat.labor) {
+      const lineTotal = entry.qty * (cat.labor.unitPrice || 0);
+      totalPrice += lineTotal;
+      rowHtml += `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(110,145,210,.08);font-size:.85rem;color:#4d8dff">
+        <span>${esc(cat.labor.desc||('Labor - '+cat.name))} <span class="small muted">(${entry.qty} ${esc(cat.labor.unit||'')})</span></span>
+        <span>$${lineTotal.toFixed(2)}</span></div>`;
+    }
+    return rowHtml;
+  }).join('');
+
+  document.getElementById('guidedBreadcrumb').textContent = `${_guidedRoom} › ${_guidedPhaseLabel} — Review`;
+  document.getElementById('guidedBody').innerHTML = `
+    <div style="font-weight:700;margin-bottom:12px">Here's the estimate built from your answers:</div>
+    ${rows || '<div class="small muted" style="padding:12px 0">No items — every question came back No.</div>'}
+    <div style="display:flex;justify-content:space-between;font-weight:800;padding:14px 0 0;margin-top:6px;border-top:2px solid rgba(217,119,6,.3)">
+      <span>Total</span><span>$${totalPrice.toFixed(2)}</span>
+    </div>`;
+  document.getElementById('guidedFooter').innerHTML = allItems.length
+    ? `<button class="btn-amber" style="padding:10px 18px" onclick="guidedCommit()">✅ Add to Estimate</button>`
+    : '';
+}
+
+async function guidedCommit() {
+  if (!conDb || !conCurrentJobId) return;
+  const auto = _guidedScript.autoItems ? _guidedScript.autoItems(_guidedCtx) : [];
+  const allItems = [..._guidedCart, ...auto];
+  const catalog = CATALOG_DATA[_guidedTrade] || [];
+  const roomName = _guidedRoom;
+  const tradeName = _guidedPhaseLabel;
+
+  let group = estGroups.find(g => g.name.toLowerCase() === roomName.toLowerCase());
+  if (!group) {
+    const ref = await coll('jobs').doc(conCurrentJobId).collection('estimateGroups').add({
+      name: roomName, order: estGroups.length, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    group = { id: ref.id, name: roomName, order: estGroups.length, subgroups: [], directItems: [] };
+    estGroups.push(group);
+  }
+  let subgroup = group.subgroups?.find(s => s.name.toLowerCase() === tradeName.toLowerCase());
+  if (!subgroup) {
+    const subRef = await coll('jobs').doc(conCurrentJobId).collection('estimateGroups')
+      .doc(group.id).collection('subgroups').add({
+        name: tradeName, order: group.subgroups?.length || 0, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    subgroup = { id: subRef.id, name: tradeName, order: group.subgroups?.length || 0, items: [] };
+    if (!group.subgroups) group.subgroups = [];
+    group.subgroups.push(subgroup);
+  }
+
+  const addPromises = [];
+  let order = subgroup.items?.length || 0;
+  for (const entry of allItems) {
+    const cat = catalog.find(i => i.name === entry.name);
+    if (!cat) continue;
+    if (cat.materials) {
+      const uc = cat.materials.unitCost || 0, up = cat.materials.unitPrice || 0;
+      addPromises.push(coll('jobs').doc(conCurrentJobId).collection('estimateGroups').doc(group.id)
+        .collection('subgroups').doc(subgroup.id).collection('items').add({
+          desc: cat.name, qty: entry.qty, unit: cat.materials.unit || 'ea', costType: 'Materials',
+          unitCost: uc, markup: (uc>0&&up>0) ? Math.round((up/uc-1)*100) : getDefaultMarkupForCostType('Materials'),
+          unitPrice: up, notes: '', order: order++, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        }));
+    }
+    if (cat.labor) {
+      const uc = cat.labor.unitCost || 0, up = cat.labor.unitPrice || 0;
+      addPromises.push(coll('jobs').doc(conCurrentJobId).collection('estimateGroups').doc(group.id)
+        .collection('subgroups').doc(subgroup.id).collection('items').add({
+          desc: cat.labor.desc || ('Labor - '+cat.name), qty: entry.qty, unit: cat.labor.unit || 'hr', costType: 'Labor',
+          unitCost: uc, markup: (uc>0&&up>0) ? Math.round((up/uc-1)*100) : getDefaultMarkupForCostType('Labor'),
+          unitPrice: up, notes: '', order: order++, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        }));
+    }
+  }
+
+  await Promise.all(addPromises);
+  kClose('guidedAddModal');
+  const estTab = document.querySelector('[onclick*="estimate"]');
+  if (estTab) estTab.click(); else loadEstimate(conCurrentJobId);
+  alert(`✅ Added ${allItems.length} item${allItems.length!==1?'s':''} to ${roomName} › ${tradeName} from your answers.`);
+}
+window.guidedCommit = guidedCommit;
+
 // Update estimate tab toolbar to include Smart Add
 window.openSmartAdd = openSmartAdd;
 window.wizardSelectCategory = wizardSelectCategory;
