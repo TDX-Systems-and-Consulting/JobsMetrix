@@ -1,0 +1,34 @@
+# Auto-deploys JOBSMETRIX Cloud Functions to Firebase on every push to
+# main that touches functions/** -- same goal as the Hosting workflow:
+# a push IS the deploy, no local Firebase CLI needed from Travis's
+# machine. Uses the same service account secret already configured for
+# Hosting (FIREBASE_SERVICE_ACCOUNT_KYTRAC_72D91).
+name: Deploy Cloud Functions to Firebase on push to main
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'functions/**'
+
+jobs:
+  deploy_functions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install functions dependencies
+        working-directory: functions
+        run: npm ci
+
+      - name: Deploy to Firebase Functions
+        uses: w9jds/firebase-action@master
+        with:
+          args: deploy --only functions --project kytrac-72d91
+        env:
+          GCP_SA_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_KYTRAC_72D91 }}
