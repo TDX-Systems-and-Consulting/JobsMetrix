@@ -1304,6 +1304,75 @@ exports.createStripePaymentLink = functions.https.onCall(async (data, context) =
   }
 });
 
+exports.createStripePaymentLinkForCO = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be signed in.');
+  const { companyId, jobId, coId } = data;
+  if (!companyId || !jobId || !coId) {
+    throw new functions.https.HttpsError('invalid-argument', 'Missing companyId/jobId/coId.');
+  }
+  if (context.auth.token.companyId !== companyId) {
+    throw new functions.https.HttpsError('permission-denied', 'Not a member of this company.');
+  }
+
+  const db = admin.firestore();
+  const jobRef = db.collection('companies').doc(companyId).collection('jobs').doc(jobId);
+  // NOTE: the change order subcollection is 'changeorders' (all lowercase)
+  // -- this is the name actually used when change orders are created and
+  // read everywhere else in the client. A handful of older client call
+  // sites use the camelCase 'changeOrders' instead, which silently reads
+  // an empty collection; that's a pre-existing mismatch worth fixing
+  // separately, not introduced here.
+  const coRef = jobRef.collection('changeorders').doc(coId);
+  const [jobDoc, coDoc] = await Promise.all([jobRef.get(), coRef.get()]);
+  if (!jobDoc.exists) throw new functions.https.HttpsError('not-found', 'Job not found.');
+  if (!coDoc.exists) throw new functions.https.HttpsError('not-found', 'Change order not found.');
+  const job = jobDoc.data();
+  const co = coDoc.data();
+
+  const total = co.amount || 0;
+  const amtPaid = co.amtPaid || 0;
+  const balance = Math.round((total - amtPaid) * 100) / 100;
+  if (balance <= 0) {
+    throw new functions.https.HttpsError('failed-precondition', 'This change order has no remaining balance.');
+  }
+
+  try {
+    const stripe = await getStripeClientForCompany(companyId);
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      payment_method_types: ['card', 'us_bank_account'],
+      line_items: [{
+        price_data: {
+          currency: 'usd',
+          unit_amount: Math.round(balance * 100), // Stripe uses cents
+          product_data: {
+            name: (job.name || 'Change Order') + ' - Change Order',
+            description: (co.coNumber || 'CO') + (co.title ? ': ' + co.title : '')
+          }
+        },
+        quantity: 1
+      }],
+      // Same metadata pattern as invoices, but coId instead of invoiceId
+      // -- the webhook uses whichever key is present to route the event.
+      metadata: { companyId, jobId, coId },
+      payment_intent_data: { metadata: { companyId, jobId, coId } },
+      success_url: 'https://jobsmetrix.com/?paid=1&co=' + coId,
+      cancel_url: 'https://jobsmetrix.com/?paid=0&co=' + coId,
+    });
+
+    await coRef.update({
+      paymentLink: session.url,
+      stripeCheckoutSessionId: session.id,
+      stripeCheckoutSessionCreatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    return { success: true, url: session.url };
+  } catch (e) {
+    console.error('createStripePaymentLinkForCO failed:', e.message);
+    throw new functions.https.HttpsError('internal', e.message);
+  }
+});
+
 // Raw HTTP endpoint - Stripe calls this directly (no Firebase Auth
 // context at all), so this must verify the request really came from
 // Stripe using the webhook signing secret, not rely on any auth check.
@@ -1378,7 +1447,8 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
 // handlePaymentIntentSucceeded below, once Stripe confirms it cleared.
 async function handleCheckoutSessionCompleted(event, companyId, res) {
   const session = event.data.object;
-  const { jobId, invoiceId } = session.metadata || {};
+  const { jobId, invoiceId, coId } = session.metadata || {};
+  if (coId) return handleCOCheckoutSessionCompleted(session, companyId, jobId, coId, res);
   if (!jobId || !invoiceId) {
     console.error('stripeWebhook: checkout.session.completed missing metadata.', session.id);
     return res.status(200).send('Missing metadata, ignored.');
@@ -1415,7 +1485,8 @@ async function handleCheckoutSessionCompleted(event, companyId, res) {
 // genuinely is.
 async function handlePaymentIntentSucceeded(event, companyId, res, stripe) {
   const pi = event.data.object;
-  const { jobId, invoiceId } = pi.metadata || {};
+  const { jobId, invoiceId, coId } = pi.metadata || {};
+  if (coId) return handleCOPaymentIntentSucceeded(pi, companyId, jobId, coId, res, stripe);
   if (!jobId || !invoiceId) {
     console.error('stripeWebhook: payment_intent.succeeded missing metadata.', pi.id);
     return res.status(200).send('Missing metadata, ignored.');
@@ -1524,7 +1595,8 @@ async function handlePaymentIntentSucceeded(event, companyId, res, stripe) {
 // not just that the invoice was never sent a link.
 async function handlePaymentIntentFailed(event, companyId, res) {
   const pi = event.data.object;
-  const { jobId, invoiceId } = pi.metadata || {};
+  const { jobId, invoiceId, coId } = pi.metadata || {};
+  if (coId) return handleCOPaymentIntentFailed(pi, companyId, jobId, coId, res);
   if (!jobId || !invoiceId) {
     console.error('stripeWebhook: payment_intent.payment_failed missing metadata.', pi.id);
     return res.status(200).send('Missing metadata, ignored.');
@@ -1565,13 +1637,172 @@ async function handlePaymentIntentFailed(event, companyId, res) {
   }
 }
 
+// ---- Change Order payment handlers, mirroring the invoice ones above ----
+// Same three-stage lifecycle (Processing -> Paid, or -> Payment Failed),
+// same real-fee tracking. Deliberately skips syncInvoiceToQbo -- that's
+// invoice-specific bookkeeping sync, not something change orders push to
+// QBO today.
+
+async function handleCOCheckoutSessionCompleted(session, companyId, jobId, coId, res) {
+  if (!jobId || !coId) {
+    console.error('stripeWebhook: CO checkout.session.completed missing metadata.', session.id);
+    return res.status(200).send('Missing metadata, ignored.');
+  }
+  try {
+    const db = admin.firestore();
+    const coRef = db.collection('companies').doc(companyId)
+      .collection('jobs').doc(jobId).collection('changeorders').doc(coId);
+    const coDoc = await coRef.get();
+    if (!coDoc.exists) {
+      console.error('stripeWebhook: change order not found', companyId, jobId, coId);
+      return res.status(200).send('Change order not found, ignored.');
+    }
+    await coRef.update({
+      status: 'Processing',
+      stripeCheckoutSessionId: session.id,
+      stripePaymentIntentId: session.payment_intent || null,
+      stripeCheckoutCompletedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return res.status(200).send('OK - CO marked Processing, awaiting settlement.');
+  } catch (e) {
+    console.error('stripeWebhook: CO checkout.session.completed processing failed:', e.message);
+    return res.status(500).send('Internal error.');
+  }
+}
+
+async function handleCOPaymentIntentSucceeded(pi, companyId, jobId, coId, res, stripe) {
+  if (!jobId || !coId) {
+    console.error('stripeWebhook: CO payment_intent.succeeded missing metadata.', pi.id);
+    return res.status(200).send('Missing metadata, ignored.');
+  }
+  try {
+    const db = admin.firestore();
+    const jobRef = db.collection('companies').doc(companyId).collection('jobs').doc(jobId);
+    const coRef = jobRef.collection('changeorders').doc(coId);
+    const [jobDoc, coDoc] = await Promise.all([jobRef.get(), coRef.get()]);
+    if (!coDoc.exists) {
+      console.error('stripeWebhook: change order not found', companyId, jobId, coId);
+      return res.status(200).send('Change order not found, ignored.');
+    }
+    const job = jobDoc.exists ? jobDoc.data() : {};
+    const co = coDoc.data();
+
+    const amountPaidNow = (pi.amount_received || pi.amount || 0) / 100;
+    const newAmtPaid = Math.round(((co.amtPaid || 0) + amountPaidNow) * 100) / 100;
+    const total = co.amount || 0;
+
+    let stripeFee = null, stripeNetAmount = null;
+    try {
+      const piFull = await stripe.paymentIntents.retrieve(pi.id, {
+        expand: ['latest_charge.balance_transaction'],
+      });
+      const bt = piFull.latest_charge?.balance_transaction;
+      if (bt) {
+        stripeFee = Math.round(bt.fee) / 100;
+        stripeNetAmount = Math.round(bt.net) / 100;
+      }
+    } catch (feeErr) {
+      console.error('stripeWebhook: CO could not retrieve real fee (payment still recorded):', feeErr.message);
+    }
+
+    const update = {
+      amtPaid: newAmtPaid,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      stripePaymentIntentId: pi.id,
+      stripeLastPaidAt: admin.firestore.FieldValue.serverTimestamp(),
+      paymentMethod: 'Card / Online (Stripe)'
+    };
+    if (stripeFee !== null) {
+      update.stripeFeeTotal = Math.round(((co.stripeFeeTotal || 0) + stripeFee) * 100) / 100;
+      update.stripeNetTotal = Math.round(((co.stripeNetTotal || 0) + stripeNetAmount) * 100) / 100;
+    }
+    if (newAmtPaid >= total) {
+      update.status = 'Paid';
+      update.paidDate = new Date().toISOString().split('T')[0];
+    }
+    await coRef.update(update);
+
+    try {
+      const amtStr = amountPaidNow.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+      const feeNote = stripeFee !== null ? ` (Stripe fee: $${stripeFee.toFixed(2)}, net $${stripeNetAmount.toFixed(2)})` : '';
+      await db.collection('companies').doc(companyId)
+        .collection('jobs').doc(jobId).collection('logs').add({
+          date: new Date().toISOString().split('T')[0],
+          notes: `Change Order ${co.coNumber || ''} paid — $${amtStr} (Stripe)${feeNote}`.replace('  ', ' ').trim(),
+          type: 'co_paid',
+          userName: 'Stripe (auto)',
+          companyId,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+    } catch (logErr) {
+      console.error('stripeWebhook: CO activity log write failed (non-fatal):', logErr.message);
+    }
+
+    try {
+      const customerEmail = job.email || job.clientEmail || '';
+      if (customerEmail) {
+        await sendPaymentConfirmationEmail(companyId, job, co, amountPaidNow, jobId, coId, co.coNumber || 'Change Order');
+      }
+    } catch (emailErr) {
+      console.error('stripeWebhook: CO confirmation email failed (non-fatal):', emailErr.message);
+    }
+
+    return res.status(200).send('OK');
+  } catch (e) {
+    console.error('stripeWebhook: CO payment_intent.succeeded processing failed:', e.message);
+    return res.status(500).send('Internal error.');
+  }
+}
+
+async function handleCOPaymentIntentFailed(pi, companyId, jobId, coId, res) {
+  if (!jobId || !coId) {
+    console.error('stripeWebhook: CO payment_intent.payment_failed missing metadata.', pi.id);
+    return res.status(200).send('Missing metadata, ignored.');
+  }
+  try {
+    const db = admin.firestore();
+    const coRef = db.collection('companies').doc(companyId)
+      .collection('jobs').doc(jobId).collection('changeorders').doc(coId);
+    const coDoc = await coRef.get();
+    if (!coDoc.exists) {
+      console.error('stripeWebhook: change order not found', companyId, jobId, coId);
+      return res.status(200).send('Change order not found, ignored.');
+    }
+    const failureReason = pi.last_payment_error?.message || 'Unknown reason';
+    await coRef.update({
+      status: 'Payment Failed',
+      stripePaymentFailureReason: failureReason,
+      stripePaymentFailedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    try {
+      await db.collection('companies').doc(companyId)
+        .collection('jobs').doc(jobId).collection('logs').add({
+          date: new Date().toISOString().split('T')[0],
+          notes: `Payment attempt FAILED on change order — ${failureReason}`,
+          type: 'co_payment_failed',
+          userName: 'Stripe (auto)',
+          companyId,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+    } catch (logErr) {
+      console.error('stripeWebhook: CO activity log write failed (non-fatal):', logErr.message);
+    }
+    return res.status(200).send('OK - CO marked Payment Failed.');
+  } catch (e) {
+    console.error('stripeWebhook: CO payment_intent.payment_failed processing failed:', e.message);
+    return res.status(500).send('Internal error.');
+  }
+}
+
 // Sends a "Payment Received" confirmation using the exact same
 // branded-HTML-wrapper + SendGrid REST pattern sendJobspanEmail uses
 // (that function is a callable, meant to be invoked from the client
 // with an authenticated user -- this webhook has neither, so this
 // reimplements the same send logic directly rather than trying to
 // invoke that function cross-function).
-async function sendPaymentConfirmationEmail(companyId, job, inv, amountPaidNow, jobId, invoiceId) {
+async function sendPaymentConfirmationEmail(companyId, job, inv, amountPaidNow, jobId, invoiceId, docLabelOverride) {
   const sgKey = process.env.SENDGRID_KEY || (functions.config().sendgrid && functions.config().sendgrid.key);
   if (!sgKey) return; // Not configured -- skip silently, this is best-effort
 
@@ -1584,7 +1815,7 @@ async function sendPaymentConfirmationEmail(companyId, job, inv, amountPaidNow, 
 
   const customerEmail = job.email || job.clientEmail || '';
   const customerName = job.client || 'Customer';
-  const invNum = inv.number || 'Invoice';
+  const invNum = docLabelOverride || inv.number || 'Invoice';
   const amtStr = amountPaidNow.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
 
   const bodyHtml = `<p>Hi ${customerName},</p>
