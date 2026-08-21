@@ -24237,21 +24237,12 @@ function renderChangeOrderDocumentHtml(co, job, comp, autoPrint) {
   const amtDisplay = (amt < 0 ? '-$' + Math.abs(amt).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})
                                : '$' + amt.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}));
 
-  const items = co.lineItems || [];
-  const itemsHtml = items.length ? `
-  <table class="payment-table" style="margin-top:20px">
-    <thead><tr><th>Description</th><th style="text-align:center">Qty</th><th style="text-align:right">Amount</th></tr></thead>
-    <tbody>
-      ${items.map(it => {
-        const lineTotal = (Number(it.qty)||1) * (Number(it.unitPrice)||0);
-        return `<tr>
-          <td>${esc(it.desc || '')}</td>
-          <td style="text-align:center">${it.qty || 1} ${esc(it.unit||'')}</td>
-          <td style="text-align:right">$${lineTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-        </tr>`;
-      }).join('')}
-    </tbody>
-  </table>` : '';
+  // Matches the Proposal document's customer-facing default: no itemized
+  // line-item pricing table. The change order's title + reason text (the
+  // scope description) plus the single total amount is what the customer
+  // sees -- same as how proposals only show one price, not a materials/
+  // labor breakdown, unless the bank/lender "Itemized" toggle is used.
+  const itemsHtml = '';
 
   const scheduleHtml = co.days ? `<div class="intro" style="margin-bottom:0"><strong>Schedule Impact:</strong> +${co.days} day${co.days!=1?'s':''} added to the project schedule.</div>` : '';
 
