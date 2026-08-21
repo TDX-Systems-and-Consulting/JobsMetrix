@@ -1304,6 +1304,9 @@ exports.createStripePaymentLink = functions.https.onCall(async (data, context) =
   }
 });
 
+// Deploy trigger: this comment forces a functions/** change so the new
+// firebase-functions-deploy.yml workflow's path filter fires and
+// actually ships createStripePaymentLinkForCO + the CO webhook routing.
 exports.createStripePaymentLinkForCO = functions.https.onCall(async (data, context) => {
   if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be signed in.');
   const { companyId, jobId, coId } = data;
