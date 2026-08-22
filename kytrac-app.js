@@ -21799,6 +21799,65 @@ function calcGroupTotals(items) {
   return { cost, price, profit, margin };
 }
 
+// TRUE margin, as opposed to the line-item markup margin calcGroupTotals
+// reports. calcGroupTotals' margin is just (price-cost)/price on whatever
+// items you hand it -- useful for sanity-checking one room's or one
+// item's pricing, but it is NOT company profit margin, because it never
+// accounts for Overhead, Marketing, Flex, or Taxes. This function runs
+// the same locked JTXD bucket waterfall used company-wide: Materials
+// pass through at full markup (their float isn't part of this pool).
+// Labor is split into a Subcontractor Pay Target (62% of what's billed)
+// and JTXD's own share; JTXD's share funds Overhead (18%), Marketing
+// (10%), Flex (10% of what's left), and Taxes (27.5% of what's left
+// after that) -- what remains is Retained Earnings, the actual number
+// this job contributes to profit. Only meaningful at the whole-job
+// level (these percentages are company-wide allocations, not per-room),
+// so this takes the full flat item list for a job, not a single group.
+function calcTrueMargin(allItems) {
+  let materialsCost = 0, materialsPrice = 0, laborCost = 0, laborPrice = 0;
+  allItems.forEach(item => {
+    const qty = item.qty || 1;
+    const uc = item.unitCost || 0;
+    const up = item.unitPrice || uc * (1 + (item.markup || 0) / 100);
+    const extCost = qty * uc, extPrice = qty * up;
+    if (item.costType === 'Labor') {
+      laborCost += extCost;
+      laborPrice += extPrice;
+    } else {
+      // Materials, and anything untyped/legacy, treated as pass-through
+      // materials -- matches how the markup-margin total already works.
+      materialsCost += extCost;
+      materialsPrice += extPrice;
+    }
+  });
+
+  const revenue = materialsPrice + laborPrice;
+  const laborBilled = laborPrice;
+  const realLaborCost = laborCost;
+
+  const subPayTarget = laborBilled * 0.62;
+  const payrollSupport = subPayTarget - realLaborCost;
+  const projectedPay = laborBilled * 0.38;
+  const jtxdActual = projectedPay + payrollSupport;
+
+  const overhead = jtxdActual * 0.18;
+  const marketing = jtxdActual * 0.10;
+  const rem1 = jtxdActual - overhead - marketing;
+  const flex = rem1 * 0.10;
+  const rem2 = rem1 - flex;
+  const taxes = rem2 * 0.275;
+  const retainedEarnings = rem2 - taxes;
+
+  const trueMarginPct = revenue > 0 ? (retainedEarnings / revenue) * 100 : 0;
+
+  return {
+    materialsCost, materialsPrice, laborCost, laborPrice, revenue,
+    subPayTarget, payrollSupport, projectedPay, jtxdActual,
+    overhead, marketing, flex, taxes,
+    retainedEarnings, trueMarginPct
+  };
+}
+
 // Every room (group) → category (subgroup) → sub-category (subsub) →
 // item, one row each, with the Materials/Labor split and a subtotal
 // row after every category — same breakdown Travis asked for on the
@@ -22424,16 +22483,22 @@ function renderFFDiscountControl(jobId) {
 
 function updateEstimateSummary() {
   let totalCost = 0, totalPrice = 0, totalItems = 0;
+  const allItemsFlat = [];
   estGroups.forEach(g => {
     const items = getAllItemsInGroup(g);
     totalItems += items.length;
+    allItemsFlat.push(...items);
     const t = calcGroupTotals(items);
     totalCost += t.cost;
     totalPrice += t.price;
   });
   const profit = totalPrice - totalCost;
-  const margin = totalPrice > 0 ? profit/totalPrice*100 : 0;
-  const marginColor = margin >= 20 ? '#1dbb87' : margin >= 10 ? '#f59e0b' : '#ef5350';
+  const markupMargin = totalPrice > 0 ? profit/totalPrice*100 : 0;
+
+  // TRUE margin (after Overhead/Marketing/Flex/Taxes), not just markup.
+  const tm = calcTrueMargin(allItemsFlat);
+  const margin = tm.trueMarginPct;
+  const marginColor = margin >= 10 ? '#1dbb87' : margin >= 5 ? '#f59e0b' : '#ef5350';
 
   const setEl = (id, v, color) => {
     const el = document.getElementById(id);
@@ -22443,9 +22508,17 @@ function updateEstimateSummary() {
   };
   setEl('estKpiCost', '$'+Math.round(totalCost).toLocaleString());
   setEl('estKpiPrice', '$'+Math.round(totalPrice).toLocaleString());
-  setEl('estKpiProfit', '$'+Math.round(profit).toLocaleString(), profit>=0?'#1dbb87':'#ef5350');
-  setEl('estKpiMargin', Math.round(margin)+'%', marginColor);
+  setEl('estKpiProfit', '$'+Math.round(tm.retainedEarnings).toLocaleString(), tm.retainedEarnings>=0?'#1dbb87':'#ef5350');
+  setEl('estKpiMargin', Math.round(margin*10)/10+'%', marginColor);
   setEl('estKpiItems', totalItems);
+  const marginEl = document.getElementById('estKpiMargin');
+  if (marginEl) {
+    marginEl.title = `TRUE margin after Overhead/Marketing/Flex/Taxes: ${margin.toFixed(1)}%. Line-item markup margin (materials+labor markup only, before company overhead): ${markupMargin.toFixed(1)}%.`;
+  }
+  const profitEl = document.getElementById('estKpiProfit');
+  if (profitEl) {
+    profitEl.title = `Retained Earnings (true profit) after Overhead/Marketing/Flex/Taxes. Raw line-item profit (price minus cost, no overhead applied): $${Math.round(profit).toLocaleString()}.`;
+  }
 
   // Sync estCost from the estimate. Do NOT overwrite contractValue —
   // the contract/approved price is set on the job and only moves via change orders.
@@ -24504,8 +24577,10 @@ function printEstimate() {
   const co = companyProfile;
 
   let allCost = 0, allPrice = 0;
+  const allItemsFlat = [];
   const groupRows = estGroups.map(group => {
     const allItems = getAllItemsInGroup(group);
+    allItemsFlat.push(...allItems);
     const totals = calcGroupTotals(allItems);
     allCost += totals.cost;
     allPrice += totals.price;
@@ -24572,7 +24647,9 @@ function printEstimate() {
   }).join('');
 
   const profit = allPrice - allCost;
-  const margin = allPrice > 0 ? (profit/allPrice*100).toFixed(1) : '0.0';
+  const markupMargin = allPrice > 0 ? (profit/allPrice*100).toFixed(1) : '0.0';
+  const tm = calcTrueMargin(allItemsFlat);
+  const margin = tm.trueMarginPct.toFixed(1);
 
   const html = `<!DOCTYPE html><html><head><title>Estimate — ${esc(job?.name||'')}</title>
   <style>body{font-family:Arial,sans-serif;max-width:800px;margin:40px auto;padding:0 20px;color:#111}
@@ -24607,7 +24684,7 @@ function printEstimate() {
         <td style="padding:12px 8px;text-align:right">$${allPrice.toFixed(2)}</td>
       </tr>
       <tr><td colspan="4" style="padding:8px;text-align:right;color:#6b7280;font-size:.85rem">
-        Profit: $${profit.toFixed(2)} · Margin: ${margin}%
+        Profit: $${tm.retainedEarnings.toFixed(2)} · <strong>True Margin: ${margin}%</strong> &nbsp;|&nbsp; Line-Item Markup Margin: ${markupMargin}%
       </td></tr>
     </tfoot>
   </table>
