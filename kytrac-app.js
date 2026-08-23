@@ -21847,7 +21847,17 @@ function calcTrueMargin(allItems) {
 
   const revenue = materialsPrice + laborPrice;
   const laborBilled = laborPrice;
-  const realLaborCost = laborCost;
+
+  // Real Subcontractor/Labor Total placeholder defaults to 40% of Labor
+  // Billed -- NOT the catalog-summed labor cost. This is the confirmed
+  // default rate from the finalized JTXD Job Margin Calculator template;
+  // still overridable with a real negotiated subcontractor amount once
+  // one exists for this job.
+  const realLaborCost = laborBilled * 0.40;
+
+  // Estimated hours for completion at 77% Efficiency = (Labor Billed /
+  // $300/hr billed rate) / 0.77 efficiency factor.
+  const estimatedHours = (laborBilled / 300) / 0.77;
 
   // JTXD Actual = Labor Billed minus Real Labor Cost, direct. No
   // theoretical 62%/38% target split -- matches the finalized JTXD Job
@@ -21867,7 +21877,7 @@ function calcTrueMargin(allItems) {
 
   return {
     materialsCost, materialsPrice, laborCost, laborPrice, revenue,
-    jtxdActual,
+    realLaborCost, estimatedHours, jtxdActual,
     overhead, marketing, flex, taxes,
     retainedEarnings, trueMarginPct
   };
@@ -22526,21 +22536,13 @@ function updateEstimateSummary() {
   setEl('estKpiPrice', '$'+Math.round(totalPrice).toLocaleString());
   setEl('estKpiJtxdActual', '$'+Math.round(tm.jtxdActual).toLocaleString());
 
-  // Est. Hr to Complete -- sum of qty across all labor line items,
-  // same definition isLaborItem() already uses elsewhere in the app
-  // (costType==='Labor', or unit==='hr' for legacy/untyped items,
-  // excluding Subcontractor-type lines).
-  let hoursToComplete = 0;
-  allItemsFlat.forEach(item => {
-    if (isLaborItem(item)) hoursToComplete += Number(item.qty) || 0;
-  });
-  setEl('estKpiHoursToComplete', hoursToComplete.toLocaleString(undefined, {maximumFractionDigits: 1}));
+  // Est. Hr to Complete = (Labor Billed / $300 hourly rate) / 77% efficiency.
+  setEl('estKpiHoursToComplete', tm.estimatedHours.toLocaleString(undefined, {maximumFractionDigits: 1}));
 
-  // Est. Subcontractor Labor -- the catalog-derived real labor cost,
-  // same placeholder the JTXD Margin Calculator's "Real Subcontractor/
-  // Labor Total" cell defaults to before a real negotiated number is
-  // known for this job.
-  setEl('estKpiSubLabor', '$'+Math.round(tm.laborCost).toLocaleString());
+  // Est. Subcontractor Labor -- defaults to 40% of Labor Billed, same
+  // placeholder the JTXD Margin Calculator's "Real Subcontractor/Labor
+  // Total" cell uses before a real negotiated number is known for this job.
+  setEl('estKpiSubLabor', '$'+Math.round(tm.realLaborCost).toLocaleString());
 
   setEl('estKpiProfit', '$'+Math.round(profit).toLocaleString(), profit>=0?'#1dbb87':'#ef5350');
   const marginColor = tm.trueMarginPct >= 10 ? '#1dbb87' : tm.trueMarginPct >= 5 ? '#f59e0b' : '#ef5350';
