@@ -21849,10 +21849,11 @@ function calcTrueMargin(allItems) {
   const laborBilled = laborPrice;
   const realLaborCost = laborCost;
 
-  const subPayTarget = laborBilled * 0.62;
-  const payrollSupport = subPayTarget - realLaborCost;
-  const projectedPay = laborBilled * 0.38;
-  const jtxdActual = projectedPay + payrollSupport;
+  // JTXD Actual = Labor Billed minus Real Labor Cost, direct. No
+  // theoretical 62%/38% target split -- matches the finalized JTXD Job
+  // Margin Calculator template exactly (the split used to cancel out to
+  // this same number algebraically anyway; this is just honest about it).
+  const jtxdActual = laborBilled - realLaborCost;
 
   const overhead = jtxdActual * 0.18;
   const marketing = jtxdActual * 0.10;
@@ -21866,7 +21867,7 @@ function calcTrueMargin(allItems) {
 
   return {
     materialsCost, materialsPrice, laborCost, laborPrice, revenue,
-    subPayTarget, payrollSupport, projectedPay, jtxdActual,
+    jtxdActual,
     overhead, marketing, flex, taxes,
     retainedEarnings, trueMarginPct
   };
@@ -22520,10 +22521,31 @@ function updateEstimateSummary() {
     el.textContent = v;
     if (color) el.style.color = color;
   };
-  setEl('estKpiLaborCost', '$'+Math.round(tm.laborCost).toLocaleString());
-  setEl('estKpiMaterialsCost', '$'+Math.round(tm.materialsCost).toLocaleString());
+  setEl('estKpiLaborCost', '$'+Math.round(tm.laborPrice).toLocaleString());
+  setEl('estKpiMaterialsCost', '$'+Math.round(tm.materialsPrice).toLocaleString());
   setEl('estKpiPrice', '$'+Math.round(totalPrice).toLocaleString());
+  setEl('estKpiJtxdActual', '$'+Math.round(tm.jtxdActual).toLocaleString());
+
+  // Est. Hr to Complete -- sum of qty across all labor line items,
+  // same definition isLaborItem() already uses elsewhere in the app
+  // (costType==='Labor', or unit==='hr' for legacy/untyped items,
+  // excluding Subcontractor-type lines).
+  let hoursToComplete = 0;
+  allItemsFlat.forEach(item => {
+    if (isLaborItem(item)) hoursToComplete += Number(item.qty) || 0;
+  });
+  setEl('estKpiHoursToComplete', hoursToComplete.toLocaleString(undefined, {maximumFractionDigits: 1}));
+
+  // Est. Subcontractor Labor -- the catalog-derived real labor cost,
+  // same placeholder the JTXD Margin Calculator's "Real Subcontractor/
+  // Labor Total" cell defaults to before a real negotiated number is
+  // known for this job.
+  setEl('estKpiSubLabor', '$'+Math.round(tm.laborCost).toLocaleString());
+
   setEl('estKpiProfit', '$'+Math.round(profit).toLocaleString(), profit>=0?'#1dbb87':'#ef5350');
+  const marginColor = tm.trueMarginPct >= 10 ? '#1dbb87' : tm.trueMarginPct >= 5 ? '#f59e0b' : '#ef5350';
+  setEl('estKpiMargin', Math.round(tm.trueMarginPct*10)/10+'%', marginColor);
+
   const profitEl = document.getElementById('estKpiProfit');
   if (profitEl) {
     profitEl.title = `Retained Earnings (true profit): $${Math.round(profit).toLocaleString()}. `
