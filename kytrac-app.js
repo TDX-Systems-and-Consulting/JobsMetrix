@@ -22492,9 +22492,14 @@ function updateEstimateSummary() {
     totalCost += t.cost;
     totalPrice += t.price;
   });
-  const profit = totalPrice - totalCost;
-  const margin = totalPrice > 0 ? profit/totalPrice*100 : 0;
-  const marginColor = margin >= 20 ? '#1dbb87' : margin >= 10 ? '#f59e0b' : '#ef5350';
+
+  // Profit and Margin are the TRUE numbers -- Retained Earnings after the
+  // full JTXD bucket waterfall (Overhead/Marketing/Flex/Taxes), not simple
+  // line-item markup. Cost/Price/Items stay as straightforward sums.
+  const tm = calcTrueMargin(allItemsFlat);
+  const profit = tm.retainedEarnings;
+  const margin = tm.trueMarginPct;
+  const marginColor = margin >= 10 ? '#1dbb87' : margin >= 5 ? '#f59e0b' : '#ef5350';
 
   const setEl = (id, v, color) => {
     const el = document.getElementById(id);
@@ -22505,18 +22510,11 @@ function updateEstimateSummary() {
   setEl('estKpiCost', '$'+Math.round(totalCost).toLocaleString());
   setEl('estKpiPrice', '$'+Math.round(totalPrice).toLocaleString());
   setEl('estKpiProfit', '$'+Math.round(profit).toLocaleString(), profit>=0?'#1dbb87':'#ef5350');
-  setEl('estKpiMargin', Math.round(margin)+'%', marginColor);
+  setEl('estKpiMargin', Math.round(margin*10)/10+'%', marginColor);
   setEl('estKpiItems', totalItems);
-
-  // TRUE MARGIN (RE) -- separate stat, doesn't touch the simple tiles above.
-  // Automatically computed from this job's real catalog costs every time,
-  // so this never has to be built by hand in a spreadsheet again.
-  const tm = calcTrueMargin(allItemsFlat);
-  const trueColor = tm.trueMarginPct >= 10 ? '#1dbb87' : tm.trueMarginPct >= 5 ? '#f59e0b' : '#ef5350';
-  setEl('estKpiTrueMargin', Math.round(tm.trueMarginPct*10)/10+'%', trueColor);
-  const tmEl = document.getElementById('estKpiTrueMargin');
-  if (tmEl) {
-    tmEl.title = `Retained Earnings (true profit): $${Math.round(tm.retainedEarnings).toLocaleString()}. `
+  const profitEl = document.getElementById('estKpiProfit');
+  if (profitEl) {
+    profitEl.title = `Retained Earnings (true profit): $${Math.round(profit).toLocaleString()}. `
       + `Materials $${Math.round(tm.materialsPrice).toLocaleString()} pass through at markup. `
       + `Labor Billed $${Math.round(tm.laborPrice).toLocaleString()} vs. real cost $${Math.round(tm.laborCost).toLocaleString()} `
       + `feeds Overhead 18% / Marketing 10% / Flex 10% / Taxes 27.5%.`;
