@@ -22507,13 +22507,12 @@ function updateEstimateSummary() {
     totalPrice += t.price;
   });
 
-  // Profit and Margin are the TRUE numbers -- Retained Earnings after the
-  // full JTXD bucket waterfall (Overhead/Marketing/Flex/Taxes), not simple
-  // line-item markup. Cost/Price/Items stay as straightforward sums.
+  // Profit is the TRUE number -- Retained Earnings after the full JTXD
+  // bucket waterfall (Overhead/Marketing/Flex/Taxes), not simple
+  // line-item markup. Materials Cost / Labor Cost / Price stay as
+  // straightforward sums, split by costType via calcTrueMargin.
   const tm = calcTrueMargin(allItemsFlat);
   const profit = tm.retainedEarnings;
-  const margin = tm.trueMarginPct;
-  const marginColor = margin >= 10 ? '#1dbb87' : margin >= 5 ? '#f59e0b' : '#ef5350';
 
   const setEl = (id, v, color) => {
     const el = document.getElementById(id);
@@ -22521,17 +22520,16 @@ function updateEstimateSummary() {
     el.textContent = v;
     if (color) el.style.color = color;
   };
-  setEl('estKpiCost', '$'+Math.round(totalCost).toLocaleString());
+  setEl('estKpiLaborCost', '$'+Math.round(tm.laborCost).toLocaleString());
+  setEl('estKpiMaterialsCost', '$'+Math.round(tm.materialsCost).toLocaleString());
   setEl('estKpiPrice', '$'+Math.round(totalPrice).toLocaleString());
   setEl('estKpiProfit', '$'+Math.round(profit).toLocaleString(), profit>=0?'#1dbb87':'#ef5350');
-  setEl('estKpiMargin', Math.round(margin*10)/10+'%', marginColor);
-  setEl('estKpiItems', totalItems);
   const profitEl = document.getElementById('estKpiProfit');
   if (profitEl) {
     profitEl.title = `Retained Earnings (true profit): $${Math.round(profit).toLocaleString()}. `
       + `Materials $${Math.round(tm.materialsPrice).toLocaleString()} pass through at markup. `
       + `Labor Billed $${Math.round(tm.laborPrice).toLocaleString()} vs. real cost $${Math.round(tm.laborCost).toLocaleString()} `
-      + `feeds Overhead 18% / Marketing 10% / Flex 10% / Taxes 27.5%.`;
+      + `feeds Overhead 18% / Marketing 10% / Flex 10% / Taxes 27.5%. True Margin: ${tm.trueMarginPct.toFixed(1)}%.`;
   }
 
   // Sync estCost from the estimate. Do NOT overwrite contractValue —
