@@ -22483,22 +22483,16 @@ function renderFFDiscountControl(jobId) {
 
 function updateEstimateSummary() {
   let totalCost = 0, totalPrice = 0, totalItems = 0;
-  const allItemsFlat = [];
   estGroups.forEach(g => {
     const items = getAllItemsInGroup(g);
     totalItems += items.length;
-    allItemsFlat.push(...items);
     const t = calcGroupTotals(items);
     totalCost += t.cost;
     totalPrice += t.price;
   });
   const profit = totalPrice - totalCost;
-  const markupMargin = totalPrice > 0 ? profit/totalPrice*100 : 0;
-
-  // TRUE margin (after Overhead/Marketing/Flex/Taxes), not just markup.
-  const tm = calcTrueMargin(allItemsFlat);
-  const margin = tm.trueMarginPct;
-  const marginColor = margin >= 10 ? '#1dbb87' : margin >= 5 ? '#f59e0b' : '#ef5350';
+  const margin = totalPrice > 0 ? profit/totalPrice*100 : 0;
+  const marginColor = margin >= 20 ? '#1dbb87' : margin >= 10 ? '#f59e0b' : '#ef5350';
 
   const setEl = (id, v, color) => {
     const el = document.getElementById(id);
@@ -22508,17 +22502,9 @@ function updateEstimateSummary() {
   };
   setEl('estKpiCost', '$'+Math.round(totalCost).toLocaleString());
   setEl('estKpiPrice', '$'+Math.round(totalPrice).toLocaleString());
-  setEl('estKpiProfit', '$'+Math.round(tm.retainedEarnings).toLocaleString(), tm.retainedEarnings>=0?'#1dbb87':'#ef5350');
-  setEl('estKpiMargin', Math.round(margin*10)/10+'%', marginColor);
+  setEl('estKpiProfit', '$'+Math.round(profit).toLocaleString(), profit>=0?'#1dbb87':'#ef5350');
+  setEl('estKpiMargin', Math.round(margin)+'%', marginColor);
   setEl('estKpiItems', totalItems);
-  const marginEl = document.getElementById('estKpiMargin');
-  if (marginEl) {
-    marginEl.title = `TRUE margin after Overhead/Marketing/Flex/Taxes: ${margin.toFixed(1)}%. Line-item markup margin (materials+labor markup only, before company overhead): ${markupMargin.toFixed(1)}%.`;
-  }
-  const profitEl = document.getElementById('estKpiProfit');
-  if (profitEl) {
-    profitEl.title = `Retained Earnings (true profit) after Overhead/Marketing/Flex/Taxes. Raw line-item profit (price minus cost, no overhead applied): $${Math.round(profit).toLocaleString()}.`;
-  }
 
   // Sync estCost from the estimate. Do NOT overwrite contractValue —
   // the contract/approved price is set on the job and only moves via change orders.
