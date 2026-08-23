@@ -12116,7 +12116,6 @@ window.pushInvoiceToQuickBooks = pushInvoiceToQuickBooks;
 // Taxes -> Retained Earnings.
 async function computeLockedBucketSplit(job) {
   const rc = await computeRealJobCost(job.id);
-  const revenue = getJobValue(job) || 0;
   const realSubcontractorTotal = rc.labor;
   // Materials Billed to Customer -- the marked-up estimate figure, NOT
   // real spend (rc.materials, used below for the returned "materials"
@@ -12125,7 +12124,22 @@ async function computeLockedBucketSplit(job) {
   // has). This is Travis's rebuilt formula: Labor Billed derives from
   // what the customer was actually billed for materials, matching the
   // JTXD Job Margin Calculator exactly.
-  const { materials: materialsBilled } = await fetchEstimateCostSplitFresh(job.id);
+  const { materials: materialsBilled, laborAndOther: laborBilledFromEstimate } = await fetchEstimateCostSplitFresh(job.id);
+
+  // Revenue: prefer the approved contract value once one exists
+  // (contractValue / approvedOrders / pendingOrders). Before a job is
+  // formally approved -- every job still at the estimate/proposal
+  // stage, i.e. exactly the jobs this function is most useful on --
+  // getJobValue(job) returns 0. Falling straight through to that 0
+  // made Labor Billed go deeply negative (Revenue minus a REAL,
+  // positive Materials Billed number), which cascaded a nonsense
+  // negative Retained Earnings through the whole bucket formula on
+  // every un-approved job. Fall back to the estimate's own total
+  // price instead, same number the Estimate tab's own true-margin
+  // calculation already uses -- a real, always-populated revenue
+  // figure that doesn't depend on approval status.
+  const approvedValue = getJobValue(job);
+  const revenue = approvedValue > 0 ? approvedValue : (materialsBilled + laborBilledFromEstimate);
 
   // Labor Billed (implied) = whatever's left of the customer price
   // after Materials Billed.
