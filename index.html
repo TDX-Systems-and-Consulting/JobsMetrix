@@ -4239,21 +4239,21 @@
 
     <!-- Header -->
     <div class="modal-head" id="jobDetailHeaderBlock" style="flex-shrink:0;padding:14px 20px">
-      <div style="display:flex;flex-direction:column;gap:8px;width:100%"><!-- mobile-header-v2 -->
+      <div style="display:flex;flex-direction:column;gap:2px;width:100%"><!-- mobile-header-v2 -->
         <div style="flex:1;min-width:0">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
           <div id="detailJobNum" style="font-size:.78rem;color:var(--amber);font-weight:800;background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.3);border-radius:6px;padding:2px 8px"></div>
           <select id="detailStatusBadge" onchange="commitJobStatusChange(this.value)"
-            style="font-size:.74rem;font-weight:700;padding:3px 10px;border-radius:999px;background:rgba(217,119,6,.15);color:var(--amber);border:1px solid rgba(217,119,6,.3);cursor:pointer">
+            style="font-size:.74rem;font-weight:700;padding:3px 10px;border-radius:999px;background:rgba(217,119,6,.15);color:var(--amber);border:1px solid rgba(217,119,6,.3);cursor:pointer;flex-shrink:0">
             <option>New Lead</option><option>Appointment Set</option><option>Building Estimate</option>
             <option>Submitted</option><option>Approved</option><option>To Be Scheduled</option>
             <option>Permitting</option><option>Scheduled</option><option>In Progress</option>
             <option>Inspection Pending</option><option>Complete</option>
             <option>Closed Completed</option><option>Closed Lost</option>
           </select>
-          <button id="jobDetailHeaderToggleBtn" onclick="toggleJobDetailHeaderCollapse()" title="Collapse contact info, action buttons, and the financial bar to give more room to whatever tab you're viewing (Schedule, Financials, etc). Click again to expand." style="margin-left:auto;font-size:.72rem;font-weight:700;padding:4px 10px;border-radius:6px;background:rgba(110,145,210,.12);border:1px solid rgba(110,145,210,.25);color:var(--muted);cursor:pointer">▲ Collapse</button>
+          <button id="jobDetailHeaderToggleBtn" onclick="toggleJobDetailHeaderCollapse()" title="Collapse contact info, action buttons, and the financial bar to give more room to whatever tab you're viewing (Schedule, Financials, etc). Click again to expand." style="margin-left:auto;font-size:.72rem;font-weight:700;padding:4px 10px;border-radius:6px;background:rgba(110,145,210,.12);border:1px solid rgba(110,145,210,.25);color:var(--muted);cursor:pointer;flex-shrink:0">▲ Collapse</button>
         </div>
-        <h3 id="detailJobName" style="margin:5px 0 3px;font-size:1.15rem"></h3>
+        <h3 id="detailJobName" style="margin:2px 0 3px;font-size:1.15rem"></h3>
         <div class="jd-collapsible" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <div id="detailJobClient" class="muted small"></div>
           <div id="detailCallBtns" style="display:flex;gap:5px;flex-wrap:wrap"></div>
@@ -5029,7 +5029,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202608231234"></script>
+<script src="kytrac-app.js?v=202608231245"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW

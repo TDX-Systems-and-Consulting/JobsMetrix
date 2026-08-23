@@ -12145,13 +12145,13 @@ async function computeLockedBucketSplit(job) {
   // after Materials Billed.
   const laborBilled = revenue - materialsBilled;
 
-  // Subcontractor Pay target (62% of Labor Billed, JTXD keeps 38%) vs.
-  // what was actually signed/paid -- the gap (JTXD Payroll Support)
-  // runs either direction: JTXD keeps the difference if the real sub
-  // cost came in under the target, or eats the overage if it ran over.
-  const subPayTarget = laborBilled * 0.62;
-  const jtxdPayrollSupport = subPayTarget - realSubcontractorTotal;
-  const jxtdProjectedPay = laborBilled * 0.38;
+  // JTXD Actual = Labor Billed minus Real Subcontractor/Labor Total,
+  // direct. No theoretical 62%/38% target split -- matches
+  // calcTrueMargin() and the finalized JTXD Job Margin Calculator
+  // template exactly (the split used to cancel out to this same number
+  // algebraically anyway; this is just honest about it, and consistent
+  // everywhere in the app now instead of three different versions of
+  // the same formula).
 
   // Crew Food/Gas Expense -- Travis's real policy: $150/Friday lunch +
   // $50/week gas, 2-week minimum before either charges at all, scaled
@@ -12163,7 +12163,7 @@ async function computeLockedBucketSplit(job) {
   const crewFood = 0;
   const crewGas = 0;
 
-  const jtxdActual = jxtdProjectedPay + jtxdPayrollSupport - crewFood - crewGas;
+  const jtxdActual = laborBilled - realSubcontractorTotal - crewFood - crewGas;
 
   // Overhead/Marketing/Flex/Taxes now cascade off JTXD Actual -- what
   // JTXD really keeps after subcontractor pay settles -- instead of
@@ -22241,19 +22241,19 @@ async function computeRealJobCost(jobId) {
     } catch (e) { /* fall through to placeholder */ }
   }
 
-  // Last-resort placeholder: the SAME Labor Budget ceiling shown on
-  // the Financials "Budget: Estimated vs Actual" card, not a
-  // separately-derived number -- these two can never disagree with
-  // each other now, since they're the same calculation.
-  const job = conJobs.find(j => j.id === jobId);
-  if (job) {
-    try {
-      const est = await computeEstimatedBreakdown(job);
-      return { materials, materialsSource, labor: est.labor, source: 'PLACEHOLDER — Labor Budget ceiling (locked waterfall), no real subcontractor cost logged yet' };
-    } catch (e) { /* fall through to raw billed labor below */ }
-  }
+  // Last-resort placeholder: 40% of Labor Billed, the SAME confirmed
+  // default the JTXD Job Margin Calculator and the Estimate tab's
+  // calcTrueMargin() both use -- NOT computeEstimatedBreakdown's old
+  // "revenue minus materials minus overhead minus marketing" residual,
+  // which silently computed to a flat $0 for every job without an
+  // approved contract value yet (getJobValue returns 0 pre-approval),
+  // exactly the same class of bug fixed elsewhere in
+  // computeLockedBucketSplit. Every un-approved job -- which is most
+  // jobs sitting at the estimate stage -- fell through to this
+  // placeholder and got labor=$0, silently understating Cost to
+  // Complete down to materials-only.
   const { laborAndOther: billedLabor } = await fetchEstimateCostSplitFresh(jobId);
-  return { materials, materialsSource, labor: billedLabor, source: 'PLACEHOLDER — billed labor, no real subcontractor cost data logged yet' };
+  return { materials, materialsSource, labor: billedLabor * 0.40, source: 'PLACEHOLDER — 40% of Labor Billed, no real subcontractor cost logged yet' };
 }
 
 // Delegates to computeLockedBucketSplit (the real formula locked
