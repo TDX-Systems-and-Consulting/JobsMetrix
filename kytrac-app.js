@@ -22483,9 +22483,11 @@ function renderFFDiscountControl(jobId) {
 
 function updateEstimateSummary() {
   let totalCost = 0, totalPrice = 0, totalItems = 0;
+  const allItemsFlat = [];
   estGroups.forEach(g => {
     const items = getAllItemsInGroup(g);
     totalItems += items.length;
+    allItemsFlat.push(...items);
     const t = calcGroupTotals(items);
     totalCost += t.cost;
     totalPrice += t.price;
@@ -22505,6 +22507,20 @@ function updateEstimateSummary() {
   setEl('estKpiProfit', '$'+Math.round(profit).toLocaleString(), profit>=0?'#1dbb87':'#ef5350');
   setEl('estKpiMargin', Math.round(margin)+'%', marginColor);
   setEl('estKpiItems', totalItems);
+
+  // TRUE MARGIN (RE) -- separate stat, doesn't touch the simple tiles above.
+  // Automatically computed from this job's real catalog costs every time,
+  // so this never has to be built by hand in a spreadsheet again.
+  const tm = calcTrueMargin(allItemsFlat);
+  const trueColor = tm.trueMarginPct >= 10 ? '#1dbb87' : tm.trueMarginPct >= 5 ? '#f59e0b' : '#ef5350';
+  setEl('estKpiTrueMargin', Math.round(tm.trueMarginPct*10)/10+'%', trueColor);
+  const tmEl = document.getElementById('estKpiTrueMargin');
+  if (tmEl) {
+    tmEl.title = `Retained Earnings (true profit): $${Math.round(tm.retainedEarnings).toLocaleString()}. `
+      + `Materials $${Math.round(tm.materialsPrice).toLocaleString()} pass through at markup. `
+      + `Labor Billed $${Math.round(tm.laborPrice).toLocaleString()} vs. real cost $${Math.round(tm.laborCost).toLocaleString()} `
+      + `feeds Overhead 18% / Marketing 10% / Flex 10% / Taxes 27.5%.`;
+  }
 
   // Sync estCost from the estimate. Do NOT overwrite contractValue —
   // the contract/approved price is set on the job and only moves via change orders.
