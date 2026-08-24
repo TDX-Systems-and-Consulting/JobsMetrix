@@ -10865,6 +10865,10 @@ function renderActivityFeed(targetElId, itemCap) {
           items.push({ icon: '📧', text: l.notes || 'Invoice emailed to customer', sub: job ? job.name : '', jobId, ms });
         } else if (l.type === 'invoice_paid') {
           items.push({ icon: '💰', text: l.notes || 'Invoice paid', sub: job ? job.name : '', jobId, ms });
+        } else if (l.type === 'co_emailed') {
+          items.push({ icon: '📝', text: l.notes || 'Change order emailed to customer', sub: job ? job.name : '', jobId, ms });
+        } else if (l.type === 'co_viewed') {
+          items.push({ icon: '👁', text: l.notes || 'Customer opened change order in portal', sub: job ? job.name : '', jobId, ms });
         } else if (l.type === 'materials_purchase') {
           items.push({ icon: '🧱', text: l.notes || 'Materials purchase logged', sub: job ? job.name : '', jobId, ms });
         } else if (l.type === 'subcontractor_payment') {
@@ -10901,6 +10905,10 @@ function renderActivityFeed(targetElId, itemCap) {
               items.push({ icon: '📧', text: l.notes || 'Invoice emailed to customer', sub: job.name, jobId: job.id, ms });
             } else if (l.type === 'invoice_paid') {
               items.push({ icon: '💰', text: l.notes || 'Invoice paid', sub: job.name, jobId: job.id, ms });
+            } else if (l.type === 'co_emailed') {
+              items.push({ icon: '📝', text: l.notes || 'Change order emailed to customer', sub: job.name, jobId: job.id, ms });
+            } else if (l.type === 'co_viewed') {
+              items.push({ icon: '👁', text: l.notes || 'Customer opened change order in portal', sub: job.name, jobId: job.id, ms });
             } else if (l.type === 'materials_purchase') {
               items.push({ icon: '🧱', text: l.notes || 'Materials purchase logged', sub: job.name, jobId: job.id, ms });
             } else if (l.type === 'subcontractor_payment') {
@@ -18046,6 +18054,29 @@ function loadPortalJob(db, jobId, tokenData, token) {
             const cos = [];
             snap.forEach(d => cos.push({ id: d.id, ...d.data() }));
             renderPortalCOs(cos);
+            // Mark each as viewed on first portal open, same pattern as
+            // proposals (viewedAt + an activity feed entry) -- this was
+            // completely missing for change orders before, so there was
+            // no way to know whether a customer had actually opened one.
+            cos.forEach(co => {
+              if (!co.viewedAt) {
+                portalColl('jobs').doc(jobId).collection('changeorders').doc(co.id).update({
+                  viewedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                  lastPortalToken: _portalToken || ''
+                }).then(() => {
+                  try {
+                    firebase.firestore().collection('companies').doc(_portalCompanyId)
+                      .collection('jobs').doc(jobId).collection('logs').add({
+                        type: 'co_viewed',
+                        notes: `Customer opened Change Order "${co.title||''}" in portal`,
+                        jobId, companyId: _portalCompanyId,
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        createdMs: Date.now(), createdBy: 'customer-portal'
+                      });
+                  } catch(e) {}
+                }).catch(() => {});
+              }
+            });
           }).catch(() => {});
 
         // Load customer's own message thread (portal only ever shows
@@ -24668,9 +24699,13 @@ function confirmSendChangeOrderEmail() {
     docType: 'changeOrder'
   }).then(() => {
     finish('Change order emailed to ' + job.email + '.');
-    if (typeof logActivity === 'function') {
-      logActivity(conCurrentJobId, `Change Order "${co.title||''}" emailed to ${job.email}`, job.name || '');
-    }
+    // Was calling a function named logActivity that doesn't exist
+    // anywhere in this codebase -- the typeof guard silently made this
+    // a no-op forever, no error, nothing in the Activity feed. Use the
+    // real, already-working function (same one proposals/invoices use,
+    // writing to the same jobs/{jobId}/logs collection the Activity
+    // feed reads from).
+    logProposalEvent(conCurrentJobId, 'co_emailed', `Change Order "${co.title||''}" emailed to ${job.email}`, job.name || '');
   }).catch(e => finish('Error sending email: ' + e.message));
 }
 window.confirmSendChangeOrderEmail = confirmSendChangeOrderEmail;
