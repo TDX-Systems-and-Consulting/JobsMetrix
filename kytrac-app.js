@@ -1227,6 +1227,18 @@ function getJobValue(job) {
   return Number(job.contractValue || job.approvedOrders || job.pendingOrders || 0);
 }
 
+// Same as getJobValue, but falls back to the synced estimate price
+// (job.estPrice, "what did we quote this job at") when there's no
+// approved contract yet. getJobValue alone returns $0 for every
+// pre-approval job (New Lead/Appointment Set/Building Estimate/
+// Submitted), which silently zeroed out real quoted dollars anywhere
+// that used it for jobs not yet under contract -- Reports & Analytics
+// being the clearest example (every unapproved job showed $0k despite
+// a real estimate having been sent).
+function getJobValueOrEstimate(job) {
+  return getJobValue(job) || Number(job.estPrice || 0);
+}
+
 // ════════════════════════════════════════════════════
 // ── JOBSMETRIX → PLANNERXD PULSE SYNC ──
 // Writes a small rollup doc to plannerxd_pulse_sync/{ownerUid} so
@@ -2602,14 +2614,21 @@ async function renderLaborHoursSection(jobId) {
   </div>`;
 }
 
-// ── Estimate cost sync (rolls estimate line items into job.estCost) ──
-// Source of truth: sum(qty × unitCost) across all items, matching calcGroupTotals.
-// Writes estCost ONLY — never contractValue (that stays the approved/contract price).
+// ── Estimate cost sync (rolls estimate line items into job.estCost/estPrice) ──
+// Source of truth: sum(qty × unitCost) and sum(qty × unitPrice) across all
+// items, matching calcGroupTotals. Writes estCost/estPrice ONLY — never
+// contractValue (that stays the approved/contract price). estPrice exists
+// specifically so Reports & Analytics (and anywhere else needing "what did
+// we quote this job at") has a real, synchronous fallback for jobs that
+// haven't been approved yet -- getJobValue() alone returns $0 for every
+// pre-approval job (New Lead/Appointment Set/Building Estimate/Submitted),
+// which silently zeroed out real estimate dollars across the whole Reports
+// page for any job not yet under contract.
 function syncJobEstimateCost(jobId, opts) {
   opts = opts || {};
   if (!conDb || !jobId) return Promise.resolve(null);
   const jobRef = coll('jobs').doc(jobId);
-  let totalCost = 0, itemCount = 0;
+  let totalCost = 0, totalPrice = 0, itemCount = 0;
 
   return jobRef.collection('estimateGroups').get()
     .then(async groupSnap => {
@@ -2619,6 +2638,7 @@ function syncJobEstimateCost(jobId, opts) {
         directSnap.forEach(d => {
           const it = d.data();
           totalCost += (it.qty||1) * (it.unitCost||0);
+          totalPrice += (it.qty||1) * (it.unitPrice||0);
           itemCount++;
         });
         // Subgroup items
@@ -2629,6 +2649,7 @@ function syncJobEstimateCost(jobId, opts) {
           itemSnap.forEach(d => {
             const it = d.data();
             totalCost += (it.qty||1) * (it.unitCost||0);
+            totalPrice += (it.qty||1) * (it.unitPrice||0);
             itemCount++;
           });
         }
@@ -2639,13 +2660,15 @@ function syncJobEstimateCost(jobId, opts) {
       // bar even though the Estimate tab itself was genuinely empty (0 line
       // items). The financial bar and the estimate tree should always agree.
       const rounded = Math.round(totalCost);
+      const roundedPrice = Math.round(totalPrice);
       const job = conJobs.find(j => j.id === jobId);
       const current = job ? (job.estCost||0) : null;
+      const currentPrice = job ? (job.estPrice||0) : null;
       // Only write if it actually changed (avoid needless writes / snapshot churn)
-      if (current !== null && Math.round(current) === rounded) return rounded;
+      if (current !== null && Math.round(current) === rounded && currentPrice !== null && Math.round(currentPrice) === roundedPrice) return rounded;
 
-      await jobRef.update({ estCost: rounded, estCostSyncedAt: firebase.firestore.FieldValue.serverTimestamp() }).catch(()=>{});
-      if (job) job.estCost = rounded;
+      await jobRef.update({ estCost: rounded, estPrice: roundedPrice, estCostSyncedAt: firebase.firestore.FieldValue.serverTimestamp() }).catch(()=>{});
+      if (job) { job.estCost = rounded; job.estPrice = roundedPrice; }
       return rounded;
     })
     .catch(() => null);
@@ -19704,7 +19727,7 @@ function renderActiveReport() {
 
 // ── OVERVIEW REPORT ──
 function renderOverviewReport(el, jobs, f) {
-  const totalContract = jobs.reduce((s,j) => s+getJobValue(j), 0);
+  const totalContract = jobs.reduce((s,j) => s+getJobValueOrEstimate(j), 0);
   const totalEstCost = jobs.reduce((s,j) => s+(j.estCost||0), 0);
   const totalActual = jobs.reduce((s,j) => s+(j.actualCost||0), 0);
   const estMargin = totalContract - totalEstCost;
@@ -19728,7 +19751,7 @@ function renderOverviewReport(el, jobs, f) {
   }
   jobs.forEach(j => {
     const key = (j.startDate||'').slice(0,7);
-    if (key && monthlyRevenue[key] !== undefined) monthlyRevenue[key] += getJobValue(j);
+    if (key && monthlyRevenue[key] !== undefined) monthlyRevenue[key] += getJobValueOrEstimate(j);
   });
 
   const maxRev = Math.max(...Object.values(monthlyRevenue), 1);
@@ -19770,7 +19793,7 @@ function renderOverviewReport(el, jobs, f) {
           ${KYTRAC_STATUSES.map(s => {
             const count = jobs.filter(j => j.status === s.name).length;
             if (!count) return '';
-            const val = jobs.filter(j => j.status === s.name).reduce((sum,j) => sum+getJobValue(j), 0);
+            const val = jobs.filter(j => j.status === s.name).reduce((sum,j) => sum+getJobValueOrEstimate(j), 0);
             return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(110,145,210,.07)">
               <div style="display:flex;align-items:center;gap:8px">
                 <span style="width:8px;height:8px;border-radius:50%;background:${s.color};flex-shrink:0"></span>
@@ -22556,15 +22579,18 @@ function updateEstimateSummary() {
       + `feeds Overhead 18% / Marketing 10% / Flex 10% / Taxes 27.5%. True Margin: ${tm.trueMarginPct.toFixed(1)}%.`;
   }
 
-  // Sync estCost from the estimate. Do NOT overwrite contractValue —
+  // Sync estCost/estPrice from the estimate. Do NOT overwrite contractValue —
   // the contract/approved price is set on the job and only moves via change orders.
+  // estPrice exists so Reports & Analytics has a real fallback for
+  // "what did we quote this job at" on jobs that aren't approved yet.
   if (conCurrentJobId && conDb && totalItems > 0) {
     const rounded = Math.round(totalCost);
+    const roundedPrice = Math.round(totalPrice);
     coll('jobs').doc(conCurrentJobId).update({
-      estCost: rounded, estCostSyncedAt: firebase.firestore.FieldValue.serverTimestamp()
+      estCost: rounded, estPrice: roundedPrice, estCostSyncedAt: firebase.firestore.FieldValue.serverTimestamp()
     }).catch(()=>{});
     const job = conJobs.find(j => j.id === conCurrentJobId);
-    if (job) { job.estCost = rounded; refreshJobFinancials(job); }
+    if (job) { job.estCost = rounded; job.estPrice = roundedPrice; refreshJobFinancials(job); }
   }
 }
 
