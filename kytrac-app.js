@@ -3019,7 +3019,7 @@ function triggerProgressPaymentInvoice() {
 
   openAddInvoiceModal(conCurrentJobId);
   document.getElementById('invType').value = 'Progress Billing';
-  _invLineItems = [{ desc: 'Progress Payment (25%)', qty: 1, rate }];
+  _invLineItems = [{ desc: 'Progress Payment 25%', qty: 1, rate }];
   renderInvLineItems();
   calcInvTotals();
   window._pendingMilestoneForInvoice = 'progress';
@@ -13899,29 +13899,37 @@ function renderInvoiceDocumentHtml(inv, job, otherInvoices, forPrint) {
   const remainingAfterThis = Math.max(0, projectTotal - collectedElsewhere - (inv.total || 0));
 
   // Build line rows
-  // Progress Payment lines get a completion-milestone label too (e.g.
-  // "due upon 50% completion"), separate from the dollar "(25% of
-  // project)" percentage -- same formula the Proposal renderer already
-  // uses (100 - 100/2^(n+1): 1st progress payment → 50%, 2nd → 75%,
-  // etc.). The stage number comes directly from the description text
-  // itself ("Progress Payment" alone = stage 1, "Progress Payment 2" =
-  // stage 2) rather than a per-invoice counter -- each invoice renders
-  // independently, so a counter would incorrectly reset to stage 1 on
-  // every invoice instead of recognizing a later invoice's "Progress
-  // Payment 2" as the second one. Deposit, Final Payment, and
-  // custom-labeled lines are untouched.
+  // Progress Payment lines get a completion-milestone label instead of
+  // the generic "(X% of project)" text -- the desc itself already
+  // states the payment's own percentage ("Progress Payment 25%"), so
+  // repeating that as "(25% of project)" was pure duplication. Format:
+  // "Progress Payment 25% (50% project completion)". Stage number
+  // comes directly from the description text itself ("Progress
+  // Payment" alone = stage 1, "Progress Payment 2" = stage 2) rather
+  // than a per-invoice counter -- each invoice renders independently,
+  // so a counter would incorrectly reset to stage 1 on every invoice
+  // instead of recognizing a later invoice's "Progress Payment 2" as
+  // the second one. Deposit, Final Payment, and custom-labeled lines
+  // keep the original "(X% of project)" format, unaffected.
   const lineRows = (inv.lineItems||[]).map(item => {
     const amt = (item.qty||1) * (item.rate||0);
-    const pct = projectTotal > 0 ? ' (' + Math.round(amt/projectTotal*100) + '% of project)' : '';
-    let milestone = '';
     const ppMatch = (item.desc||'').match(/Progress Payment(\s(\d+))?/);
+    let pct = '', milestone = '', displayDesc = item.desc||'';
     if (ppMatch) {
       const stageNum = ppMatch[2] ? parseInt(ppMatch[2], 10) : 1;
       const completionPct = Math.round((100 - 100 / Math.pow(2, stageNum)) * 10) / 10;
-      milestone = ' <span style="color:#9ca3af;font-size:.8rem">— due upon ' + completionPct + '% completion</span>';
+      milestone = ' <span style="color:#9ca3af;font-size:.8rem">(' + completionPct + '% project completion)</span>';
+      // Strip any "(XX%)" already baked into the stored desc (from
+      // invoices created before this format changed) so old and new
+      // invoices display identically -- e.g. "Progress Payment (25%)"
+      // becomes "Progress Payment 25%" here even though the raw
+      // Firestore data still has the parens.
+      displayDesc = displayDesc.replace(/\s*\((\d+(\.\d+)?%)\)/, ' $1');
+    } else {
+      pct = projectTotal > 0 ? ' (' + Math.round(amt/projectTotal*100) + '% of project)' : '';
     }
     return '<tr>' +
-      '<td style="padding:10px 6px;border-bottom:1px solid #e5e7eb;font-size:.92rem">' + esc(item.desc||'') + '<span style="color:#9ca3af;font-size:.8rem">' + pct + '</span>' + milestone + '</td>' +
+      '<td style="padding:10px 6px;border-bottom:1px solid #e5e7eb;font-size:.92rem">' + esc(displayDesc) + '<span style="color:#9ca3af;font-size:.8rem">' + pct + '</span>' + milestone + '</td>' +
       '<td style="padding:10px 6px;border-bottom:1px solid #e5e7eb;text-align:right;font-size:.92rem">' + (item.qty||1) + '</td>' +
       '<td style="padding:10px 6px;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:800;font-size:.95rem">' + fmt(amt) + '</td>' +
       '</tr>';
