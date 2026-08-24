@@ -1328,6 +1328,10 @@
           <div class="kt-stat-val" id="statEstPending" style="color:#1dbb87">0</div>
           <div class="kt-stat-label">Estimates Pending</div>
         </div>
+        <div class="kt-stat" id="statEstPendingValueTile" title="Total dollar value of proposals sent, awaiting customer approval">
+          <div class="kt-stat-val" id="statEstPendingValue" style="color:#1dbb87">$0</div>
+          <div class="kt-stat-label">Outstanding Estimate Value</div>
+        </div>
         <div class="kt-stat" id="statCloseRateTile" title="Approved ÷ total proposals sent">
           <div class="kt-stat-val" id="statCloseRate" style="color:#1dbb87">—</div>
           <div class="kt-stat-label">Close Rate</div>
@@ -1339,10 +1343,6 @@
         <div class="kt-stat" id="statUnprocessedCOTile" title="Change orders awaiting action">
           <div class="kt-stat-val" id="statUnprocessedCO" style="color:#1dbb87">0</div>
           <div class="kt-stat-label">Unprocessed COs</div>
-        </div>
-        <div class="kt-stat" id="statLogsTile" title="Daily logs submitted vs crew clocked in">
-          <div class="kt-stat-val" id="statLogsToday" style="color:#1dbb87">—</div>
-          <div class="kt-stat-label">Logs Today</div>
         </div>
       </div>
 
@@ -5029,7 +5029,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202608241745"></script>
+<script src="kytrac-app.js?v=202608241755"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW

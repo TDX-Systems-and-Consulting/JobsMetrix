@@ -1328,23 +1328,29 @@ function conRenderStats() {
   const marginColor = avgMargin >= 20 ? '#1dbb87' : avgMargin >= 15 ? '#f59e0b' : '#ef5350';
   setTile('statAvgMargin', 'statAvgMarginTile', avgMargin.toFixed(1) + '%', marginColor);
 
-  // Estimates Pending — proposals in 'pending' status
+  // Estimates Pending — proposals in 'pending' status, both count and
+  // total dollar value (Outstanding Estimate Value). Same query, just
+  // also summing snapshot.grandTotal instead of only counting docs.
   const estPending = conJobs.reduce((count, j) => {
     // We don't have proposals loaded globally — use job status as proxy
     return count;
   }, 0);
   // Load proposals pending count async
   if (conDb && currentCompanyId) {
-    let pendingCount = 0;
+    let pendingCount = 0, pendingValue = 0;
     const pendingPromises = conJobs.map(j =>
       coll('jobs').doc(j.id).collection('proposals')
         .where('status','==','pending').get()
-        .then(s => { pendingCount += s.size; })
+        .then(s => {
+          pendingCount += s.size;
+          s.forEach(d => { pendingValue += (d.data().snapshot && d.data().snapshot.grandTotal) || 0; });
+        })
         .catch(() => {})
     );
     Promise.all(pendingPromises).then(() => {
       const epColor = pendingCount === 0 ? '#1dbb87' : pendingCount <= 2 ? '#f59e0b' : '#ef5350';
       setTile('statEstPending', 'statEstPendingTile', pendingCount, epColor);
+      setTile('statEstPendingValue', 'statEstPendingValueTile', '$'+Math.round(pendingValue).toLocaleString(), epColor);
     });
   }
 
@@ -1386,24 +1392,6 @@ function conRenderStats() {
   }
 
   // Logs Today — color signal
-  const logsEl = document.getElementById('statLogsToday');
-  if (logsEl && conDb) {
-    const today = new Date().toISOString().split('T')[0];
-    Promise.all([
-      conDb.collectionGroup('logs').where('date','==',today).get().catch(() => null),
-      coll('timeEntries').where('date','==',today).where('clockOut','!=',null).get().catch(() => null)
-    ]).then(([logsSnap, timeSnap]) => {
-      const logCount = logsSnap ? logsSnap.size : 0;
-      const clockedOutCount = timeSnap ? new Set(timeSnap.docs.map(d => d.data().userId)).size : 0;
-      let logsColor = '#1dbb87', logsVal = logCount.toString();
-      if (clockedOutCount > 0) {
-        if (logCount === 0) { logsColor = '#ef5350'; logsVal = '⚠ 0'; }
-        else if (logCount < clockedOutCount) { logsColor = '#f59e0b'; logsVal = `${logCount}/${clockedOutCount}`; }
-      }
-      setTile('statLogsToday', 'statLogsTile', logsVal, logsColor);
-    }).catch(() => { if (logsEl) logsEl.textContent = '—'; });
-  }
-
   // ── Row 2: Money ──
 
   // Contract Value — amber (reference)
