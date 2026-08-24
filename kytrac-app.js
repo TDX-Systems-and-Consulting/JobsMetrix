@@ -7550,12 +7550,12 @@ async function loadGlobalChangeOrders() {
   const allCOs = [];
   for (const job of conJobs.slice(0, 20)) {
     try {
-      const snap = await coll('jobs').doc(job.id).collection('changeOrders')
+      const snap = await coll('jobs').doc(job.id).collection('changeorders')
         .orderBy('createdAt', 'desc').limit(20).get();
       snap.forEach(d => allCOs.push({ id: d.id, ...d.data(), jobId: job.id, jobName: job.name }));
     } catch(e) {
       try {
-        const snap2 = await coll('jobs').doc(job.id).collection('changeOrders').limit(20).get();
+        const snap2 = await coll('jobs').doc(job.id).collection('changeorders').limit(20).get();
         snap2.forEach(d => allCOs.push({ id: d.id, ...d.data(), jobId: job.id, jobName: job.name }));
       } catch(e2) {}
     }
@@ -7607,7 +7607,7 @@ window.loadGlobalChangeOrders = loadGlobalChangeOrders;
 
 async function approveCOFromGlobal(jobId, coId, btn) {
   try {
-    await coll('jobs').doc(jobId).collection('changeOrders').doc(coId).update({ status: 'Approved' });
+    await coll('jobs').doc(jobId).collection('changeorders').doc(coId).update({ status: 'Approved' });
     if (btn) btn.closest('[style]').style.borderColor = 'var(--line)';
     loadGlobalChangeOrders();
   } catch(e) { alert('Error: ' + e.message); }
@@ -7617,7 +7617,7 @@ window.approveCOFromGlobal = approveCOFromGlobal;
 async function declineCOFromGlobal(jobId, coId, btn) {
   if (!confirm('Decline this change order?')) return;
   try {
-    await coll('jobs').doc(jobId).collection('changeOrders').doc(coId).update({ status: 'Declined' });
+    await coll('jobs').doc(jobId).collection('changeorders').doc(coId).update({ status: 'Declined' });
     loadGlobalChangeOrders();
   } catch(e) { alert('Error: ' + e.message); }
 }
@@ -7712,7 +7712,7 @@ async function refreshNotificationBadges() {
   try {
     let unprocessedCOs = 0;
     for (const job of conJobs.slice(0, 20)) {
-      const snap = await coll('jobs').doc(job.id).collection('changeOrders').get().catch(() => null);
+      const snap = await coll('jobs').doc(job.id).collection('changeorders').get().catch(() => null);
       if (snap) snap.forEach(d => {
         const co = d.data();
         if (!['approved','declined','rejected'].includes((co.status || '').toLowerCase())) unprocessedCOs++;
