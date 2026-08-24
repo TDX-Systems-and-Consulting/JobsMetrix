@@ -10869,6 +10869,10 @@ function renderActivityFeed(targetElId, itemCap) {
           items.push({ icon: '📝', text: l.notes || 'Change order emailed to customer', sub: job ? job.name : '', jobId, ms });
         } else if (l.type === 'co_viewed') {
           items.push({ icon: '👁', text: l.notes || 'Customer opened change order in portal', sub: job ? job.name : '', jobId, ms });
+        } else if (l.type === 'co_signed') {
+          items.push({ icon: '📎', text: l.notes || 'Customer signed change order', sub: job ? job.name : '', jobId, ms });
+        } else if (l.type === 'co_declined') {
+          items.push({ icon: '❌', text: l.notes || 'Customer declined change order', sub: job ? job.name : '', jobId, ms });
         } else if (l.type === 'materials_purchase') {
           items.push({ icon: '🧱', text: l.notes || 'Materials purchase logged', sub: job ? job.name : '', jobId, ms });
         } else if (l.type === 'subcontractor_payment') {
@@ -10909,6 +10913,10 @@ function renderActivityFeed(targetElId, itemCap) {
               items.push({ icon: '📝', text: l.notes || 'Change order emailed to customer', sub: job.name, jobId: job.id, ms });
             } else if (l.type === 'co_viewed') {
               items.push({ icon: '👁', text: l.notes || 'Customer opened change order in portal', sub: job.name, jobId: job.id, ms });
+            } else if (l.type === 'co_signed') {
+              items.push({ icon: '📎', text: l.notes || 'Customer signed change order', sub: job.name, jobId: job.id, ms });
+            } else if (l.type === 'co_declined') {
+              items.push({ icon: '❌', text: l.notes || 'Customer declined change order', sub: job.name, jobId: job.id, ms });
             } else if (l.type === 'materials_purchase') {
               items.push({ icon: '🧱', text: l.notes || 'Materials purchase logged', sub: job.name, jobId: job.id, ms });
             } else if (l.type === 'subcontractor_payment') {
@@ -18047,36 +18055,18 @@ function loadPortalJob(db, jobId, tokenData, token) {
             }).catch(() => {});
         }
 
-        // Load approved change orders
+        // Load all change orders (Pending, Approved, Declined) -- was
+        // filtered to Approved-only, meaning a freshly-sent change
+        // order awaiting the customer's review/signature never showed
+        // up in their portal at all until Travis manually marked it
+        // Approved internally. Now shows every status, each rendered
+        // according to where it actually is in the approval flow.
         portalColl('jobs').doc(jobId).collection('changeorders')
-          .where('status','==','Approved').get()
+          .get()
           .then(snap => {
             const cos = [];
             snap.forEach(d => cos.push({ id: d.id, ...d.data() }));
-            renderPortalCOs(cos);
-            // Mark each as viewed on first portal open, same pattern as
-            // proposals (viewedAt + an activity feed entry) -- this was
-            // completely missing for change orders before, so there was
-            // no way to know whether a customer had actually opened one.
-            cos.forEach(co => {
-              if (!co.viewedAt) {
-                portalColl('jobs').doc(jobId).collection('changeorders').doc(co.id).update({
-                  viewedAt: firebase.firestore.FieldValue.serverTimestamp(),
-                  lastPortalToken: _portalToken || ''
-                }).then(() => {
-                  try {
-                    firebase.firestore().collection('companies').doc(_portalCompanyId)
-                      .collection('jobs').doc(jobId).collection('logs').add({
-                        type: 'co_viewed',
-                        notes: `Customer opened Change Order "${co.title||''}" in portal`,
-                        jobId, companyId: _portalCompanyId,
-                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-                        createdMs: Date.now(), createdBy: 'customer-portal'
-                      });
-                  } catch(e) {}
-                }).catch(() => {});
-              }
-            });
+            renderPortalCOs(cos, jobId);
           }).catch(() => {});
 
         // Load customer's own message thread (portal only ever shows
@@ -18305,23 +18295,112 @@ function _portalInvoiceColl(jobId) {
   return base.doc(jobId).collection('invoices');
 }
 
-function renderPortalCOs(cos) {
+function renderPortalCOs(cos, jobId) {
   if (!cos.length) return;
   const section = document.getElementById('portalCOSection');
   const el = document.getElementById('portalCOList');
   if (!section || !el) return;
   section.style.display = 'block';
-  el.innerHTML = cos.map(co => `
-    <div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(110,145,210,.07)">
-      <div>
+
+  // Sort newest first so a fresh, unsigned change order is the one the
+  // customer sees at the top, not buried under older approved ones.
+  cos.sort((a,b) => (b.createdMs||0) - (a.createdMs||0));
+
+  el.innerHTML = cos.map(co => {
+    const status = (co.status||'').toLowerCase();
+    const amtDisplay = (co.amount < 0 ? '-$' : '$') + Math.abs(co.amount||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+
+    if (status === 'approved') {
+      const balance = (co.amount||0) - (co.amtPaid||0);
+      return `<div class="portal-co-card" style="padding:14px 0;border-bottom:1px solid rgba(110,145,210,.07)">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div>
+            <div style="font-weight:700">${esc(co.title||co.description||'Change Order')}</div>
+            <div style="font-size:.76rem;color:var(--muted)">${co.date||''}</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-weight:800;color:#a3f2d2">${amtDisplay}</div>
+            <div style="font-size:.72rem;color:#1dbb87;font-weight:700">✅ Approved</div>
+          </div>
+        </div>
+        <div style="margin-top:8px;font-size:.8rem;color:#1dbb87">
+          Signed by ${esc(co.signedByName||'customer')}${co.respondedAt?.toDate ? ' on ' + co.respondedAt.toDate().toLocaleDateString() : ''}.
+          ${co.signatureDataUrl ? `<br><img src="${co.signatureDataUrl}" style="height:44px;margin-top:6px;background:#fff;border-radius:4px;padding:4px">` : ''}
+        </div>
+        ${balance > 0 && co.paymentLink ? `
+        <div style="text-align:center;margin-top:14px">
+          <a href="${co.paymentLink}" style="background:#d97706;color:#fff;padding:12px 26px;border-radius:10px;text-decoration:none;font-weight:700;font-size:.9rem;display:inline-block">
+            💳 Pay Now (Card or Bank/ACH)
+          </a>
+        </div>` : ''}
+      </div>`;
+    }
+
+    if (status === 'declined') {
+      return `<div style="padding:14px 0;border-bottom:1px solid rgba(110,145,210,.07)">
         <div style="font-weight:700">${esc(co.title||co.description||'Change Order')}</div>
-        <div style="font-size:.76rem;color:var(--muted)">${co.date||''}</div>
+        <div style="font-size:.86rem;color:var(--muted);margin-top:6px">This change order was declined${co.declineReason ? ': "' + esc(co.declineReason) + '"' : '.'} Please reach out using the contact info below if you'd like to discuss it.</div>
+      </div>`;
+    }
+
+    // Pending -- awaiting customer approval/signature. Own signature
+    // pad instance per change order (a job can have several pending at
+    // once, unlike the single active proposal), all IDs suffixed with
+    // the CO id so multiple cards on the same page don't collide.
+    return `<div style="padding:14px 0;border-bottom:1px solid rgba(110,145,210,.07)">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div style="font-weight:700">${esc(co.title||co.description||'Change Order')}</div>
+          <div style="font-size:.76rem;color:var(--muted)">${co.date||''}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-weight:800;color:#fbbf24">${amtDisplay}</div>
+          <div style="font-size:.72rem;color:#f59e0b;font-weight:700">Awaiting Your Approval</div>
+        </div>
       </div>
-      <div style="text-align:right">
-        <div style="font-weight:800;color:#a3f2d2">+$${(co.amount||0).toLocaleString()}</div>
-        <div style="font-size:.72rem;color:#1dbb87;font-weight:700">Approved</div>
+      ${co.reason ? `<div style="font-size:.84rem;color:var(--muted);margin-top:6px">${esc(co.reason)}</div>` : ''}
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+        <div style="font-weight:700;color:#eaf0fb;margin-bottom:8px;font-size:.86rem">Sign to Approve</div>
+        <input id="portalCOSigName_${co.id}" placeholder="Type your full name" autocomplete="off" style="width:100%;max-width:460px;margin-bottom:10px;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:rgba(8,18,36,.6);color:#eaf0fb" />
+        <canvas id="portalCOSigCanvas_${co.id}" class="portal-sig-canvas"></canvas>
+        <div style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn" style="padding:6px 14px;font-size:.8rem" onclick="clearPortalCOSignature('${co.id}')">Clear</button>
+          <button id="portalCOSignApproveBtn_${co.id}" class="btn-amber" style="padding:8px 18px;font-size:.85rem" onclick="submitPortalCOSignature('${co.id}','${jobId}','Approved')">✓ Approve &amp; Sign</button>
+          <button id="portalCOSignDeclineBtn_${co.id}" class="btn" style="padding:8px 18px;font-size:.85rem;color:#ef5350" onclick="submitPortalCOSignature('${co.id}','${jobId}','Declined')">Decline</button>
+        </div>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
+
+  // Init a signature pad for every pending card just rendered.
+  cos.forEach(co => {
+    if ((co.status||'').toLowerCase() !== 'approved' && (co.status||'').toLowerCase() !== 'declined') {
+      initPortalCOSignaturePad(co.id);
+    }
+  });
+
+  // View tracking, same pattern as proposals: viewedAt + activity log,
+  // fires once per change order on first portal open.
+  cos.forEach(co => {
+    if (!co.viewedAt) {
+      _portalCOColl(jobId).doc(co.id).update({
+        viewedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        lastPortalToken: _portalToken || ''
+      }).then(() => {
+        co.viewedAt = { toDate: () => new Date() };
+        try {
+          firebase.firestore().collection('companies').doc(_portalCompanyId)
+            .collection('jobs').doc(jobId).collection('logs').add({
+              type: 'co_viewed',
+              notes: `Customer opened Change Order "${co.title||''}" in portal`,
+              jobId, companyId: _portalCompanyId,
+              createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+              createdMs: Date.now(), createdBy: 'customer-portal'
+            });
+        } catch(e) {}
+      }).catch(() => {});
+    }
+  });
 }
 
 // ── Portal Messages: customer-facing "Message Us" box ──
@@ -18947,6 +19026,180 @@ function clearPortalSignature() {
   _portalSigHasStroke = false;
 }
 window.clearPortalSignature = clearPortalSignature;
+
+// Same signature pad as proposals, but parametrized by change order id
+// so multiple pending change orders on the same portal page can each
+// have their own independent pad without colliding on shared IDs/state
+// the way the single-proposal version does.
+let _portalCOSigState = {}; // { [coId]: { ctx, hasStroke, drawing } }
+
+function initPortalCOSignaturePad(coId) {
+  const canvas = document.getElementById('portalCOSigCanvas_' + coId);
+  if (!canvas) return;
+  const ratio = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * ratio;
+  canvas.height = rect.height * ratio;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(ratio, ratio);
+  ctx.strokeStyle = '#111827';
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  _portalCOSigState[coId] = { ctx, hasStroke: false, drawing: false };
+
+  function pos(e) {
+    const r = canvas.getBoundingClientRect();
+    const t = e.touches ? e.touches[0] : e;
+    return { x: t.clientX - r.left, y: t.clientY - r.top };
+  }
+  function start(e) { e.preventDefault(); _portalCOSigState[coId].drawing = true; const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }
+  function move(e) { if (!_portalCOSigState[coId].drawing) return; e.preventDefault(); const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); _portalCOSigState[coId].hasStroke = true; }
+  function end() { if (_portalCOSigState[coId]) _portalCOSigState[coId].drawing = false; }
+
+  canvas.onmousedown = start; canvas.onmousemove = move; canvas.onmouseup = end; canvas.onmouseleave = end;
+  canvas.ontouchstart = start; canvas.ontouchmove = move; canvas.ontouchend = end;
+}
+window.initPortalCOSignaturePad = initPortalCOSignaturePad;
+
+function clearPortalCOSignature(coId) {
+  const canvas = document.getElementById('portalCOSigCanvas_' + coId);
+  const state = _portalCOSigState[coId];
+  if (!canvas || !state) return;
+  state.ctx.clearRect(0, 0, canvas.width, canvas.height);
+  state.hasStroke = false;
+}
+window.clearPortalCOSignature = clearPortalCOSignature;
+
+function _portalCOColl(jobId) {
+  const base = _portalCompanyId
+    ? _portalDb.collection('companies').doc(_portalCompanyId).collection('jobs')
+    : _portalDb.collection('jobs');
+  return base.doc(jobId).collection('changeorders');
+}
+
+let _portalCOSigSubmitting = {}; // { [coId]: bool } -- per-CO double-submit guard
+
+// Change order approve/decline + signature capture, mirroring
+// submitPortalSignature (proposals) closely but scoped down to exactly
+// what change orders need: status update + signature, activity log,
+// a "customer approved this change order" to-do, and (unlike
+// proposals) no auto-advance of the job's pipeline status or
+// PlannerXD push -- a change order isn't the job-defining moment a
+// signed proposal is, so those two proposal-specific side effects
+// don't carry over here.
+function submitPortalCOSignature(coId, jobId, action) {
+  if (_portalCOSigSubmitting[coId]) return;
+  _portalCOSigSubmitting[coId] = true;
+  const approveBtn = document.getElementById('portalCOSignApproveBtn_' + coId);
+  const declineBtn = document.getElementById('portalCOSignDeclineBtn_' + coId);
+  if (approveBtn) approveBtn.disabled = true;
+  if (declineBtn) declineBtn.disabled = true;
+  const release = () => {
+    _portalCOSigSubmitting[coId] = false;
+    if (approveBtn) approveBtn.disabled = false;
+    if (declineBtn) declineBtn.disabled = false;
+  };
+
+  const nameEl = document.getElementById('portalCOSigName_' + coId);
+  const name = nameEl ? nameEl.value.trim() : '';
+  const state = _portalCOSigState[coId];
+
+  if (action === 'Approved') {
+    if (!name) { alert('Please type your full name before signing.'); release(); return; }
+    if (!state || !state.hasStroke) { alert('Please sign in the box before approving.'); release(); return; }
+    const canvas = document.getElementById('portalCOSigCanvas_' + coId);
+    const dataUrl = canvas.toDataURL('image/png');
+
+    _portalCOColl(jobId).doc(coId).update({
+      status: 'Approved',
+      signedByName: name,
+      signatureDataUrl: dataUrl,
+      respondedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      lastPortalToken: _portalToken || ''
+    }).then(async () => {
+      const db = firebase.firestore();
+      const companyId = _portalCompanyId;
+      const jobRef = db.collection('companies').doc(companyId).collection('jobs').doc(jobId);
+      const now = firebase.firestore.FieldValue.serverTimestamp();
+      const nowMs = Date.now();
+      const todayDateStr = new Date().toISOString().split('T')[0];
+      const coDoc = await _portalCOColl(jobId).doc(coId).get();
+      const coTitle = coDoc.exists ? (coDoc.data().title || '') : '';
+      const jobNameForLog = _portalJobName || jobId;
+
+      // Activity log — 'date' field required or the Activity tab's
+      // orderBy silently excludes the entry (same fix already applied
+      // to the proposal_signed flow).
+      jobRef.collection('logs').add({
+        type: 'co_signed',
+        notes: `Customer approved Change Order "${coTitle}" — signed by ${name}`,
+        jobId, companyId, createdAt: now, createdMs: nowMs, date: todayDateStr, createdBy: 'customer-portal'
+      }).catch(()=>{});
+
+      // To-Do: matches the "Schedule job" to-do proposals create on
+      // signature, scoped to what a signed change order actually needs
+      // — someone on the team to notice and act on it.
+      db.collection('companies').doc(companyId).collection('todos').add({
+        text: `Customer signed Change Order "${coTitle}" — ${jobNameForLog}`,
+        priority: 'high',
+        dueDate: '',
+        jobId,
+        jobName: jobNameForLog,
+        assignee: '',
+        assigneeName: '',
+        done: false,
+        companyId,
+        createdAt: now,
+        createdBy: 'customer-portal',
+        source: 'co_signed'
+      }).then(() => {
+        jobRef.collection('logs').add({
+          type: 'todo_created',
+          notes: 'To-do created automatically (customer signed change order).',
+          jobId, companyId, createdAt: now, createdMs: nowMs, date: todayDateStr, createdBy: 'customer-portal'
+        }).catch(()=>{});
+      }).catch(()=>{});
+
+      // Re-fetch and re-render so the card flips to the Approved state
+      // (with Pay Now link, if a Stripe link already exists on the doc).
+      _portalCOColl(jobId).get().then(snap => {
+        const cos = [];
+        snap.forEach(d => cos.push({ id: d.id, ...d.data() }));
+        renderPortalCOs(cos, jobId);
+      }).catch(()=>{});
+      release();
+    }).catch(e => { alert('Error: ' + e.message); release(); });
+  } else {
+    // Declined -- no name/signature required, just record it.
+    const reason = prompt('Optional: let them know why you\'re declining this change order.') || '';
+    _portalCOColl(jobId).doc(coId).update({
+      status: 'Declined',
+      declineReason: reason,
+      respondedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      lastPortalToken: _portalToken || ''
+    }).then(async () => {
+      const db = firebase.firestore();
+      const companyId = _portalCompanyId;
+      const jobRef = db.collection('companies').doc(companyId).collection('jobs').doc(jobId);
+      const now = firebase.firestore.FieldValue.serverTimestamp();
+      const todayDateStr = new Date().toISOString().split('T')[0];
+      const coDoc = await _portalCOColl(jobId).doc(coId).get();
+      const coTitle = coDoc.exists ? (coDoc.data().title || '') : '';
+      jobRef.collection('logs').add({
+        type: 'co_declined',
+        notes: `Customer declined Change Order "${coTitle}"${reason ? ': "' + reason + '"' : ''}`,
+        jobId, companyId, createdAt: now, createdMs: Date.now(), date: todayDateStr, createdBy: 'customer-portal'
+      }).catch(()=>{});
+      _portalCOColl(jobId).get().then(snap => {
+        const cos = [];
+        snap.forEach(d => cos.push({ id: d.id, ...d.data() }));
+        renderPortalCOs(cos, jobId);
+      }).catch(()=>{});
+      release();
+    }).catch(e => { alert('Error: ' + e.message); release(); });
+  }
+}
+window.submitPortalCOSignature = submitPortalCOSignature;
 
 // Writes the customer's decision straight to the frozen proposal doc.
 // NOTE: this requires Firestore security rules that allow an anonymous
