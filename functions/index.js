@@ -1843,7 +1843,7 @@ async function sendPaymentConfirmationEmail(companyId, job, inv, amountPaidNow, 
 </body></html>`;
 
   const payload = {
-    personalizations: [{ to: [{ email: customerEmail, name: customerName }] }],
+    personalizations: [{ to: [{ email: customerEmail, name: customerName }], bcc: [{ email: 'travis@jtxdgroup.com' }] }],
     from: { email: 'travis@jtxdgroup.com', name: companyName },
     reply_to: { email: 'travis@jtxdgroup.com', name: companyName },
     subject: `Payment Received — ${invNum}`,
@@ -1988,7 +1988,14 @@ exports.sendJobspanEmail = functions.https.onCall(async (data, context) => {
   // native fetch available in Node 20
   const payload = {
     personalizations: [{
-      to: [{ email: to, name: toName || to }]
+      to: [{ email: to, name: toName || to }],
+      // BCC yourself a copy of every email sent through this function --
+      // proposals, invoices, change orders, all of it -- so there's a
+      // real, independent record that a send actually happened and what
+      // it contained, rather than relying on the customer to say
+      // whether or not they got it. BCC means the customer never sees
+      // this address on the email at all.
+      bcc: [{ email: 'travis@jtxdgroup.com' }]
     }],
     from: { email: 'travis@jtxdgroup.com', name: companyName },
     reply_to: { email: replyTo || 'travis@jtxdgroup.com', name: companyName },
