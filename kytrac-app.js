@@ -9064,6 +9064,18 @@ function conInitFirebase() {
     // Firebase always fires once on init. Removing the timer means
     // the loading spinner shows until the answer arrives, no flash.
     conAuth.onAuthStateChanged(user => {
+      // Skip the ENTIRE internal team-auth flow while the customer
+      // portal is active. This listener fires on any ambient/cached
+      // Google session in the browser regardless of what page/mode is
+      // showing -- a customer viewing a ?portal= link with any Google
+      // account signed in anywhere in that browser would otherwise
+      // trigger this whole block (domain checks, roster checks,
+      // Access Restricted screen, etc.), which has nothing to do with
+      // the portal and can visually cover it. The showAccessDenied()
+      // guard alone wasn't enough -- this stops the problem at the
+      // source instead of patching one symptom of it.
+      if (new URLSearchParams(window.location.search).get('portal')) return;
+
       if (user) {
         conCurrentUser = user;
 
@@ -14058,6 +14070,21 @@ function canCreateCompany(email) {
 }
 
 function showAccessDenied(user) {
+  // Never show the internal team-roster gate over the customer portal.
+  // checkPortalMode() correctly hides the auth wall and shows the
+  // portal for any URL with a ?portal= token -- but Firebase Auth's
+  // own onAuthStateChanged listener still fires independently of that
+  // (it fires on ANY cached/ambient Google session in the browser,
+  // regardless of portal mode), and showAccessDenied() creates a
+  // brand-new full-screen overlay (z-index 99999) appended straight to
+  // document.body -- completely outside the app/portal/auth-wall
+  // elements checkPortalMode() manages. If a customer with no
+  // JOBSMETRIX account happened to have any Google session active in
+  // their browser, that overlay landed directly on top of their
+  // portal view, showing "Access Restricted" over content that was
+  // actually rendering correctly underneath it.
+  if (new URLSearchParams(window.location.search).get('portal')) return;
+
   const wall = document.getElementById('ktAuthWall');
   if (wall) wall.style.display = 'none';
   const app = document.getElementById('ktApp');
