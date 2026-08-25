@@ -26,6 +26,15 @@ jobs:
         working-directory: functions
         run: npm ci
 
+      - name: Write runtime environment variables
+        working-directory: functions
+        run: echo "SENDGRID_KEY=${{ secrets.SENDGRID_API_KEY }}" >> .env
+        # Written fresh from the GitHub secret on every deploy -- never
+        # committed to the repo (functions/.env is gitignored). The
+        # code already checks process.env.SENDGRID_KEY first, so no
+        # code changes were needed, just getting this value into the
+        # deployed function's environment.
+
       - name: Deploy to Firebase Functions
         uses: w9jds/firebase-action@master
         with:
