@@ -709,9 +709,9 @@ const QBO_FULL_ACCESS_ROLES = ['Owner', 'Project Manager', 'Accounting'];
 const crypto = require('crypto');
 
 function getQboEncryptionKey() {
-  const hex = (functions.config().qbo || {}).token_encryption_key;
+  const hex = process.env.QBO_TOKEN_ENCRYPTION_KEY || (functions.config().qbo || {}).token_encryption_key;
   if (!hex || hex.length !== 64) {
-    throw new Error('QuickBooks token encryption key is missing or invalid (functions.config().qbo.token_encryption_key must be a 32-byte hex string). See DEPLOY_QBO.md.');
+    throw new Error('QuickBooks token encryption key is missing or invalid (set QBO_TOKEN_ENCRYPTION_KEY, a 32-byte hex string). See DEPLOY_QBO.md.');
   }
   return Buffer.from(hex, 'hex');
 }
