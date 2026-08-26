@@ -12793,6 +12793,7 @@ async function emailInvoiceToCustomer(jobId, invId) {
   // remaining balance every send. If Stripe fails, we send with NO pay
   // button rather than silently falling back to a QuickBooks link.
   let stripePayLink = '';
+  let stripeErrorMsg = '';
   try {
     if (conFunctions && (inv.total || 0) > (inv.amtPaid || 0)) {
       const createLink = conFunctions.httpsCallable('createStripePaymentLink');
@@ -12800,15 +12801,20 @@ async function emailInvoiceToCustomer(jobId, invId) {
       if (result.data?.url) stripePayLink = result.data.url;
     }
   } catch (e) {
-    console.warn('Stripe payment link not generated:', e.message);
+    stripeErrorMsg = e.message || String(e);
+    console.warn('Stripe payment link not generated:', stripeErrorMsg);
   }
 
   // If there's a balance owed but Stripe couldn't produce a link, stop
   // and tell Travis rather than emailing a linkless (or worse, QB-linked)
-  // invoice.
+  // invoice. The real error now shows directly in this alert -- not
+  // just the browser console -- since debugging from a phone with no
+  // console access otherwise means finding a computer just to read
+  // one error message.
   if ((inv.total || 0) > (inv.amtPaid || 0) && !stripePayLink) {
     alert('Could not generate a Stripe payment link for this invoice.\n\n'
       + 'The invoice was NOT sent (to avoid emailing a QuickBooks link or no link at all).\n\n'
+      + (stripeErrorMsg ? ('Actual error: ' + stripeErrorMsg + '\n\n') : '')
       + 'Check that Stripe is connected under Settings, then try again.');
     return;
   }
@@ -24870,17 +24876,20 @@ async function emailChangeOrderToCustomer(coId) {
   // order with no way for the customer to actually pay it.
   const balance = (co.amount || 0) - (co.amtPaid || 0);
   let stripePayLink = '';
+  let stripeErrorMsg = '';
   if (balance > 0) {
     try {
       const createLink = conFunctions.httpsCallable('createStripePaymentLinkForCO');
       const result = await createLink({ companyId: currentCompanyId, jobId: conCurrentJobId, coId });
       if (result.data?.url) stripePayLink = result.data.url;
     } catch (e) {
-      console.warn('Stripe payment link not generated for change order:', e.message);
+      stripeErrorMsg = e.message || String(e);
+      console.warn('Stripe payment link not generated for change order:', stripeErrorMsg);
     }
     if (!stripePayLink) {
       alert('Could not generate a Stripe payment link for this change order.\n\n'
         + 'The change order was NOT sent.\n\n'
+        + (stripeErrorMsg ? ('Actual error: ' + stripeErrorMsg + '\n\n') : '')
         + 'Check that Stripe is connected under Settings, then try again.');
       return;
     }
