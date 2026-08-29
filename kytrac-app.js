@@ -28660,6 +28660,193 @@ const GUIDED_QTY_LABELS = {
   eaveLength: 'Total eave / perimeter length (linear feet)'
 };
 
+
+// ============================================================
+// ROOM_WALKTHROUGHS -- data for the continuous room walkthrough
+// engine above. Hallway is the first room built out here; it also
+// serves Bedrooms/Living Room/Dining Room/Entry/Stairwell since
+// they share the same generic phase list, but each of those needs
+// its own entry added (copy Hallway's shape) rather than assuming
+// name-based fallback -- keeps every room's wiring explicit and
+// reviewable rather than implicit.
+//
+// NOTE ON PRICING: several rates referenced below (LVP Flooring
+// Labor, Drywall Labor/Sq Ft) are flagged as still needing real
+// confirmed numbers -- see the pricing sanity-check docs. They're
+// wired to the best real catalog entry available today on purpose,
+// per the "ship it, fix pricing as real estimates surface it" plan.
+// ============================================================
+
+const ROOM_WALKTHROUGHS = {
+  "Hallway": {
+    categories: [
+      { id:'framing', label:'Framing', gate:'Any framing work in the hallway?', steps:[
+        { id:'wallmod', text:'Wall modification (widening a doorway, new opening)?', trade:'0600 Framing',
+          onYes:{ ownQty:{key:'framingWallLf', label:'How many linear feet of wall?'},
+                  items: ctx => [{name:'Framing/LF (2x4 or 2x6)', qty: ctx.framingWallLf}] } },
+        { id:'studwall', text:'New stud wall section?', trade:'0600 Framing',
+          onYes:{ ownQty:{key:'framingStudCount', label:'How many studs?'},
+                  items: ctx => [{name:'2 in. x 4 in. x 96 in. Prime Whitewood Stud', qty: ctx.framingStudCount},
+                                 {name:'Labor to install a stud', qty: ctx.framingStudCount}] } },
+        { id:'blocking', text:'Blocking for handrail or wall-mounted fixtures?', trade:'0600 Framing',
+          onYes:{ ownQty:{key:'framingBlockingCount', label:'How many blocking locations?'},
+                  items: ctx => [{name:'2 in. x 4 in. x 96 in. Prime Whitewood Stud', qty: ctx.framingBlockingCount},
+                                 {name:'Labor to install a stud', qty: ctx.framingBlockingCount}] } }
+      ]},
+      { id:'hvacRough', label:'HVAC: Rough', gate:'Any HVAC rough-in work?', steps:[
+        { id:'ductrun', text:'Duct run relocation or extension?', trade:'1200 Mechanical',
+          onYes:{ ownQty:{key:'hvacDuctLf', label:'How many linear feet of duct?'},
+                  items: ctx => [{name:'4 in. x 5 ft. Round Metal Duct Pipe by Master Flow', qty: Math.ceil(ctx.hvacDuctLf/5)}] } },
+        { id:'newregister', text:'New register/vent opening?', trade:'1200 Mechanical',
+          onYes:{ ownQty:{key:'hvacRegisterCount', label:'How many registers?'},
+                  items: ctx => [{name:'Everbilt 4 in. x 10 in. 2-Way Steel Floor Register in Brown', qty: ctx.hvacRegisterCount},
+                                 {name:'Labor to install floor register', qty: ctx.hvacRegisterCount}] } }
+      ]},
+      { id:'elecRough', label:'Electrical: Rough', gate:'Any electrical rough-in work?', steps:[
+        { id:'outlets', text:'New outlet(s)?', trade:'1000 Electrical',
+          onYes:{ ownQty:{key:'elecOutletCount', label:'How many outlets?'},
+                  items: ctx => [{name:'15 Amp 2-Wire Duplex Outlet, White', qty: ctx.elecOutletCount},
+                                 {name:'Labor to Install outlet', qty: ctx.elecOutletCount}] } },
+        { id:'switches', text:'New switch(es)?', trade:'1000 Electrical',
+          onYes:{ ownQty:{key:'elecSwitchCount', label:'How many switches?'},
+                  select:{key:'elecSwitchType', label:'Switch type?', options:['Single-pole','3-way']},
+                  items: ctx => ctx.elecSwitchType === '3-way'
+                    ? [{name:'Leviton 15 Amp 3-Way Toggle Switch, White', qty: ctx.elecSwitchCount},
+                       {name:'Labor to install switch', qty: ctx.elecSwitchCount}]
+                    : [{name:'15 Amp Single-Pole Toggle Light Switch, White', qty: ctx.elecSwitchCount},
+                       {name:'Labor to install switch', qty: ctx.elecSwitchCount}] } },
+        { id:'wiring', text:'New wiring run?', trade:'1000 Electrical',
+          onYes:{ ownQty:{key:'elecWireLf', label:'How many linear feet of wire?'},
+                  items: ctx => [{name:'SOUTHWIRE 100 ft. 12/2 Solid Romex SIMpull CU NM-B W/G Wire', qty: Math.ceil(ctx.elecWireLf/100)},
+                                 {name:'Labor To Install Electrical Wire', qty: ctx.elecWireLf}] } },
+        { id:'lightrough', text:'Recessed or ceiling light rough-in?', trade:'1000 Electrical',
+          onYes:{ ownQty:{key:'elecLightRoughCount', label:'How many light locations?'},
+                  items: ctx => [{name:'Labor to install old work box', qty: ctx.elecLightRoughCount}] } }
+      ]},
+      { id:'insulation', label:'Insulation', gate:'Insulation needed?', steps:[
+        { id:'wallins', text:'Wall insulation?', trade:'1300 Insulation',
+          onYes:{ ownQty:{key:'insWallSqft', label:'How many square feet of wall?'},
+                  items: ctx => [{name:'Owens Corning R-15 Thermafiber UltraBatt Unfaced Mineral Wool Insulation Batt 15in. x 47in', qty: Math.ceil(ctx.insWallSqft/4.9)},
+                                 {name:'Insulation Batting Labor Sq Ft', qty: ctx.insWallSqft}] } },
+        { id:'ceilins', text:'Ceiling insulation?', trade:'1300 Insulation',
+          onYes:{ ownQty:{key:'insCeilSqft', label:'How many square feet of ceiling?'},
+                  items: ctx => [{name:'Owens Corning R-30 PINK Unfaced Fiberglass Insulation Roll 23 in. x 25 ft.', qty: Math.ceil(ctx.insCeilSqft/47.9)},
+                                 {name:'Insulation Batting Labor Sq Ft', qty: ctx.insCeilSqft}] } }
+      ]},
+      { id:'drywall', label:'Drywall', gate:'Drywall work?', steps:[
+        { id:'walldw', text:'Wall drywall replace/patch?', trade:'1400 Drywall',
+          onYes:{ ownQty:{key:'dwWallSqft', label:'How many square feet of wall?'},
+                  items: ctx => [{name:'1/2 in. x 4 ft. x 8 ft. UltraLight Drywall', qty: Math.ceil(ctx.dwWallSqft/32)},
+                                 {name:'Drywall Labor/ Sq Ft', qty: ctx.dwWallSqft}] } },
+        { id:'ceildw', text:'Ceiling drywall replace/patch?', trade:'1400 Drywall',
+          onYes:{ ownQty:{key:'dwCeilSqft', label:'How many square feet of ceiling?'},
+                  items: ctx => [{name:'1/2 in. x 4 ft. x 8 ft. UltraLight Drywall', qty: Math.ceil(ctx.dwCeilSqft/32)},
+                                 {name:'Drywall Labor/ Sq Ft', qty: ctx.dwCeilSqft}] } }
+      ]},
+      { id:'doors', label:'Doors', gate:'Any door work?', steps:[
+        { id:'doorreplace', text:'Door replacement?', trade:'1500 Doors & Windows',
+          onYes:{ ownQty:{key:'doorCount', label:'How many doors?'},
+                  select:{key:'doorType', label:'Door type?', options:['Standard swing','Pocket/Sliding','Bi-fold (linen closet)']},
+                  items: ctx => {
+                    const map = {
+                      'Standard swing': 'Steves & Sons 30 in. x 80 in. 6-Panel Textured Hollow Core White Primed Composite Interior Door Slab',
+                      'Pocket/Sliding': 'TRUporte 60 in. x 80 in. 230 Series Steel White Mirror Interior Sliding Door',
+                      'Bi-fold (linen closet)': 'JELD-WEN 24 in. x 80 in. 6 Panel Colonist Primed Textured Molded Composite Hollow Core Closet Bi-Fold Door'
+                    };
+                    return [{name: map[ctx.doorType], qty: ctx.doorCount},
+                            {name:'Labor to install pre hung interior door', qty: ctx.doorCount}];
+                  } } },
+        { id:'doorhw', text:'Hardware only (knob, hinges, closer)?', trade:'1500 Doors & Windows',
+          onYes:{ ownQty:{key:'doorHwCount', label:'How many doors need hardware?'},
+                  items: ctx => [{name:'Kwikset Tylo Satin Chrome Passage Hall/Closet Door Knob', qty: ctx.doorHwCount},
+                                 {name:'Labor to install Passage Knob', qty: ctx.doorHwCount}] } }
+      ]},
+      { id:'windows', label:'Windows', gate:"Any window work? (some hallways have one — transom or end-of-hall window)", steps:[
+        { id:'windowreplace', text:'Window replacement?', trade:'1500 Doors & Windows',
+          onYes:{ ownQty:{key:'windowCount', label:'How many windows?'},
+                  items: ctx => [{name:'Window replacement', qty: ctx.windowCount}] } }
+      ]},
+      { id:'trim', label:'Trim', gate:'Trim work?', steps:[
+        { id:'baseboard', text:'Baseboards?', trade:'2100 Trimwork',
+          onYes:{ ownQty:{key:'trimBaseLf', label:'How many linear feet of baseboard?'},
+                  items: ctx => [{name:'WM 623 9/16 in. x 3-1/4 in. x 144 in. Primed Finger-Jointed Pine Base Moulding Pro Pack (10-Pack)', qty: Math.ceil(ctx.trimBaseLf/120)},
+                                 {name:'Baseboard Install', qty: ctx.trimBaseLf}] } },
+        { id:'casing', text:'Door/window casing?', trade:'2100 Trimwork',
+          onYes:{ ownQty:{key:'trimCasingLf', label:'How many linear feet of casing?'},
+                  items: ctx => [{name:'CMPC WM 356 11/16 in. x 2 1/4 in. x 168 in. Pine Primed Finger-Jointed Casing Pro Pack 168 LF (12-Pieces)', qty: Math.ceil(ctx.trimCasingLf/168)}] } },
+        { id:'chairrail', text:'Chair rail?', trade:'2100 Trimwork',
+          onYes:{ ownQty:{key:'trimChairLf', label:'How many linear feet of chair rail?'},
+                  items: ctx => [{name:'Alexandria Moulding 390 11/16 in. x 2−1/2 in. Primed Finger Jointed Wood Chair Rail Moulding (Sold by Linear Foot)', qty: ctx.trimChairLf}] } }
+      ]},
+      { id:'painting', label:'Painting', gate:'Painting?', steps:[
+        { id:'wallpaint', text:'Walls?', trade:'2300 Painting',
+          onYes:{ ownQty:{key:'paintWallSqft', label:'How many square feet of wall?'},
+                  select:{key:'paintCoats', label:'1 coat or 2 coats?', options:['1 coat','2 coats']},
+                  items: ctx => ctx.paintCoats === '2 coats'
+                    ? [{name:'Paint/sqft - 2 coats', qty: ctx.paintWallSqft}]
+                    : [{name:'Paint/sqft - 1 coat', qty: ctx.paintWallSqft},
+                       {name:'Paint Labor for 1 coat per sq ft', qty: ctx.paintWallSqft}] } },
+        { id:'ceilpaint', text:'Ceiling?', trade:'2300 Painting',
+          onYes:{ ownQty:{key:'paintCeilSqft', label:'How many square feet of ceiling?'},
+                  items: ctx => [{name:'Paint/sqft - 1 coat', qty: ctx.paintCeilSqft},
+                                 {name:'Paint Labor for 1 coat per sq ft', qty: ctx.paintCeilSqft}] } },
+        { id:'trimpaint', text:'Trim/doors paint?', trade:'2300 Painting',
+          onYes:{ ownQty:{key:'paintTrimLf', label:'How many linear feet of trim/doors (approx.)?'},
+                  items: ctx => [{name:'Paint Labor for 1 coat per sq ft', qty: ctx.paintTrimLf}] } }
+      ]},
+      { id:'flooring', label:'Flooring', gate:'Flooring work?', steps:[
+        { id:'floorfinish', text:'Flooring work — what finish?', trade:'1700 Flooring',
+          onYes:{ ownQty:{key:'floorSqft', label:'How many square feet of floor?'},
+                  select:{key:'floorFinish', label:'Finish?', options:['LVP - Economy','LVP - Mid-Grade','LVP - High-End','Carpet','Hardwood refinish','Keep existing']},
+                  items: ctx => {
+                    if (ctx.floorFinish === 'Keep existing') return [];
+                    const lvpMap = {
+                      'LVP - Economy': 'LVP: Driftwood, 7"x48"x4.5mm/12mil',
+                      'LVP - Mid-Grade': 'LVP: French Oak, 7"x48"x5mm/20mil',
+                      'LVP - High-End': 'LVP: French Oak, 7"x48"x6.5mm/24mil'
+                    };
+                    if (lvpMap[ctx.floorFinish]) return [{name: lvpMap[ctx.floorFinish], qty: ctx.floorSqft},
+                                                          {name:'LVP Flooring Labor', qty: ctx.floorSqft}];
+                    if (ctx.floorFinish === 'Carpet') return [{name:'Carpet replacement (sqft)', qty: ctx.floorSqft}];
+                    if (ctx.floorFinish === 'Hardwood refinish') return [{name:'Hardwood refinishing per sqft', qty: ctx.floorSqft}];
+                    return [];
+                  } } },
+        { id:'transition', text:'Transition strip(s) at adjoining rooms?', trade:'1700 Flooring',
+          onYes:{ ownQty:{key:'floorTransitionCount', label:'How many transition strips?'},
+                  items: ctx => [{name:'Transition Strip', qty: ctx.floorTransitionCount},
+                                 {name:'Transition Strip Labor', qty: ctx.floorTransitionCount}] } }
+      ]},
+      { id:'hvacFinal', label:'HVAC: Final', gate:'HVAC final trim-out?', steps:[
+        { id:'registerfinal', text:'Register/grille install?', trade:'1200 Mechanical',
+          onYes:{ ownQty:{key:'hvacFinalRegisterCount', label:'How many registers?'},
+                  items: ctx => [{name:'Everbilt 4 in. x 10 in. 2-Way Steel Floor Register in Brown', qty: ctx.hvacFinalRegisterCount},
+                                 {name:'Labor to install floor register', qty: ctx.hvacFinalRegisterCount}] } },
+        { id:'thermostat', text:'Thermostat (if hallway houses one)?', trade:'1200 Mechanical',
+          onYes:{ items: ctx => [{name:'1 Week Programmable Thermostat', qty: 1},
+                                  {name:'Programmable Thermostat Install Labor', qty: 1}] } }
+      ]},
+      { id:'elecFinal', label:'Electrical: Final', gate:'Electrical final trim-out?', steps:[
+        { id:'outletplates', text:'Outlet covers/wall plates?', trade:'1000 Electrical',
+          onYes:{ ownQty:{key:'elecPlateCount', label:'How many outlet plates?'},
+                  items: ctx => [{name:'1-Gang Duplex Outlet Wall Plate, White', qty: ctx.elecPlateCount},
+                                 {name:'Labor to install wall plate', qty: ctx.elecPlateCount}] } },
+        { id:'switchplates', text:'Switch plates?', trade:'1000 Electrical',
+          onYes:{ ownQty:{key:'elecSwitchPlateCount', label:'How many switch plates?'},
+                  items: ctx => [{name:'White 1-Gang Toggle Wall Plate (Switch blank) (1-Pack) by Leviton', qty: ctx.elecSwitchPlateCount},
+                                 {name:'Labor to install switch wall plate', qty: ctx.elecSwitchPlateCount}] } },
+        { id:'lightfixture', text:'Light fixture install (flush mount/sconce)?', trade:'1000 Electrical',
+          onYes:{ ownQty:{key:'elecFixtureCount', label:'How many fixtures?'},
+                  select:{key:'elecFixtureType', label:'Fixture style?', options:['Flush mount','Sconce']},
+                  items: ctx => ctx.elecFixtureType === 'Sconce'
+                    ? [{name:'1-Light Oil Rubbed Bronze Sconce with Tea Stained Glass Shade by Hampton Bay', qty: ctx.elecFixtureCount},
+                       {name:'Labor to install Sconce', qty: ctx.elecFixtureCount}]
+                    : [{name:'Commercial Electric 15 in. Brushed Nickel New Ultra-Low Profile Integrated LED Flush Mount 5CCT (2-Pack)', qty: Math.ceil(ctx.elecFixtureCount/2)},
+                       {name:'Labor to install flush mount light', qty: ctx.elecFixtureCount}] } }
+      ]}
+    ]
+  }
+};
+
 const GUIDED_SCRIPTS = {
   '0900 Roofing': {
     label: 'Roofing',
@@ -28785,10 +28972,17 @@ function guidedUpdateBackBtn() {
 function openGuidedAdd() {
   _guidedCategory = null; _guidedRoom = null; _guidedTrade = null; _guidedPhaseLabel = null;
   _guidedScript = null; _guidedStepIdx = 0; _guidedCtx = {}; _guidedCart = []; _guidedHistory = [];
+  _wtRoom = null; _wtWalkthrough = null; _wtCatIdx = 0; _wtStepIdx = 0; _wtCtx = {}; _wtCart = []; _wtHistory = [];
   guidedRenderCategoryScreen();
   kOpen('guidedAddModal');
 }
 window.openGuidedAdd = openGuidedAdd;
+
+// Dispatches the modal's single Back button to whichever engine is
+// currently active -- the original phase-by-phase GUIDED_SCRIPTS flow
+// (Roofing) or the newer continuous ROOM_WALKTHROUGHS flow.
+function guidedBackDispatch() { if (_wtWalkthrough) wtBack(); else guidedBack(); }
+window.guidedBackDispatch = guidedBackDispatch;
 
 function guidedRenderCategoryScreen() {
   document.getElementById('guidedBreadcrumb').textContent = 'What are we working on today?';
@@ -28841,6 +29035,10 @@ function guidedPickRoom(room) {
   if (!room) return;
   guidedPush({ t: 'room' });
   _guidedRoom = room;
+  // Rooms with a continuous ROOM_WALKTHROUGHS entry get the new
+  // one-session-through-every-category experience instead of the
+  // old pick-one-phase-at-a-time dropdown.
+  if (ROOM_WALKTHROUGHS[room]) { wtStart(room); return; }
   guidedRenderPhaseScreen();
 }
 window.guidedPickRoom = guidedPickRoom;
@@ -29093,6 +29291,312 @@ async function guidedCommit() {
   alert(`✅ Added ${allItems.length} item${allItems.length!==1?'s':''} to ${roomName} › ${tradeName} from your answers.`);
 }
 window.guidedCommit = guidedCommit;
+
+// ============================================================
+// ROOM WALKTHROUGH ENGINE -- continuous multi-category Guided
+// Questions. Separate from the phase-by-phase GUIDED_SCRIPTS
+// engine above (which Roofing still uses) so nothing about that
+// working flow is touched. A room with an entry here gets the
+// new continuous experience instead of the phase dropdown.
+//
+// Shape: ROOM_WALKTHROUGHS[roomName] = { categories: [ {
+//   id, label, gate: "yes/no question text",
+//   steps: [ { id, text, trade: 'costCode', onYes: { needs, ownQty, select, items(ctx) } } ]
+// } ] }
+//
+// ctx persists across the WHOLE room (all categories), so a
+// value captured in one category (e.g. wall sqft) is available
+// to a later category's items() function if it wants it -- none
+// of the Hallway steps below need that yet, but the mechanism
+// supports it for Bathroom/Kitchen's cross-category reuse later.
+// ============================================================
+
+let _wtRoom = null, _wtWalkthrough = null;
+let _wtCatIdx = 0, _wtStepIdx = 0, _wtCtx = {}, _wtCart = [];
+let _wtHistory = [];
+
+function wtSnapshot(screen) {
+  return { screen, ctx: { ..._wtCtx }, cart: [..._wtCart],
+           catIdx: _wtCatIdx, stepIdx: _wtStepIdx };
+}
+function wtPush(screen) { _wtHistory.push(wtSnapshot(screen)); wtUpdateBackBtn(); }
+function wtUpdateBackBtn() {
+  // Always available while a walkthrough is active: with no history yet,
+  // Back returns to the room picker (see wtBack); once questions have
+  // been answered, it rewinds one question at a time like the old engine.
+  const btn = document.getElementById('guidedBackBtn');
+  if (btn) btn.style.display = 'inline-block';
+}
+
+function wtStart(room) {
+  _wtRoom = room; _wtWalkthrough = ROOM_WALKTHROUGHS[room];
+  _wtCatIdx = 0; _wtStepIdx = 0; _wtCtx = {}; _wtCart = []; _wtHistory = [];
+  wtRenderCategoryGate();
+}
+
+function wtRenderCategoryGate() {
+  const cats = _wtWalkthrough.categories;
+  if (_wtCatIdx >= cats.length) { wtShowReview(); return; }
+  const cat = cats[_wtCatIdx];
+  document.getElementById('guidedBreadcrumb').textContent =
+    `${_wtRoom} › ${cat.label} (${_wtCatIdx+1} of ${cats.length})`;
+  document.getElementById('guidedBody').innerHTML = `
+    <div style="font-size:1.05rem;font-weight:700;margin-bottom:20px">${esc(cat.gate)}</div>
+    <div style="display:flex;gap:10px">
+      <button class="btn-amber" style="flex:1;padding:14px" onclick="wtGateAnswer(true)">Yes</button>
+      <button class="btn" style="flex:1;padding:14px" onclick="wtGateAnswer(false)">No</button>
+    </div>`;
+  document.getElementById('guidedFooter').innerHTML =
+    `<span class="small muted">Category ${_wtCatIdx+1} of ${cats.length}</span>`;
+  wtUpdateBackBtn();
+}
+
+function wtGateAnswer(yes) {
+  wtPush({ t: 'gate', catIdx: _wtCatIdx });
+  if (!yes) { _wtCatIdx += 1; _wtStepIdx = 0; wtRenderCategoryGate(); return; }
+  _wtStepIdx = 0;
+  wtRenderStep();
+}
+window.wtGateAnswer = wtGateAnswer;
+
+function wtRenderStep() {
+  const cat = _wtWalkthrough.categories[_wtCatIdx];
+  const steps = cat.steps;
+  if (_wtStepIdx >= steps.length) { _wtCatIdx += 1; _wtStepIdx = 0; wtRenderCategoryGate(); return; }
+  const step = steps[_wtStepIdx];
+  document.getElementById('guidedBreadcrumb').textContent = `${_wtRoom} › ${cat.label}`;
+  document.getElementById('guidedBody').innerHTML = `
+    <div style="font-size:1.05rem;font-weight:700;margin-bottom:20px">${esc(step.text)}</div>
+    <div style="display:flex;gap:10px">
+      <button class="btn-amber" style="flex:1;padding:14px" onclick="wtAnswer(true)">Yes</button>
+      <button class="btn" style="flex:1;padding:14px" onclick="wtAnswer(false)">No</button>
+    </div>`;
+  document.getElementById('guidedFooter').innerHTML =
+    `<span class="small muted">${esc(cat.label)} — question ${_wtStepIdx+1} of ${steps.length}</span>`;
+  wtUpdateBackBtn();
+}
+
+function wtAnswer(yes) {
+  const idx = _wtStepIdx;
+  wtPush({ t: 'yesno', catIdx: _wtCatIdx, stepIdx: idx });
+  if (!yes) { _wtStepIdx = idx + 1; wtRenderStep(); return; }
+  wtResolveYes(idx);
+}
+window.wtAnswer = wtAnswer;
+
+function wtResolveYes(idx) {
+  const cat = _wtWalkthrough.categories[_wtCatIdx];
+  const step = cat.steps[idx];
+  const onYes = step.onYes;
+  const missingShared = (onYes.needs || []).filter(k => _wtCtx[k] === undefined);
+  if (missingShared.length) { wtRenderSharedQty(idx, missingShared[0]); return; }
+  if (onYes.ownQty && _wtCtx[onYes.ownQty.key] === undefined) { wtRenderOwnQty(idx); return; }
+  if (onYes.select && _wtCtx[onYes.select.key] === undefined) { wtRenderSelect(idx); return; }
+  const items = onYes.items(_wtCtx) || [];
+  _wtCart.push(...items.map(it => ({ ...it, trade: step.trade, category: cat.label })));
+  _wtStepIdx = idx + 1;
+  wtRenderStep();
+}
+
+function wtRenderSharedQty(idx, key) {
+  document.getElementById('guidedBody').innerHTML = `
+    <div style="font-size:1.05rem;font-weight:700;margin-bottom:14px">${esc(GUIDED_QTY_LABELS[key] || key)}</div>
+    <input id="wtQtyInput" type="number" min="0" step="0.1" style="width:100%;padding:12px;font-size:1rem;margin-bottom:14px" />
+    <button class="btn-amber" style="width:100%;padding:12px" onclick="wtSubmitSharedQty(${idx},'${key}')">Next →</button>`;
+  document.getElementById('guidedFooter').innerHTML = '';
+  wtUpdateBackBtn();
+  setTimeout(() => document.getElementById('wtQtyInput')?.focus(), 50);
+}
+function wtSubmitSharedQty(idx, key) {
+  const val = parseFloat(document.getElementById('wtQtyInput').value);
+  if (isNaN(val) || val < 0) { alert('Enter a number 0 or greater.'); return; }
+  wtPush({ t: 'sharedQty', catIdx: _wtCatIdx, stepIdx: idx, key });
+  _wtCtx[key] = val;
+  wtResolveYes(idx);
+}
+window.wtSubmitSharedQty = wtSubmitSharedQty;
+
+function wtRenderOwnQty(idx) {
+  const cat = _wtWalkthrough.categories[_wtCatIdx];
+  const onYes = cat.steps[idx].onYes;
+  document.getElementById('guidedBody').innerHTML = `
+    <div style="font-size:1.05rem;font-weight:700;margin-bottom:14px">${esc(onYes.ownQty.label)}</div>
+    <input id="wtQtyInput2" type="number" min="0" step="0.1" style="width:100%;padding:12px;font-size:1rem;margin-bottom:14px" />
+    <button class="btn-amber" style="width:100%;padding:12px" onclick="wtSubmitNumber(${idx})">Next →</button>`;
+  document.getElementById('guidedFooter').innerHTML = '';
+  wtUpdateBackBtn();
+  setTimeout(() => document.getElementById('wtQtyInput2')?.focus(), 50);
+}
+function wtSubmitNumber(idx) {
+  const cat = _wtWalkthrough.categories[_wtCatIdx];
+  const onYes = cat.steps[idx].onYes;
+  const val = parseFloat(document.getElementById('wtQtyInput2').value);
+  if (isNaN(val) || val < 0) { alert('Enter a number 0 or greater.'); return; }
+  wtPush({ t: 'ownQty', catIdx: _wtCatIdx, stepIdx: idx });
+  _wtCtx[onYes.ownQty.key] = val;
+  wtResolveYes(idx);
+}
+window.wtSubmitNumber = wtSubmitNumber;
+
+function wtRenderSelect(idx) {
+  const cat = _wtWalkthrough.categories[_wtCatIdx];
+  const onYes = cat.steps[idx].onYes;
+  document.getElementById('guidedBody').innerHTML = `
+    <div style="font-size:1.05rem;font-weight:700;margin-bottom:14px">${esc(onYes.select.label)}</div>
+    <select id="wtSelectInput" style="width:100%;padding:12px;font-size:.92rem;margin-bottom:14px">
+      ${onYes.select.options.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}
+    </select>
+    <button class="btn-amber" style="width:100%;padding:12px" onclick="wtSubmitSelect(${idx})">Next →</button>`;
+  document.getElementById('guidedFooter').innerHTML = '';
+  wtUpdateBackBtn();
+}
+function wtSubmitSelect(idx) {
+  const cat = _wtWalkthrough.categories[_wtCatIdx];
+  const onYes = cat.steps[idx].onYes;
+  const val = document.getElementById('wtSelectInput').value;
+  wtPush({ t: 'select', catIdx: _wtCatIdx, stepIdx: idx });
+  _wtCtx[onYes.select.key] = val;
+  wtResolveYes(idx);
+}
+window.wtSubmitSelect = wtSubmitSelect;
+
+function wtBack() {
+  if (!_wtHistory.length) {
+    // At the very start of the walkthrough (no questions answered yet) --
+    // Back returns to the old engine's room picker, since that's still
+    // the shared entry point both engines launch from.
+    _wtWalkthrough = null; _wtRoom = null;
+    guidedRenderRoomScreen();
+    guidedUpdateBackBtn();
+    return;
+  }
+  const prev = _wtHistory.pop();
+  _wtCtx = prev.ctx; _wtCart = prev.cart;
+  _wtCatIdx = prev.catIdx; _wtStepIdx = prev.stepIdx;
+  switch (prev.screen.t) {
+    case 'gate':      wtRenderCategoryGate(); break;
+    case 'yesno':     wtRenderStep(); break;
+    case 'sharedQty': wtRenderSharedQty(prev.screen.stepIdx, prev.screen.key); break;
+    case 'ownQty':    wtRenderOwnQty(prev.screen.stepIdx); break;
+    case 'select':    wtRenderSelect(prev.screen.stepIdx); break;
+    default:          wtRenderCategoryGate();
+  }
+  wtUpdateBackBtn();
+}
+window.wtBack = wtBack;
+
+function wtShowReview() {
+  let totalPrice = 0;
+  const rowsByCat = {};
+  for (const entry of _wtCart) {
+    const catalog = CATALOG_DATA[entry.trade] || [];
+    const cat = catalog.find(i => i.name === entry.name);
+    if (!cat) continue;
+    if (!rowsByCat[entry.category]) rowsByCat[entry.category] = '';
+    if (cat.materials) {
+      const lineTotal = entry.qty * (cat.materials.unitPrice || 0);
+      totalPrice += lineTotal;
+      rowsByCat[entry.category] += `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(110,145,210,.08);font-size:.83rem">
+        <span>${esc(cat.name)} <span class="small muted">(${entry.qty} ${esc(cat.materials.unit||'')})</span></span>
+        <span>$${lineTotal.toFixed(2)}</span></div>`;
+    }
+    if (cat.labor) {
+      const lineTotal = entry.qty * (cat.labor.unitPrice || 0);
+      totalPrice += lineTotal;
+      rowsByCat[entry.category] += `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(110,145,210,.08);font-size:.83rem;color:#4d8dff">
+        <span>${esc(cat.labor.desc||('Labor - '+cat.name))} <span class="small muted">(${entry.qty} ${esc(cat.labor.unit||'')})</span></span>
+        <span>$${lineTotal.toFixed(2)}</span></div>`;
+    }
+  }
+  const sections = Object.keys(rowsByCat).map(catLabel => `
+    <div style="font-weight:700;margin:14px 0 4px;color:var(--accent,#d97706)">${esc(catLabel)}</div>
+    ${rowsByCat[catLabel]}`).join('');
+
+  document.getElementById('guidedBreadcrumb').textContent = `${_wtRoom} — Review`;
+  document.getElementById('guidedBody').innerHTML = `
+    <div style="font-weight:700;margin-bottom:4px">Here's the full estimate built from your answers:</div>
+    ${sections || '<div class="small muted" style="padding:12px 0">No items — every question came back No.</div>'}
+    <div style="display:flex;justify-content:space-between;font-weight:800;padding:14px 0 0;margin-top:6px;border-top:2px solid rgba(217,119,6,.3)">
+      <span>Total</span><span>$${totalPrice.toFixed(2)}</span>
+    </div>`;
+  document.getElementById('guidedFooter').innerHTML = _wtCart.length
+    ? `<button class="btn-amber" style="padding:10px 18px" onclick="wtCommit()">✅ Add to Estimate</button>`
+    : '';
+  wtUpdateBackBtn();
+}
+
+async function wtCommit() {
+  if (!conDb || !conCurrentJobId) return;
+  const roomName = _wtRoom;
+
+  let group = estGroups.find(g => g.name.toLowerCase() === roomName.toLowerCase());
+  if (!group) {
+    const ref = await coll('jobs').doc(conCurrentJobId).collection('estimateGroups').add({
+      name: roomName, order: estGroups.length, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    group = { id: ref.id, name: roomName, order: estGroups.length, subgroups: [], directItems: [] };
+    estGroups.push(group);
+  }
+
+  const addPromises = [];
+  let itemCount = 0;
+  // Group cart entries by category so each category becomes its own subgroup,
+  // matching the tree's structure -- even though entries within a category may
+  // span several different trade catalogs (e.g. Bathroom's Tub/Shower touches
+  // Plumbing, Tiling, and Specialty Finishes all under one subgroup).
+  const byCategory = {};
+  for (const entry of _wtCart) {
+    if (!byCategory[entry.category]) byCategory[entry.category] = [];
+    byCategory[entry.category].push(entry);
+  }
+
+  for (const catLabel of Object.keys(byCategory)) {
+    let subgroup = group.subgroups?.find(s => s.name.toLowerCase() === catLabel.toLowerCase());
+    if (!subgroup) {
+      const subRef = await coll('jobs').doc(conCurrentJobId).collection('estimateGroups')
+        .doc(group.id).collection('subgroups').add({
+          name: catLabel, order: group.subgroups?.length || 0, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      subgroup = { id: subRef.id, name: catLabel, order: group.subgroups?.length || 0, items: [] };
+      if (!group.subgroups) group.subgroups = [];
+      group.subgroups.push(subgroup);
+    }
+    let order = subgroup.items?.length || 0;
+    for (const entry of byCategory[catLabel]) {
+      const catalog = CATALOG_DATA[entry.trade] || [];
+      const cat = catalog.find(i => i.name === entry.name);
+      if (!cat) continue;
+      if (cat.materials) {
+        const uc = cat.materials.unitCost || 0, up = cat.materials.unitPrice || 0;
+        addPromises.push(coll('jobs').doc(conCurrentJobId).collection('estimateGroups').doc(group.id)
+          .collection('subgroups').doc(subgroup.id).collection('items').add({
+            desc: cat.name, qty: entry.qty, unit: cat.materials.unit || 'ea', costType: 'Materials',
+            unitCost: uc, markup: (uc>0&&up>0) ? Math.round((up/uc-1)*100) : getDefaultMarkupForCostType('Materials'),
+            unitPrice: up, notes: '', order: order++, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+          }));
+        itemCount++;
+      }
+      if (cat.labor) {
+        const uc = cat.labor.unitCost || 0, up = cat.labor.unitPrice || 0;
+        addPromises.push(coll('jobs').doc(conCurrentJobId).collection('estimateGroups').doc(group.id)
+          .collection('subgroups').doc(subgroup.id).collection('items').add({
+            desc: cat.labor.desc || ('Labor - '+cat.name), qty: entry.qty, unit: cat.labor.unit || 'hr', costType: 'Labor',
+            unitCost: uc, markup: (uc>0&&up>0) ? Math.round((up/uc-1)*100) : getDefaultMarkupForCostType('Labor'),
+            unitPrice: up, notes: '', order: order++, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+          }));
+        itemCount++;
+      }
+    }
+  }
+
+  await Promise.all(addPromises);
+  kClose('guidedAddModal');
+  const estTab = document.querySelector('[onclick*="estimate"]');
+  if (estTab) estTab.click(); else loadEstimate(conCurrentJobId);
+  alert(`✅ Added ${itemCount} item${itemCount!==1?'s':''} to ${roomName} from your ${_wtWalkthrough.categories.length}-category walkthrough.`);
+}
+window.wtCommit = wtCommit;
+
 
 // Update estimate tab toolbar to include Smart Add
 window.openSmartAdd = openSmartAdd;
