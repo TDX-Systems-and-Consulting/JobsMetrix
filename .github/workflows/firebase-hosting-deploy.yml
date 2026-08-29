@@ -13,6 +13,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Generate version.json
+        # The build badge reads this live from the deployed site on every
+        # page load (kytrac-app.js fetches version.json?t=<timestamp>).
+        # It is intentionally NOT committed to git -- generated fresh here,
+        # every deploy, so the badge is always an honest signal of what's
+        # actually live. Missing this step is exactly how the badge went
+        # stale for days under full automation: the app files were
+        # deploying correctly, but nothing was regenerating this file, so
+        # whatever was left over from the last manual deploy just sat there.
+        run: |
+          echo "{\"commit\":\"$(git rev-parse --short HEAD)\",\"date\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > version.json
       - uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: '${{ secrets.GITHUB_TOKEN }}'
