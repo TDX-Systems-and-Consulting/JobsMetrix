@@ -18926,12 +18926,35 @@ function renderPortalProposal(prop, jobId) {
 
   const data = prop.snapshot || { rooms: [], grandTotal: 0, itemized: false, paymentSchedule: null };
   const roomsHtml = data.rooms.map(room => {
-    const lines = [...room.catBlocks, ...room.directBlocks];
+    const catHtml = (room.catBlocks || []).map(c => {
+      const priceHtml = (data.itemized && !c.descriptionOnly)
+        ? ` <span style="float:right;color:#eaf0fb;font-weight:700">$${c.price.toFixed(2)}</span>` : '';
+      const scopeHtml = c.scopeNotes
+        ? `<div style="font-size:.8rem;color:var(--muted);font-style:italic;white-space:pre-wrap;margin:2px 0 6px;padding-left:8px">${esc(c.scopeNotes)}</div>` : '';
+      const itemsHtml = (data.itemized && (c.items || []).length)
+        ? c.items.map(it => `<div style="font-size:.82rem;color:var(--muted);padding-left:16px;margin-bottom:2px">
+            ${esc(it.label)}<span style="float:right;color:#cbd5e1">$${it.price.toFixed(2)}</span>
+            ${it.notes ? `<div style="font-size:.78rem;font-style:italic;color:var(--muted);white-space:pre-wrap">${esc(it.notes)}</div>` : ''}
+          </div>`).join('') : '';
+      const bidHtml = c.pendingBid
+        ? `<div style="font-size:.78rem;color:#fbbf24;padding-left:8px;margin:2px 0 6px">⚠ ${esc(c.pendingBidNote || 'Pricing for this item is preliminary and may be adjusted once final vendor bids are in.')}</div>` : '';
+      return `<div style="font-size:.86rem;color:var(--muted);padding-left:8px;margin-bottom:4px">
+        <div>${esc(c.label)}${priceHtml}</div>
+        ${scopeHtml}${itemsHtml}${bidHtml}
+      </div>`;
+    }).join('');
+    const directHtml = (room.directBlocks || []).map(d => {
+      const priceHtml = data.itemized ? ` <span style="float:right;color:#eaf0fb;font-weight:700">$${d.price.toFixed(2)}</span>` : '';
+      const notesHtml = d.notes
+        ? `<div style="font-size:.8rem;color:var(--muted);font-style:italic;white-space:pre-wrap;margin:2px 0 6px;padding-left:8px">${esc(d.notes)}</div>` : '';
+      return `<div style="font-size:.86rem;color:var(--muted);padding-left:8px;margin-bottom:4px">
+        <div>${esc(d.label)}${priceHtml}</div>
+        ${notesHtml}
+      </div>`;
+    }).join('');
     return `<div class="portal-prop-room">
       <div style="font-weight:800;color:#eaf0fb;margin-bottom:4px">${esc(room.name)}</div>
-      ${lines.map(l => `<div style="font-size:.86rem;color:var(--muted);padding-left:8px">
-        ${esc(l.label)}${data.itemized ? ` <span style="float:right;color:#eaf0fb;font-weight:700">$${l.price.toFixed(2)}</span>` : ''}
-      </div>`).join('')}
+      ${catHtml}${directHtml}
     </div>`;
   }).join('');
 
