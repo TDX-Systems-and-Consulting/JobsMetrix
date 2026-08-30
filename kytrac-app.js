@@ -27742,55 +27742,43 @@ function wizardSelectTrade(trade) {
   _wizardStep = 4;
   _wizardSelectedItems = new Set();
   _wizardCurrentItems = CATALOG_DATA[trade] || [];
+  wizardSetStep(4);
+  updateWizardBreadcrumb();
+  document.getElementById('wizardSearchInput').value = '';
+  const searchRow = document.getElementById('wizardSearchRow');
+  if (searchRow) searchRow.style.display = 'flex';
 
-  // Check if this trade has tiered bundles
+  // Bundles (if any exist for this trade) render as quick-pick shortcuts
+  // in their own container ABOVE the full item list -- not gating access
+  // to it. Previously a trade with 0/1/many bundles branched into three
+  // different screens, and the trade card's item count (e.g. "111 items"
+  // for Doors & Windows) never matched what was actually selectable
+  // without an extra click or two. Now every trade always shows every
+  // one of its real catalog items on this one screen; bundles are just
+  // a faster path to a common pre-built combo when one exists.
   const bundles = TIERED_BUNDLES[trade] || [];
-
-  if (bundles.length === 1) {
-    // Only one bundle exists for this trade — showing a list with a
-    // single option to tap is pointless friction. Go straight to it,
-    // same principle already used elsewhere (e.g. Toilet Replacement
-    // skips the grade question for Round since there's only one real
-    // product).
-    wizardSelectBundle(bundles[0].name);
-  } else if (bundles.length > 1) {
-    // Step 4: Show bundle tasks for this trade
-    wizardRenderBundleTasks(trade, bundles);
-  } else {
-    // No bundles — fall through to catalog items with template tab
-    wizardSetStep(4);
-    updateWizardBreadcrumb();
-    document.getElementById('wizardSearchInput').value = '';
-
-    const itemListEl = document.getElementById('wizardItemList');
-    if (itemListEl) {
-      itemListEl.innerHTML =
-        '<div style="display:flex;gap:0;background:rgba(8,18,36,.8);border:1px solid rgba(110,145,210,.15);border-radius:10px;overflow:hidden;margin-bottom:12px">' +
-        '<button id="wizTabTemplates" onclick="wizShowTab(\'templates\')" style="flex:1;padding:8px;border:none;cursor:pointer;font-size:.8rem;font-weight:700;background:linear-gradient(135deg,var(--amber),var(--amber2));color:#fff">⚡ Templates</button>' +
-        '<button id="wizTabItems" onclick="wizShowTab(\'items\')" style="flex:1;padding:8px;border:none;cursor:pointer;font-size:.8rem;font-weight:600;background:transparent;color:var(--muted)">📦 Catalog Items</button>' +
-        '</div><div id="wizPanelTemplates"></div><div id="wizPanelItems" style="display:none"></div>';
-    }
-    wizLoadTemplates(trade);
-
-    const itemsPanel = document.getElementById('wizPanelItems');
-    if (itemsPanel) {
-      itemsPanel.innerHTML = _wizardCurrentItems.length ? _wizardCurrentItems.map(item => {
-        const matPrice = item.materials?.unitPrice || 0;
-        const labPrice = item.labor?.unitPrice || 0;
-        const totalPrice = matPrice + labPrice;
-        return '<div class="wizard-item" onclick="wizardToggleItem(\'' + item.name.replace(/'/g,"\\'") + '\',this)">' +
-          '<div class="wizard-item-check"></div>' +
-          '<div class="wizard-item-info"><div class="wizard-item-name">' + esc(item.name) + '</div>' +
-          '<div class="wizard-item-meta">' + (item.materials ? '📦 Mat: $' + matPrice.toFixed(2) : '') + (item.labor ? ' · 👷 Labor: $' + labPrice.toFixed(2) + '/hr' : '') + '</div></div>' +
-          '<div class="wizard-item-price">' + (totalPrice > 0 ? '$' + totalPrice.toFixed(2) : '') + '</div></div>';
-      }).join('') : '<div class="small muted" style="text-align:center;padding:20px">No items for this trade</div>';
-    }
-
-    const footer = document.getElementById('wizardFooter');
-    if (footer) footer.innerHTML =
-      '<button class="btn" onclick="kClose(\'smartAddModal\')">Cancel</button>' +
-      '<button class="btn-amber" onclick="wizardAddToEstimate()" style="min-width:140px">➕ Add to Estimate</button>';
+  const bundlesEl = document.getElementById('wizardBundlesSection');
+  if (bundlesEl) {
+    bundlesEl.innerHTML = bundles.length ? (
+      '<div style="font-size:.75rem;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:8px">⚡ Quick bundles</div>' +
+      bundles.map(b =>
+        '<div onclick="wizardSelectBundle(\'' + b.name.replace(/'/g,"\\'") + '\')" ' +
+        'style="border:1px solid rgba(217,119,6,.25);border-radius:12px;padding:12px;margin-bottom:8px;cursor:pointer;display:flex;align-items:center;gap:12px;background:rgba(217,119,6,.04)" ' +
+        'onmouseover="this.style.borderColor=\'rgba(217,119,6,.5)\'" onmouseout="this.style.borderColor=\'rgba(217,119,6,.25)\'">' +
+        '<div style="font-size:1.6rem;flex-shrink:0">' + b.icon + '</div>' +
+        '<div><div style="font-weight:800;font-size:.9rem;color:#eaf0fb">' + esc(b.name) + '</div>' +
+        '<div style="font-size:.74rem;color:var(--muted);margin-top:2px">' + esc(b.desc) + '</div></div></div>'
+      ).join('') +
+      '<div style="font-size:.75rem;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:14px 0 8px">📦 All ' + _wizardCurrentItems.length + ' items</div>'
+    ) : '';
   }
+
+  wizardRenderItems(_wizardCurrentItems);
+
+  const footer = document.getElementById('wizardFooter');
+  if (footer) footer.innerHTML =
+    '<button class="btn" onclick="kClose(\'smartAddModal\')">Cancel</button>' +
+    '<button class="btn-amber" onclick="wizardAddToEstimate()" style="min-width:140px">➕ Add to Estimate</button>';
 }
 
 // ── Step 4b: Bundle task grid ──
@@ -27841,6 +27829,12 @@ function wizardSelectBundle(bundleName) {
   _wizardTier = null;
   _wizardShape = null;
   _wizardBundleQty = 1;
+  // Clear the quick-bundles section since we're now inside one specific
+  // bundle's tier/shape screen -- it renders into #wizardItemList, and
+  // the bundle cards would otherwise sit awkwardly above it until the
+  // user backs out. "Back to bundles" (wizardSelectTrade) repopulates it.
+  const bundlesEl = document.getElementById('wizardBundlesSection');
+  if (bundlesEl) bundlesEl.innerHTML = '';
 
   // Toilet Replacement has a real shape distinction (Round vs Oblong/
   // Elongated) in the underlying catalog data — ask that first, since
@@ -27873,7 +27867,7 @@ function wizardRenderShapeSelect() {
     '<div style="font-size:.75rem;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:10px">Round or Oblong?</div>' +
     '<div onclick="wizardSelectShape(\'round\')" style="border:2px solid rgba(217,119,6,.25);border-radius:14px;padding:16px;margin-bottom:10px;cursor:pointer;text-align:center;font-weight:800;color:#eaf0fb">⭕ Round</div>' +
     '<div onclick="wizardSelectShape(\'oblong\')" style="border:2px solid rgba(217,119,6,.25);border-radius:14px;padding:16px;margin-bottom:10px;cursor:pointer;text-align:center;font-weight:800;color:#eaf0fb">⬭ Oblong (Elongated)</div>' +
-    '<button onclick="wizardRenderBundleTasks(_wizardTrade, TIERED_BUNDLES[_wizardTrade]||[])" ' +
+    '<button onclick="wizardSelectTrade(_wizardTrade)" ' +
     'style="background:none;border:none;color:var(--muted);font-size:.8rem;cursor:pointer;margin-top:6px">← Back to bundles</button>' +
     ((CATALOG_DATA[_wizardTrade] || []).length > 1
       ? '<button onclick="wizardSelectTradeFallback(\'' + String(_wizardTrade).replace(/'/g,"\\'") + '\')" ' +
@@ -27953,7 +27947,7 @@ function wizardRenderTierSelect() {
           esc(l.desc) + (l.qty !== 1 ? ' ×' + l.qty : '') + '</span>'
         ).join('') + '</div></div>';
     }).join('') +
-    '<button onclick="wizardRenderBundleTasks(_wizardTrade, TIERED_BUNDLES[_wizardTrade]||[])" ' +
+    '<button onclick="wizardSelectTrade(_wizardTrade)" ' +
     'style="background:none;border:none;color:var(--muted);font-size:.8rem;cursor:pointer;margin-top:6px">← Back to bundles</button>' +
     // Surfaced directly here (not just two clicks away via "Back to
     // bundles") because a trade with exactly one bundle skips straight
