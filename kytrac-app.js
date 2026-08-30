@@ -29009,7 +29009,18 @@ function openGuidedAdd() {
   _guidedCategory = null; _guidedRoom = null; _guidedTrade = null; _guidedPhaseLabel = null;
   _guidedScript = null; _guidedStepIdx = 0; _guidedCtx = {}; _guidedCart = []; _guidedHistory = [];
   _wtRoom = null; _wtWalkthrough = null; _wtCatIdx = 0; _wtStepIdx = 0; _wtCtx = {}; _wtCart = []; _wtHistory = [];
-  guidedRenderCategoryScreen();
+  const cats = Object.keys(ROOM_STRUCTURE);
+  if (cats.length === 1) {
+    // Only "Whole House" exists today -- there's no real choice to make here,
+    // so skip straight to the room picker instead of making every single
+    // Guided Questions session start with a dropdown that has one option.
+    // If a second category ever gets added, this reverts to showing the
+    // picker automatically (the check is on cats.length, not hardcoded).
+    _guidedCategory = cats[0];
+    guidedRenderRoomScreen();
+  } else {
+    guidedRenderCategoryScreen();
+  }
   kOpen('guidedAddModal');
 }
 window.openGuidedAdd = openGuidedAdd;
