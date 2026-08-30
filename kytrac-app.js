@@ -27874,7 +27874,12 @@ function wizardRenderShapeSelect() {
     '<div onclick="wizardSelectShape(\'round\')" style="border:2px solid rgba(217,119,6,.25);border-radius:14px;padding:16px;margin-bottom:10px;cursor:pointer;text-align:center;font-weight:800;color:#eaf0fb">⭕ Round</div>' +
     '<div onclick="wizardSelectShape(\'oblong\')" style="border:2px solid rgba(217,119,6,.25);border-radius:14px;padding:16px;margin-bottom:10px;cursor:pointer;text-align:center;font-weight:800;color:#eaf0fb">⬭ Oblong (Elongated)</div>' +
     '<button onclick="wizardRenderBundleTasks(_wizardTrade, TIERED_BUNDLES[_wizardTrade]||[])" ' +
-    'style="background:none;border:none;color:var(--muted);font-size:.8rem;cursor:pointer;margin-top:6px">← Back to bundles</button>';
+    'style="background:none;border:none;color:var(--muted);font-size:.8rem;cursor:pointer;margin-top:6px">← Back to bundles</button>' +
+    ((CATALOG_DATA[_wizardTrade] || []).length > 1
+      ? '<button onclick="wizardSelectTradeFallback(\'' + String(_wizardTrade).replace(/'/g,"\\'") + '\')" ' +
+        'style="width:100%;margin-top:4px;padding:10px;background:transparent;border:1px dashed rgba(110,145,210,.2);border-radius:10px;color:var(--muted);font-size:.82rem;cursor:pointer">' +
+        '📦 Browse individual catalog items instead</button>'
+      : '');
 
   const footer = document.getElementById('wizardFooter');
   if (footer) footer.innerHTML = '<button class="btn" onclick="kClose(\'smartAddModal\')">Cancel</button>';
@@ -27950,6 +27955,19 @@ function wizardRenderTierSelect() {
     }).join('') +
     '<button onclick="wizardRenderBundleTasks(_wizardTrade, TIERED_BUNDLES[_wizardTrade]||[])" ' +
     'style="background:none;border:none;color:var(--muted);font-size:.8rem;cursor:pointer;margin-top:6px">← Back to bundles</button>' +
+    // Surfaced directly here (not just two clicks away via "Back to
+    // bundles") because a trade with exactly one bundle skips straight
+    // to this screen -- the fallback previously only lived on the
+    // multi-bundle list screen, which single-bundle trades never show.
+    // That's exactly how "Install vinyl siding per sq ft" became
+    // unreachable through Smart Add even though it's a real catalog
+    // item: Siding only has one bundle (Spot Repair), so the only
+    // visible options were that one bundle or typing it in as Custom.
+    ((CATALOG_DATA[_wizardTrade] || []).length > 1
+      ? '<button onclick="wizardSelectTradeFallback(\'' + String(_wizardTrade).replace(/'/g,"\\'") + '\')" ' +
+        'style="width:100%;margin-top:4px;padding:10px;background:transparent;border:1px dashed rgba(110,145,210,.2);border-radius:10px;color:var(--muted);font-size:.82rem;cursor:pointer">' +
+        '📦 Browse individual catalog items instead</button>'
+      : '') +
     wizardCustomItemCardHtml();
 
   const footer = document.getElementById('wizardFooter');
