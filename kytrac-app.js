@@ -26186,6 +26186,7 @@ const TIERED_BUNDLES = {
     {
       name: 'Interior Door Replace',
       icon: '🚪',
+      roomScope: 'interior', // hide this when browsing from the Exterior room -- there's no matching Exterior Door Replace bundle yet, but showing an interior-only bundle under an Exterior breadcrumb was actively confusing
       desc: 'Interior door install, remove old, install new with hardware',
       tiers: {
         low: { label: '30" Hollow Core Slab', priceRange: '~$42', lines: [
@@ -27756,7 +27757,11 @@ function wizardSelectTrade(trade) {
   // without an extra click or two. Now every trade always shows every
   // one of its real catalog items on this one screen; bundles are just
   // a faster path to a common pre-built combo when one exists.
-  const bundles = TIERED_BUNDLES[trade] || [];
+  const bundles = (TIERED_BUNDLES[trade] || []).filter(b =>
+    !b.roomScope ||
+    (b.roomScope === 'interior' && _wizardRoom !== 'Exterior') ||
+    (b.roomScope === 'exterior' && _wizardRoom === 'Exterior')
+  );
   const bundlesEl = document.getElementById('wizardBundlesSection');
   if (bundlesEl) {
     bundlesEl.innerHTML = bundles.length ? (
