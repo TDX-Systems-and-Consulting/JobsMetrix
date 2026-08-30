@@ -8170,10 +8170,16 @@ function filterCOCatalogSearch() {
   if (!q) { resultsEl.innerHTML = ''; return; }
   const words = q.split(/\s+/).filter(Boolean);
   const index = getFlatCatalogIndex();
-  const matches = index.filter(i => {
+  const scored = index.map(i => {
     const name = i.name.toLowerCase();
-    return words.every(w => name.includes(w));
-  }).slice(0, 15); // cap — a broad query like "labor" could match hundreds
+    let score = 0;
+    for (const w of words) {
+      if (expandSearchWord(w).some(v => name.includes(v))) score++;
+    }
+    return { item: i, score };
+  }).filter(s => s.score > 0)
+    .sort((a, b) => b.score - a.score || a.item.name.length - b.item.name.length);
+  const matches = scored.slice(0, 15).map(s => s.item); // cap — a broad query like "labor" could match hundreds
 
   if (!matches.length) {
     resultsEl.innerHTML = '<div class="small muted" style="padding:8px;font-style:italic">No matches in the catalog.</div>';
@@ -8259,10 +8265,16 @@ function filterCatRefSearch() {
   if (!q) { resultsEl.innerHTML = ''; return; }
   const words = q.split(/\s+/).filter(Boolean);
   const index = getFlatCatalogIndex();
-  const matches = index.filter(i => {
+  const scored = index.map(i => {
     const name = i.name.toLowerCase();
-    return words.every(w => name.includes(w));
-  }).slice(0, 20); // cap — a broad query like "labor" could match hundreds
+    let score = 0;
+    for (const w of words) {
+      if (expandSearchWord(w).some(v => name.includes(v))) score++;
+    }
+    return { item: i, score };
+  }).filter(s => s.score > 0)
+    .sort((a, b) => b.score - a.score || a.item.name.length - b.item.name.length);
+  const matches = scored.slice(0, 20).map(s => s.item); // cap — a broad query like "labor" could match hundreds
 
   if (!matches.length) {
     resultsEl.innerHTML = '<div class="small muted" style="padding:8px;font-style:italic">No matches in the reference catalog.</div>';
@@ -23414,6 +23426,38 @@ function getFlatCatalogIndex() {
 
 // Same multi-word AND matching as wizardFilterItems, just across the
 // flattened cross-trade index instead of one trade's item list.
+// Common contractor phrasing that doesn't literally match catalog item
+// names -- e.g. searching "pressure wash" should still find "Power wash
+// House 1 story". Each key's variants are treated as interchangeable
+// with the key itself when scoring a match.
+const SEARCH_SYNONYMS = {
+  'pressure': ['power'],
+  'washing': ['wash'],
+  'fix': ['repair'],
+  'fixing': ['repair'],
+  'yard': ['landscaping', 'landscape'],
+  'lawn': ['landscaping', 'landscape'],
+  'grass': ['sod', 'landscaping'],
+  'hvac': ['mechanical'],
+  'ac': ['air', 'mechanical'],
+  'toilet': ['commode'],
+  'commode': ['toilet'],
+  'garbage': ['trash', 'debris'],
+  'junk': ['trash', 'debris'],
+  'haul': ['trash', 'removal'],
+  'dump': ['dumpster'],
+  'reseal': ['seal'],
+  'sealant': ['caulk', 'seal'],
+  'sealing': ['caulk', 'seal'],
+  'screen': ['screens'],
+  'screens': ['screen'],
+  'gutter': ['gutters'],
+  'gutters': ['gutter'],
+};
+function expandSearchWord(w) {
+  return SEARCH_SYNONYMS[w] ? [w, ...SEARCH_SYNONYMS[w]] : [w];
+}
+
 function filterEstItemCatalogSearch() {
   const input = document.getElementById('estItemCatalogSearch');
   const resultsEl = document.getElementById('estItemCatalogResults');
@@ -23422,10 +23466,21 @@ function filterEstItemCatalogSearch() {
   if (!q) { resultsEl.innerHTML = ''; return; }
   const words = q.split(/\s+/).filter(Boolean);
   const index = getFlatCatalogIndex();
-  const matches = index.filter(i => {
+  // Score by how many query words matched (directly or via a synonym)
+  // rather than requiring every word to match -- a search with one
+  // off word ("pressure wash" vs "power wash") now still surfaces the
+  // real item instead of returning nothing at all. Results are ranked
+  // best-match-first so a full match still sorts above a partial one.
+  const scored = index.map(i => {
     const name = i.name.toLowerCase();
-    return words.every(w => name.includes(w));
-  }).slice(0, 15); // cap — a broad query like "labor" could match hundreds
+    let score = 0;
+    for (const w of words) {
+      if (expandSearchWord(w).some(v => name.includes(v))) score++;
+    }
+    return { item: i, score };
+  }).filter(s => s.score > 0)
+    .sort((a, b) => b.score - a.score || a.item.name.length - b.item.name.length);
+  const matches = scored.slice(0, 15).map(s => s.item); // cap — a broad query like "labor" could match hundreds
 
   if (!matches.length) {
     resultsEl.innerHTML = '<div class="small muted" style="padding:8px;font-style:italic">No matches in the catalog.</div>';
@@ -28477,12 +28532,21 @@ function wizardToggleItem(name, el) {
 function wizardFilterItems() {
   const q = document.getElementById('wizardSearchInput')?.value.toLowerCase() || '';
   const words = q.split(/\s+/).filter(Boolean);
-  const filtered = words.length
-    ? _wizardCurrentItems.filter(i => {
-        const name = i.name.toLowerCase();
-        return words.every(w => name.includes(w));
-      })
-    : _wizardCurrentItems;
+  let filtered;
+  if (words.length) {
+    filtered = _wizardCurrentItems.map(i => {
+      const name = i.name.toLowerCase();
+      let score = 0;
+      for (const w of words) {
+        if (expandSearchWord(w).some(v => name.includes(v))) score++;
+      }
+      return { item: i, score };
+    }).filter(s => s.score > 0)
+      .sort((a, b) => b.score - a.score || a.item.name.length - b.item.name.length)
+      .map(s => s.item);
+  } else {
+    filtered = _wizardCurrentItems;
+  }
   wizardRenderItems(filtered);
 }
 
