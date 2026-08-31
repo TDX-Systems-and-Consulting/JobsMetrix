@@ -30178,6 +30178,212 @@ function loadJobPhotos(jobId) {
   loadJobDocs(jobId); // reuse existing doc loader
 }
 
+
+// ============================================================
+// WALK CAPTURE -- record audio continuously while snapping photos
+// during a jobsite walkthrough, all in one session. Name TBD
+// ("WalkBid" is the leading candidate) -- prefixed "wc" here
+// (walk-capture) to stay distinct from the unrelated "wt" prefix
+// already used by the Room Walkthrough guided-questions engine.
+//
+// Deliberately does NOT use the native camera app (<input capture>)
+// for photos: on iOS Safari in particular, handing off to the native
+// camera UI can suspend the page's audio recording. Instead this
+// opens a live in-page camera preview via getUserMedia and grabs
+// still frames from that video stream via canvas -- the page never
+// loses focus, so the MediaRecorder audio track keeps running
+// uninterrupted for the whole walkthrough.
+//
+// Phase 1 (this): capture + save only. Saves the audio + timestamped
+// photos to Storage/Firestore with status:'ready'. Transcription and
+// AI-generated draft estimate are a separate next phase -- status
+// stays 'ready' rather than faking a further-along state.
+// ============================================================
+
+let _wcStream = null, _wcRecorder = null, _wcAudioChunks = [];
+let _wcStartTime = null, _wcTimerInterval = null, _wcCapturedPhotos = [], _wcJobId = null;
+
+function openWalkCapture() {
+  if (!conCurrentJobId) { alert('Open a job first.'); return; }
+  _wcJobId = conCurrentJobId;
+  _wcStream = null; _wcRecorder = null; _wcAudioChunks = [];
+  _wcStartTime = null; _wcCapturedPhotos = [];
+  const statusEl = document.getElementById('wcStatusLine');
+  if (statusEl) statusEl.textContent = 'Ready to start';
+  const startBtn = document.getElementById('wcStartBtn');
+  const shutterBtn = document.getElementById('wcShutterBtn');
+  const finishBtn = document.getElementById('wcFinishBtn');
+  const timerBadge = document.getElementById('wcTimerBadge');
+  const strip = document.getElementById('wcThumbStrip');
+  if (startBtn) { startBtn.style.display = 'inline-block'; startBtn.disabled = false; }
+  if (shutterBtn) { shutterBtn.style.display = 'none'; shutterBtn.disabled = false; }
+  if (finishBtn) { finishBtn.style.display = 'none'; finishBtn.disabled = false; }
+  if (timerBadge) timerBadge.style.display = 'none';
+  if (strip) strip.innerHTML = '';
+  kOpen('walkCaptureModal');
+}
+window.openWalkCapture = openWalkCapture;
+
+async function wcStartCapture() {
+  try {
+    _wcStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment' },
+      audio: true
+    });
+  } catch (e) {
+    alert('Camera and microphone access are both needed to record a walkthrough.\n\n' + e.message);
+    return;
+  }
+  const video = document.getElementById('wcCamPreview');
+  if (video) video.srcObject = _wcStream;
+
+  // Record audio only. Encoding the video track too would produce a
+  // large file we don't need -- still photos are grabbed separately
+  // from the live preview via canvas, below.
+  const audioOnlyStream = new MediaStream(_wcStream.getAudioTracks());
+  const mimeType = (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('audio/webm'))
+    ? 'audio/webm' : '';
+  try {
+    _wcRecorder = new MediaRecorder(audioOnlyStream, mimeType ? { mimeType } : undefined);
+  } catch (e) {
+    alert('This browser cannot record audio: ' + e.message);
+    _wcStream.getTracks().forEach(t => t.stop());
+    return;
+  }
+  _wcAudioChunks = [];
+  _wcRecorder.ondataavailable = e => { if (e.data.size > 0) _wcAudioChunks.push(e.data); };
+  _wcRecorder.start();
+  _wcStartTime = Date.now();
+
+  document.getElementById('wcStartBtn').style.display = 'none';
+  document.getElementById('wcShutterBtn').style.display = 'inline-block';
+  document.getElementById('wcFinishBtn').style.display = 'inline-block';
+  document.getElementById('wcTimerBadge').style.display = 'block';
+  document.getElementById('wcStatusLine').textContent = 'Recording — talk through what you see, tap the white button for each photo';
+
+  _wcTimerInterval = setInterval(() => {
+    const secs = Math.floor((Date.now() - _wcStartTime) / 1000);
+    const m = String(Math.floor(secs / 60)).padStart(2, '0');
+    const s = String(secs % 60).padStart(2, '0');
+    const badge = document.getElementById('wcTimerBadge');
+    if (badge) badge.textContent = '● ' + m + ':' + s;
+  }, 500);
+}
+window.wcStartCapture = wcStartCapture;
+
+function wcCapturePhoto() {
+  if (!_wcStream || !_wcStartTime) return;
+  const video = document.getElementById('wcCamPreview');
+  const canvas = document.getElementById('wcCamCanvas');
+  if (!video || !canvas || !video.videoWidth) return;
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+  const offsetMs = Date.now() - _wcStartTime;
+  _wcCapturedPhotos.push({ dataUrl, offsetMs });
+
+  const strip = document.getElementById('wcThumbStrip');
+  if (strip) {
+    const thumb = document.createElement('img');
+    thumb.src = dataUrl;
+    thumb.style.cssText = 'width:56px;height:56px;object-fit:cover;border-radius:6px;flex-shrink:0;border:2px solid var(--amber,#d97706)';
+    strip.appendChild(thumb);
+    strip.scrollLeft = strip.scrollWidth;
+  }
+
+  // Brief flash so the shutter tap has visible feedback
+  video.style.opacity = '0.35';
+  setTimeout(() => { video.style.opacity = '1'; }, 120);
+}
+window.wcCapturePhoto = wcCapturePhoto;
+
+async function wcFinishCapture() {
+  if (!_wcRecorder) { wcCancelCapture(); return; }
+  const shutterBtn = document.getElementById('wcShutterBtn');
+  const finishBtn = document.getElementById('wcFinishBtn');
+  if (shutterBtn) shutterBtn.disabled = true;
+  if (finishBtn) finishBtn.disabled = true;
+  document.getElementById('wcStatusLine').textContent = 'Saving\u2026';
+
+  const audioBlob = await new Promise(resolve => {
+    _wcRecorder.onstop = () => resolve(new Blob(_wcAudioChunks, { type: (_wcAudioChunks[0] && _wcAudioChunks[0].type) || 'audio/webm' }));
+    _wcRecorder.stop();
+  });
+  clearInterval(_wcTimerInterval);
+  _wcStream.getTracks().forEach(t => t.stop());
+
+  const jobId = _wcJobId;
+  const job = conJobs.find(j => j.id === jobId);
+  const walkthroughId = uid('walkcapture');
+  const basePath = 'companies/' + currentCompanyId + '/jobs/' + jobId + '/walkcaptures/' + walkthroughId;
+  const startedAtMs = _wcStartTime;
+  const durationMs = Date.now() - _wcStartTime;
+  const photoCount = _wcCapturedPhotos.length;
+
+  try {
+    const audioPath = basePath + '/audio.webm';
+    const audioUrl = await uploadToStorage(audioPath, audioBlob);
+
+    const photoUploads = [];
+    for (let i = 0; i < _wcCapturedPhotos.length; i++) {
+      const p = _wcCapturedPhotos[i];
+      const compressed = await compressImage(p.dataUrl, 1600, 0.8).catch(() => p.dataUrl);
+      const blob = dataUrlToBlob(compressed);
+      const photoPath = basePath + '/photo_' + i + '.jpg';
+      const url = await uploadToStorage(photoPath, blob);
+      photoUploads.push({ url: url, storagePath: photoPath, offsetMs: p.offsetMs });
+    }
+
+    await coll('walkCaptures').doc(walkthroughId).set({
+      jobId: jobId,
+      jobName: (job && job.name) || '',
+      startedAt: new Date(startedAtMs).toISOString(),
+      endedAt: new Date().toISOString(),
+      durationMs: durationMs,
+      audioUrl: audioUrl,
+      audioPath: audioPath,
+      photos: photoUploads,
+      // 'ready' = recorded and saved. Transcription + AI-drafted
+      // estimate come in a later phase and will move this forward
+      // to 'transcribed' then 'estimated' -- never faked here.
+      status: 'ready',
+      transcript: null,
+      draftEstimate: null,
+      createdBy: (conCurrentUser && conCurrentUser.email) || '',
+      createdByName: (conCurrentUser && (conCurrentUser.displayName || conCurrentUser.email)) || '',
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+
+    kClose('walkCaptureModal');
+    alert('\u2705 Walkthrough saved \u2014 ' + photoCount + ' photo' + (photoCount !== 1 ? 's' : '') +
+      ' and ' + Math.round(durationMs / 1000) + 's of audio.\n\n' +
+      'Transcription and the auto-generated draft estimate are coming in the next phase \u2014 ' +
+      'for now this walkthrough is saved on the job for reference.');
+  } catch (e) {
+    console.error('Walk capture save failed:', e);
+    alert('Saving the walkthrough failed: ' + e.message + '\n\nPlease screenshot this and send it over \u2014 nothing was lost on your phone, but it did not reach the server yet.');
+    document.getElementById('wcStatusLine').textContent = 'Save failed \u2014 see error message';
+    if (shutterBtn) shutterBtn.disabled = false;
+    if (finishBtn) finishBtn.disabled = false;
+  }
+}
+window.wcFinishCapture = wcFinishCapture;
+
+function wcCancelCapture() {
+  // Recording in progress -- confirm before throwing it away, since a
+  // stray tap on Close otherwise silently discards everything captured
+  // so far with no way to recover it.
+  if (_wcRecorder && _wcRecorder.state === 'recording') {
+    if (!confirm('A walkthrough is currently recording. Close without saving?')) return;
+  }
+  if (_wcStream) { try { _wcStream.getTracks().forEach(t => t.stop()); } catch(e){} }
+  if (_wcRecorder && _wcRecorder.state !== 'inactive') { try { _wcRecorder.stop(); } catch(e){} }
+  clearInterval(_wcTimerInterval);
+  kClose('walkCaptureModal');
+}
+window.wcCancelCapture = wcCancelCapture;
+
 function uploadJobFiles(input) {
   if (!conCurrentJobId || !input.files?.length) return;
   const files = Array.from(input.files);
