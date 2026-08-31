@@ -30180,11 +30180,11 @@ function loadJobPhotos(jobId) {
 
 
 // ============================================================
-// WALK CAPTURE -- record audio continuously while snapping photos
-// during a jobsite walkthrough, all in one session. Name TBD
-// ("WalkBid" is the leading candidate) -- prefixed "wc" here
-// (walk-capture) to stay distinct from the unrelated "wt" prefix
-// already used by the Room Walkthrough guided-questions engine.
+// SCOPEWALK -- record audio continuously while snapping photos
+// during a jobsite walkthrough, all in one session. Prefixed "wc"
+// here (walk-capture) to stay distinct from the unrelated "wt"
+// prefix already used by the Room Walkthrough guided-questions
+// engine.
 //
 // Deliberately does NOT use the native camera app (<input capture>)
 // for photos: on iOS Safari in particular, handing off to the native
@@ -30356,7 +30356,7 @@ async function wcFinishCapture() {
     });
 
     kClose('walkCaptureModal');
-    alert('\u2705 Walkthrough saved \u2014 ' + photoCount + ' photo' + (photoCount !== 1 ? 's' : '') +
+    alert('\u2705 ScopeWalk saved \u2014 ' + photoCount + ' photo' + (photoCount !== 1 ? 's' : '') +
       ' and ' + Math.round(durationMs / 1000) + 's of audio.\n\n' +
       'Transcription and the auto-generated draft estimate are coming in the next phase \u2014 ' +
       'for now this walkthrough is saved on the job for reference.');
