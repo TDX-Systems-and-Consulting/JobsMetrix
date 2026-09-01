@@ -6602,6 +6602,7 @@ async function sendInvoiceSplitToPlannerXD(invId) {
       overhead: scale(breakdown.overhead),
       profit: scale(breakdown.profit),
       marketing: scale(breakdown.marketing),
+      flex: scale(breakdown.flex),
       taxes: scale(breakdown.taxes),
     };
 
@@ -6613,8 +6614,9 @@ async function sendInvoiceSplitToPlannerXD(invId) {
       + `Materials: ${fmt(parts.materials)}\n`
       + `Labor: ${fmt(parts.labor)}\n`
       + `Overhead: ${fmt(parts.overhead)}\n`
-      + `Retained Earnings: ${fmt(parts.profit)}\n`
       + `Marketing: ${fmt(parts.marketing)}\n`
+      + `Flex: ${fmt(parts.flex)}\n`
+      + `Retained Earnings: ${fmt(parts.profit)}\n`
       + `Taxes (from Retained Earnings): ${fmt(parts.taxes)}`
       + placeholderNote;
 
@@ -12225,9 +12227,9 @@ async function computeLockedBucketSplit(job) {
   // real $2,698 job: 28% of revenue was $755 against only $656 truly
   // retained). Same formula Travis's calculator now uses.
   const overhead = jtxdActual * 0.18;
-  const marketing = jtxdActual * 0.10;
+  const marketing = jtxdActual * 0.015;
   const remainAfterOhMkt = jtxdActual - overhead - marketing;
-  const flex = remainAfterOhMkt * 0.10;
+  const flex = remainAfterOhMkt * 0.20;
   const remainAfterFlex = remainAfterOhMkt - flex;
   const taxes = remainAfterFlex * 0.275;
   // Real Stripe processing fees (card ~2.9%+$0.30, ACH/US bank
