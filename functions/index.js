@@ -593,6 +593,9 @@ exports.pushPersonalEventToGCal = functions.firestore
 // person's Google event ID separately (gcalEventIds: {uid: eventId}),
 // since one JOBSpan phase can correspond to several different Google
 // Calendar events (one per crew member).
+// Trigger comment: redeploy after granting Cloud Scheduler Admin to
+// the deploy service account (9/1/26) -- confirming dailyKpiRefresh
+// finally deploys clean.
 // Watches Features (subgroups) under the current Epic/Feature/Task
 // project model, NOT the old flat jobs/{jobId}/phases/{phaseId}
 // collection this used to watch. That collection was replaced by
