@@ -4658,14 +4658,18 @@
 
           <!-- Toolbar -->
           <!-- Smart Add Banner -->
-          <div style="display:flex;gap:8px;margin-top:8px;margin-bottom:0">
-            <button onclick="openSmartAdd()" style="flex:1;padding:9px;border-radius:12px;border:1.5px solid rgba(217,119,6,.5);background:linear-gradient(135deg,rgba(217,119,6,.15),rgba(217,119,6,.05));color:var(--amber);font-size:.86rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px">
+          <div style="display:flex;gap:8px;margin-top:8px;margin-bottom:0;flex-wrap:wrap">
+            <button onclick="openSmartAdd()" style="flex:1;min-width:150px;padding:9px;border-radius:12px;border:1.5px solid rgba(217,119,6,.5);background:linear-gradient(135deg,rgba(217,119,6,.15),rgba(217,119,6,.05));color:var(--amber);font-size:.86rem;font-weight:800;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px">
               ⚡ Smart Add
               <span style="font-size:.74rem;font-weight:400;color:rgba(217,119,6,.7)">Browse by Room &amp; Trade</span>
             </button>
-            <button onclick="openGuidedAdd()" style="flex:1;padding:9px;border-radius:12px;border:1.5px solid rgba(37,99,235,.5);background:linear-gradient(135deg,rgba(37,99,235,.15),rgba(37,99,235,.05));color:#93c5fd;font-size:.86rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px">
+            <button onclick="openGuidedAdd()" style="flex:1;min-width:150px;padding:9px;border-radius:12px;border:1.5px solid rgba(37,99,235,.5);background:linear-gradient(135deg,rgba(37,99,235,.15),rgba(37,99,235,.05));color:#93c5fd;font-size:.86rem;font-weight:800;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px">
               🎯 Guided Questions
               <span style="font-size:.74rem;font-weight:400;color:rgba(147,197,253,.7)">Answer, we build it</span>
+            </button>
+            <button onclick="openWalkCapture()" style="flex:1;min-width:150px;padding:9px;border-radius:12px;border:1.5px solid rgba(139,92,246,.5);background:linear-gradient(135deg,rgba(139,92,246,.15),rgba(139,92,246,.05));color:#c4b5fd;font-size:.86rem;font-weight:800;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px">
+              🎙️ ScopeWalk
+              <span style="font-size:.74rem;font-weight:400;color:rgba(196,181,253,.7)">Walk, talk, we build it</span>
             </button>
           </div>
 </div>
@@ -4853,9 +4857,6 @@
             <span class="photo-queue-badge" style="display:none;background:rgba(217,119,6,.15);border:1px solid rgba(217,119,6,.3);color:var(--amber);border-radius:999px;padding:3px 10px;font-size:.72rem;font-weight:700;align-items:center;gap:4px"></span>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button onclick="openWalkCapture()" style="cursor:pointer;background:linear-gradient(135deg,#d97706,#f59e0b);color:#fff;padding:8px 16px;border-radius:10px;font-size:.84rem;font-weight:700;border:none">
-              🎙️ ScopeWalk
-            </button>
             <label style="cursor:pointer;background:#d97706;color:#fff;padding:8px 16px;border-radius:10px;font-size:.84rem;font-weight:700">
               📸 Take Photo
               <input type="file" accept="image/*" capture="environment" style="display:none" onchange="uploadJobFiles(this)">
@@ -5055,7 +5056,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202608312330"></script>
+<script src="kytrac-app.js?v=202609010356"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW
