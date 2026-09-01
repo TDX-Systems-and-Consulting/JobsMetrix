@@ -593,12 +593,29 @@ exports.pushPersonalEventToGCal = functions.firestore
 // person's Google event ID separately (gcalEventIds: {uid: eventId}),
 // since one JOBSpan phase can correspond to several different Google
 // Calendar events (one per crew member).
+// Watches Features (subgroups) under the current Epic/Feature/Task
+// project model, NOT the old flat jobs/{jobId}/phases/{phaseId}
+// collection this used to watch. That collection was replaced by
+// estimateGroups/subgroups when the Gantt/Epic rework shipped --
+// openAddPhaseModal and every other phase-creation path now write
+// there instead, and migrateLegacyPhaseToFeature exists specifically
+// to move old phases docs into this newer model and delete the
+// original. This function's trigger was never updated to follow that
+// move, so it had been silently watching an effectively abandoned
+// path -- any Feature scheduled after that migration never fired a
+// Firestore write pushPhaseToGCal would see, regardless of whether a
+// team member's Google Calendar was correctly connected.
 exports.pushPhaseToGCal = functions.firestore
-  .document('companies/{companyId}/jobs/{jobId}/phases/{phaseId}')
+  .document('companies/{companyId}/jobs/{jobId}/estimateGroups/{epicId}/subgroups/{subgroupId}')
   .onWrite(async (change, context) => {
     const { companyId, jobId } = context.params;
     const before = change.before.exists ? change.before.data() : null;
     const after = change.after.exists ? change.after.data() : null;
+
+    // Only push Features that actually carry a schedule -- most
+    // subgroups are created with no startDate at all (set later via
+    // the Gantt) and shouldn't produce a dateless calendar event.
+    if (!after?.startDate && !before?.startDate) return null;
 
     const db = admin.firestore();
     const jobDoc = await db.collection('companies').doc(companyId).collection('jobs').doc(jobId).get();
@@ -616,18 +633,19 @@ exports.pushPhaseToGCal = functions.firestore
       const cal = await getCalendarClientForUser(companyId, uid);
       if (!cal) continue;
 
-      if (!after) {
-        // Phase deleted - remove from this person's calendar if we'd pushed one.
+      if (!after || !after.startDate) {
+        // Feature deleted, or its schedule was cleared - remove from
+        // this person's calendar if we'd pushed one.
         if (gcalEventIds[uid]) {
           try { await cal.events.delete({ calendarId: 'primary', eventId: gcalEventIds[uid] }); }
-          catch (e) { console.warn('gcal phase delete failed:', e.message); }
+          catch (e) { console.warn('gcal feature delete failed:', e.message); }
         }
         continue;
       }
 
       const eventBody = {
-        summary: `${after.name || 'Phase'} — ${job.name || 'Job'}`,
-        description: `JOBSpan job phase${job.jobNumber ? ' (' + job.jobNumber + ')' : ''}`,
+        summary: `${after.name || 'Feature'} — ${job.name || 'Job'}`,
+        description: `JOBSpan job feature${job.jobNumber ? ' (' + job.jobNumber + ')' : ''}`,
         start: { date: after.startDate },
         end: { date: after.endDate || after.startDate }
       };
