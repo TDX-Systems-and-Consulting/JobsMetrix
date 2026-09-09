@@ -2074,6 +2074,161 @@ exports.sendJobspanEmail = functions.https.onCall(async (data, context) => {
 // writes to companies/{companyId}/kpiCache/mtd so the dashboard
 // can read instantly without live API calls on page load.
 // ════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
+// SCOPEWALK PHASE 2 — transcribe the walk-through audio, then have Claude
+// read the transcript and draft a scope of work matched against the real
+// catalog. Never invents prices: only attaches unitCost/unitPrice that
+// already exist in CATALOG_DATA for a matched item. Anything the model
+// can't confidently match is left unmatched for manual review, not guessed.
+// ═══════════════════════════════════════════════════════════════════════
+exports.processScopeWalk = functions
+  .runWith({ secrets: ['ANTHROPIC_API_KEY'], timeoutSeconds: 540, memory: '1GB' })
+  .firestore.document('companies/{companyId}/walkCaptures/{walkId}')
+  .onCreate(async (snap, context) => {
+    const { companyId, walkId } = context.params;
+    const db = admin.firestore();
+    const docRef = snap.ref;
+    const data = snap.data();
+
+    try {
+      // ── Step 1: Transcribe the audio with Google Cloud Speech-to-Text ──
+      const speech = require('@google-cloud/speech');
+      const speechClient = new speech.SpeechClient();
+      const bucket = admin.storage().bucket();
+      const [audioBuffer] = await bucket.file(data.audioPath).download();
+
+      const [operation] = await speechClient.longRunningRecognize({
+        audio: { content: audioBuffer.toString('base64') },
+        config: {
+          encoding: 'WEBM_OPUS',
+          sampleRateHertz: 48000,
+          languageCode: 'en-US',
+          enableAutomaticPunctuation: true,
+          model: 'default',
+        },
+      });
+      const [response] = await operation.promise();
+      const transcript = (response.results || [])
+        .map(r => r.alternatives[0].transcript)
+        .join(' ')
+        .trim();
+
+      if (!transcript) {
+        await docRef.update({
+          status: 'transcribe_failed',
+          transcript: '',
+          transcribeError: 'No speech detected in audio.',
+        });
+        return;
+      }
+
+      await docRef.update({ transcript, status: 'transcribed' });
+
+      // ── Step 2: Build a condensed catalog reference (names + trades only, ──
+      // ── no prices sent to the model — prices get attached below from the ──
+      // ── real catalog after matching, never from what Claude returns).    ──
+      const jobSnap = await db.collection('companies').doc(companyId)
+        .collection('jobs').doc(data.jobId).get();
+      const job = jobSnap.exists ? jobSnap.data() : {};
+
+      // CATALOG_DATA lives in the front-end bundle, not in Firestore, so a
+      // condensed copy is kept here for matching. This mirrors kytrac-app.js
+      // and must be regenerated (see scripts/sync-catalog-names.js) whenever
+      // the catalog changes trade codes or item names.
+      const catalogNamesByTrade = require('./scopewalk-catalog-names.json');
+
+      const catalogRefText = Object.entries(catalogNamesByTrade)
+        .map(([trade, names]) => `${trade}:\n` + names.map(n => `  - ${n}`).join('\n'))
+        .join('\n\n');
+
+      const prompt = `You are helping a residential contractor turn a spoken property walk-through into a draft scope of work.
+
+Below is a transcript of what the contractor said out loud while walking the property, noting what work is needed room by room.
+
+TRANSCRIPT:
+"""
+${transcript}
+"""
+
+Extract each distinct scope item mentioned (e.g. "replace the kitchen faucet", "patch drywall in the hallway ceiling", "paint the master bedroom two coats"). For each item, try to match it to the closest item name in the catalog reference below. Only match when you are genuinely confident it's the same item — if nothing in the catalog is a good fit, set matchedCatalogName to null rather than guessing at a loose match.
+
+CATALOG REFERENCE (trade code, then item names under it):
+${catalogRefText}
+
+Respond with ONLY a JSON array, no other text, no markdown fences. Each element:
+{
+  "spokenItem": "<what the contractor said, in your own words>",
+  "room": "<room mentioned, or null>",
+  "matchedCatalogName": "<exact catalog item name, or null>",
+  "trade": "<trade code the match belongs to, or null>",
+  "estimatedQty": <number, or null if not mentioned>,
+  "unit": "<unit, or null>",
+  "confidence": "high" | "medium" | "low"
+}`;
+
+      const anthropicResp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 4000,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+      const anthropicJson = await anthropicResp.json();
+      if (!anthropicResp.ok) {
+        throw new Error('Anthropic API error: ' + JSON.stringify(anthropicJson));
+      }
+      const rawText = anthropicJson.content.map(b => b.text || '').join('');
+      let scopeItems;
+      try {
+        scopeItems = JSON.parse(rawText.trim());
+      } catch (parseErr) {
+        const match = rawText.match(/\[[\s\S]*\]/);
+        if (!match) throw new Error('Could not parse model response as JSON: ' + rawText.slice(0, 500));
+        scopeItems = JSON.parse(match[0]);
+      }
+
+      // ── Step 3: Attach REAL current prices from the live catalog for ──
+      // ── every matched item. Never trust a price from the model.      ──
+      const catalogFull = require('./scopewalk-catalog-full.json'); // trade -> [{name, materials:{unitCost,unitPrice,unit}, labor:{...}}]
+      const draftEstimate = scopeItems.map(item => {
+        if (!item.matchedCatalogName || !item.trade) {
+          return { ...item, matched: false, unitCost: null, unitPrice: null };
+        }
+        const tradeItems = catalogFull[item.trade] || [];
+        const found = tradeItems.find(ci => ci.name === item.matchedCatalogName);
+        if (!found) {
+          return { ...item, matched: false, unitCost: null, unitPrice: null };
+        }
+        return {
+          ...item,
+          matched: true,
+          unitCost: (found.materials && found.materials.unitCost) || null,
+          unitPrice: (found.materials && found.materials.unitPrice) || null,
+          unit: (found.materials && found.materials.unit) || item.unit || null,
+        };
+      });
+
+      await docRef.update({
+        draftEstimate,
+        status: 'estimated',
+        estimatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+    } catch (err) {
+      console.error('processScopeWalk failed for', walkId, err);
+      await docRef.update({
+        status: 'processing_failed',
+        processingError: String(err.message || err),
+      }).catch(() => {});
+    }
+  });
+
 exports.dailyKpiRefresh = functions.pubsub
   .schedule('0 11 * * *') // 11am UTC = 6am CT
   .timeZone('America/Chicago')
