@@ -964,6 +964,8 @@ function openNewJobModal() {
   document.getElementById('jobType').value = 'Residential Remodel';
   document.getElementById('jobStartDate').value = '';
   document.getElementById('jobEndDate').value = '';
+  const pickerRow0 = document.getElementById('jobAddressPickerRow');
+  if (pickerRow0) pickerRow0.style.display = 'none';
   kOpen('newJobModal');
 }
 
@@ -1073,6 +1075,17 @@ function prefillNewJobForCustomerData(customer) {
   document.getElementById('jobPhone').value = customer.phone || '';
   document.getElementById('jobEmail').value = customer.email || '';
   document.getElementById('jobAddress').value = customer.address || '';
+  const addresses = (customer.addresses && customer.addresses.length) ? customer.addresses : (customer.address ? [customer.address] : []);
+  const pickerRow = document.getElementById('jobAddressPickerRow');
+  const picker = document.getElementById('jobAddressPicker');
+  if (addresses.length > 1) {
+    picker.innerHTML = addresses.map(a => `<option value="${a.replace(/"/g,'&quot;')}">${a}</option>`).join('');
+    picker.value = addresses[0];
+    document.getElementById('jobAddress').value = addresses[0];
+    pickerRow.style.display = '';
+  } else {
+    pickerRow.style.display = 'none';
+  }
   document.getElementById('jobStatus').value = 'New Lead';
   document.getElementById('jobType').value = 'Residential Remodel';
   document.getElementById('jobContractValue').value = '';
@@ -3310,6 +3323,8 @@ function editCurrentJob() {
   document.getElementById('jobSuperintendent').value = job.superintendent || '';
   document.getElementById('jobPM').value = job.pm || '';
   document.getElementById('jobNotes').value = job.notes || '';
+  const pickerRow1 = document.getElementById('jobAddressPickerRow');
+  if (pickerRow1) pickerRow1.style.display = 'none';
   kClose('jobDetailModal');
   kOpen('newJobModal');
 }
@@ -15181,6 +15196,39 @@ function renderCustomers() {
   }).join('');
 }
 
+function renderCustomerAddressRows(addresses) {
+  const list = (addresses && addresses.length) ? addresses : [''];
+  const container = document.getElementById('custAddressList');
+  if (!container) return;
+  container.innerHTML = list.map((addr, i) => `
+    <div class="cust-address-row" style="display:flex;gap:6px;margin-bottom:6px">
+      <input class="cust-address-input" value="${(addr||'').replace(/"/g,'&quot;')}" placeholder="123 Main St, St. Louis, MO 63101" style="flex:1" />
+      <button type="button" class="btn" onclick="removeCustomerAddressRow(this)" ${list.length<=1 ? 'style="visibility:hidden"' : ''}>Remove</button>
+    </div>
+  `).join('');
+}
+function addCustomerAddressRow() {
+  const container = document.getElementById('custAddressList');
+  const div = document.createElement('div');
+  div.className = 'cust-address-row';
+  div.style = 'display:flex;gap:6px;margin-bottom:6px';
+  div.innerHTML = `<input class="cust-address-input" placeholder="123 Main St, St. Louis, MO 63101" style="flex:1" />
+    <button type="button" class="btn" onclick="removeCustomerAddressRow(this)">Remove</button>`;
+  container.appendChild(div);
+}
+function removeCustomerAddressRow(btn) {
+  const container = document.getElementById('custAddressList');
+  if (container.children.length <= 1) return; // always keep at least one row
+  btn.closest('.cust-address-row').remove();
+}
+function getCustomerAddressesFromForm() {
+  return Array.from(document.querySelectorAll('#custAddressList .cust-address-input'))
+    .map(i => i.value.trim())
+    .filter(Boolean);
+}
+window.addCustomerAddressRow = addCustomerAddressRow;
+window.removeCustomerAddressRow = removeCustomerAddressRow;
+
 function openCustomerModal(id) {
   _editingCustomerId = id || null;
   const customer = id ? allCustomers.find(c => c.id === id) : null;
@@ -15194,6 +15242,7 @@ function openCustomerModal(id) {
   setVal('custPhone', customer?.phone);
   setVal('custEmail', customer?.email);
   setVal('custAddress', customer?.address);
+  renderCustomerAddressRows(customer?.addresses && customer.addresses.length ? customer.addresses : (customer?.address ? [customer.address] : ['']));
   setVal('custSource', customer?.source);
   setVal('custReferredBy', customer?.referredBy);
   setVal('custType', customer?.type || 'Homeowner');
@@ -15210,12 +15259,14 @@ function saveCustomer(goToNewJob) {
   if (!name) { alert('Name is required.'); return; }
   const id = document.getElementById('customerId')?.value;
 
+  const addresses = getCustomerAddressesFromForm();
   const data = {
     name,
     businessName: document.getElementById('custBusinessName')?.value.trim() || '',
     phone: document.getElementById('custPhone')?.value.trim() || '',
     email: document.getElementById('custEmail')?.value.trim() || '',
-    address: document.getElementById('custAddress')?.value.trim() || '',
+    addresses,
+    address: addresses[0] || '', // kept in sync for any code still reading the single legacy field
     source: document.getElementById('custSource')?.value || '',
     referredBy: document.getElementById('custReferredBy')?.value.trim() || '',
     type: document.getElementById('custType')?.value || 'Homeowner',
