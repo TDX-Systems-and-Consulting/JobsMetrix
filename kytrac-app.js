@@ -949,6 +949,26 @@ function conGenJobNumber() {
   return 'JOB-' + year + '-' + num;
 }
 
+function onJobStatusRowsChange() {
+  const status = document.getElementById('jobStatus')?.value;
+  const pastNewLead = status && status !== 'New Lead';
+  ['jobContractValueRow','jobEstCostRow','jobStartDateRow','jobEndDateRow'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = pastNewLead ? '' : 'none';
+  });
+}
+window.onJobStatusRowsChange = onJobStatusRowsChange;
+
+function onAppointmentSetDateChange() {
+  const dateVal = document.getElementById('jobAppointmentSetDate')?.value;
+  const statusEl = document.getElementById('jobStatus');
+  if (dateVal && statusEl && statusEl.value === 'New Lead') {
+    statusEl.value = 'Appointment Set';
+    onJobStatusRowsChange();
+  }
+}
+window.onAppointmentSetDateChange = onAppointmentSetDateChange;
+
 function openNewJobModal() {
   conEditingJobId = null;
   document.getElementById('jobModalTitle').textContent = 'New Job';
@@ -964,8 +984,11 @@ function openNewJobModal() {
   document.getElementById('jobType').value = 'Residential Remodel';
   document.getElementById('jobStartDate').value = '';
   document.getElementById('jobEndDate').value = '';
+  const jasd0 = document.getElementById('jobAppointmentSetDate');
+  if (jasd0) jasd0.value = '';
   const pickerRow0 = document.getElementById('jobAddressPickerRow');
   if (pickerRow0) pickerRow0.style.display = 'none';
+  onJobStatusRowsChange();
   kOpen('newJobModal');
 }
 
@@ -1087,6 +1110,9 @@ function prefillNewJobForCustomerData(customer) {
     pickerRow.style.display = 'none';
   }
   document.getElementById('jobStatus').value = 'New Lead';
+  const jasd1 = document.getElementById('jobAppointmentSetDate');
+  if (jasd1) jasd1.value = '';
+  onJobStatusRowsChange();
   document.getElementById('jobType').value = 'Residential Remodel';
   document.getElementById('jobContractValue').value = '';
   document.getElementById('jobEstCost').value = '';
@@ -3320,6 +3346,9 @@ function editCurrentJob() {
   document.getElementById('jobEstCost').value = job.estCost || '';
   document.getElementById('jobStartDate').value = job.startDate || '';
   document.getElementById('jobEndDate').value = job.endDate || '';
+  const jasd2 = document.getElementById('jobAppointmentSetDate');
+  if (jasd2) jasd2.value = job.appointmentSetDate || '';
+  onJobStatusRowsChange();
   document.getElementById('jobSuperintendent').value = job.superintendent || '';
   document.getElementById('jobPM').value = job.pm || '';
   document.getElementById('jobNotes').value = job.notes || '';
@@ -30002,6 +30031,7 @@ window.saveJob = function(openEstimate) {
     address: document.getElementById('jobAddress').value.trim(),
     status: newStatus,
     statusDate: new Date().toISOString().split('T')[0],
+    appointmentSetDate: document.getElementById('jobAppointmentSetDate')?.value || '',
     type: document.getElementById('jobType').value,
     contractValue: parseFloat(document.getElementById('jobContractValue').value) || 0,
     estCost: parseFloat(document.getElementById('jobEstCost').value) || 0,
