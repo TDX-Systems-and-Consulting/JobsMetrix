@@ -28895,6 +28895,182 @@ const GUIDED_QTY_LABELS = {
 // per the "ship it, fix pricing as real estimates surface it" plan.
 // ============================================================
 
+const GRADE_OPTIONS = ['Contractor Grade', 'Design Grade', 'Premium', 'No Preference'];
+const BATHROOM_GUIDED_FLOW = [
+  { id:'drywall', label:'Drywall', questions:[
+      { key:'material', label:'Drywall material?', options:['Standard Drywall','Moisture-Resistant (Green/Purple Board)'] },
+      { key:'thickness', label:'Drywall thickness?', options:['1/2" Thickness','5/8" Thickness'] }
+  ]},
+  { id:'wallTile', label:'Wall Tile', questions:[
+      { key:'grade', label:'What grade level for the wall tile?', options:GRADE_OPTIONS, isGrade:true }
+  ]},
+  { id:'tubPan', label:'Tub or Shower Pan', questions:[
+      { key:'configuration', label:'Configuration?', options:['Tub/Shower Combo (soaking tub)','Walk-in Shower (pan, no tub)'], shareKey:'showerConfig' },
+      { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true }
+  ]},
+  { id:'surround', label:'Shower/Tub Surround', questions:[
+      { key:'configuration', label:'Configuration?', options:['Tub/Shower Combo (soaking tub)','Walk-in Shower (pan, no tub)'], carryFrom:'showerConfig' },
+      { key:'grade', label:'What grade level for the surround?', options:GRADE_OPTIONS, isGrade:true }
+  ]},
+  { id:'faucetValve', label:'Tub/Shower Faucet & Valve', questions:[
+      { key:'handleCount', label:'Handle count?', options:['1-Handle','2-Handle','3-Handle'] },
+      { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true }
+  ]},
+  { id:'showerDoor', label:'Shower Door', questions:[
+      { key:'doorType', label:'Door type?', options:['Sliding Glass Door','Curtain Rod'] },
+      { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true }
+  ]},
+  { id:'flooring', label:'Flooring', questions:[
+      { key:'material', label:'Flooring material?', options:['LVP','Tile'] },
+      { key:'grade', label:'What grade level?', options:['Contractor Grade (12 mil / basic tile)','Design Grade (20 mil / mid tile)','Premium (24+ mil / high-end tile)','No Preference'], isGrade:true }
+  ]},
+  { id:'toilet', label:'Toilet', questions:[
+      { key:'qty', label:'How many toilets?', options:['1','2','3','4+'] },
+      { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true },
+      { key:'flush', label:'Flush type?', options:['Single Flush','Dual Flush'] },
+      { key:'shape', label:'Bowl shape?', options:['Round','Elongated'] },
+      { key:'laborOk', label:'Standard toilet install labor apply here (no unusual access/plumbing issues)?', options:['Yes, standard labor rate applies','No, this job has a complication (specify in notes)'] }
+  ], note:'Standard bundle auto-applies: wax ring, flange kit, supply line, shutoff valve — no separate question needed.' },
+  { id:'vanity', label:'Vanity', questions:[
+      { key:'sinkConfig', label:'Sink configuration?', options:['Single Sink','Double Sink'], shareKey:'vanitySinkConfig' },
+      { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true },
+      { key:'width', label:'Vanity width?', options: ctx => ctx.vanitySinkConfig === 'Double Sink' ? ['60"','72"','Custom'] : ['24"','30"','36"','Custom'], shareKey:'vanityWidth' }
+  ]},
+  { id:'vanityFaucet', label:'Vanity Faucet', questions:[
+      { key:'mountType', label:'Mount type?', options:['Centerset','Widespread','Single-Hole','Keep Current Faucet'] },
+      { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true, skipIf: ctx => ctx.vanityFaucet_mountType === 'Keep Current Faucet', skipValue:'N/A (keeping current faucet)' }
+  ]},
+  { id:'mirror', label:'Mirror / Medicine Cabinet', questions:[
+      { key:'type', label:'Type?', options:['Plain Mirror','Medicine Cabinet'] },
+      { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true },
+      { key:'width', label: ctx => ctx.vanityWidth ? `Width? (vanity is ${ctx.vanityWidth} — suggest matching)` : 'Width?', options:['24"','30"','36"'] }
+  ]},
+  { id:'lighting', label:'Bathroom Lighting', questions:[
+      { key:'fixtureType', label:'Fixture type?', options:['Vanity Bar Light','Flush-Mount Ceiling Light'], shareKey:'lightingFixtureType' },
+      { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true },
+      { key:'size', label:'Size?', options: ctx => ctx.lightingFixtureType === 'Vanity Bar Light' ? ['2-Light (~18")','3-Light (~24")','4-Light (~36")'] : ['11"','13"','15"'] }
+  ]},
+  { id:'exhaustFan', label:'Exhaust Fan', questions:[
+      { key:'needed', label:'Does this bathroom need an exhaust fan?', options:['Yes','No (not applicable)'], shareKey:'fanNeeded' },
+      { key:'feature', label:'Feature?', options:['Fan Only','Fan+Light Combo','No Preference'], skipIf: ctx => ctx.fanNeeded === 'No (not applicable)', skipValue:'N/A' },
+      { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true, skipIf: ctx => ctx.fanNeeded === 'No (not applicable)', skipValue:'N/A' },
+      { key:'cfm', label:'CFM rating?', options:['50 CFM (small bath)','80-110 CFM (standard)','150+ CFM (large bath)'], skipIf: ctx => ctx.fanNeeded === 'No (not applicable)', skipValue:'N/A' }
+  ]}
+];
+
+let _bqRoom = null, _bqCatIdx = 0, _bqQIdx = 0, _bqCtx = {}, _bqHistory = [], _bqNoPrefCategory = false;
+
+function bqStart(room) {
+  _bqRoom = room; _bqCatIdx = 0; _bqQIdx = 0; _bqCtx = {}; _bqHistory = []; _bqNoPrefCategory = false;
+  bqRenderQuestion();
+}
+window.bqStart = bqStart;
+
+function bqResolveNoPreferenceDefault(question) {
+  if (question.isGrade) return 'Design Grade'; // established rule
+  if (question.key === 'cfm') return '80-110 CFM (standard)'; // established rule -- the "standard" tier
+  return 'No Preference'; // no default rule established yet for this field type -- flag for review
+}
+
+function bqCurrentQuestion() {
+  const cat = BATHROOM_GUIDED_FLOW[_bqCatIdx];
+  if (!cat) return null;
+  while (_bqQIdx < cat.questions.length) {
+    const q = cat.questions[_bqQIdx];
+    const ctxKey = `${cat.id}_${q.key}`;
+    // Carry-forward: skip asking, copy the shared value directly, move on
+    if (q.carryFrom) {
+      _bqCtx[ctxKey] = _bqCtx[q.carryFrom];
+      _bqQIdx++;
+      continue;
+    }
+    // Structural skip (e.g. Keep Current Faucet, No Fan Needed)
+    if (q.skipIf && q.skipIf(_bqCtx)) {
+      _bqCtx[ctxKey] = q.skipValue !== undefined ? q.skipValue : 'N/A';
+      _bqQIdx++;
+      continue;
+    }
+    // No Preference cascade -- once triggered anywhere in this category, auto-resolve the rest
+    if (_bqNoPrefCategory) {
+      _bqCtx[ctxKey] = bqResolveNoPreferenceDefault(q);
+      _bqQIdx++;
+      continue;
+    }
+    return { cat, q, ctxKey };
+  }
+  return null; // category complete
+}
+
+function bqRenderQuestion() {
+  let found = bqCurrentQuestion();
+  while (!found) {
+    _bqCatIdx++; _bqQIdx = 0; _bqNoPrefCategory = false;
+    if (_bqCatIdx >= BATHROOM_GUIDED_FLOW.length) { bqShowReview(); return; }
+    found = bqCurrentQuestion();
+  }
+  const { cat, q } = found;
+  const label = typeof q.label === 'function' ? q.label(_bqCtx) : q.label;
+  const options = typeof q.options === 'function' ? q.options(_bqCtx) : q.options;
+  document.getElementById('guidedBreadcrumb').textContent = `${_bqRoom} › ${cat.label}`;
+  let noteHtml = cat.note && _bqQIdx === 0 ? `<div class="small muted" style="margin-bottom:14px;font-style:italic">${esc(cat.note)}</div>` : '';
+  document.getElementById('guidedBody').innerHTML = `
+    ${noteHtml}
+    <div style="font-size:1.05rem;font-weight:700;margin-bottom:16px">${esc(label)}</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${options.map(o => `<button class="btn" style="text-align:left;padding:12px 16px" onclick="bqAnswer(${JSON.stringify(o).replace(/"/g,'&quot;')})">${esc(o)}</button>`).join('')}
+    </div>`;
+  document.getElementById('guidedFooter').innerHTML =
+    `<span class="small muted">${esc(cat.label)} — question ${_bqQIdx+1} of ${cat.questions.length}${cat.id==='toilet'||cat.id==='vanity'?' (bathroom category '+( _bqCatIdx+1)+' of '+BATHROOM_GUIDED_FLOW.length+')':''}</span>`;
+  bqUpdateBackBtn();
+}
+
+function bqAnswer(value) {
+  const { cat, q, ctxKey } = bqCurrentQuestion();
+  _bqHistory.push({ catIdx:_bqCatIdx, qIdx:_bqQIdx, noPref:_bqNoPrefCategory, ctxSnapshot:{..._bqCtx} });
+  _bqCtx[ctxKey] = value;
+  if (q.shareKey) _bqCtx[q.shareKey] = value;
+  if (String(value).toLowerCase().includes('no preference')) _bqNoPrefCategory = true;
+  _bqQIdx++;
+  bqRenderQuestion();
+}
+window.bqAnswer = bqAnswer;
+
+function bqUpdateBackBtn() {
+  const btn = document.getElementById('guidedBackBtn');
+  if (btn) btn.style.display = 'inline-block';
+}
+function bqBack() {
+  if (!_bqHistory.length) { _bqRoom = null; guidedRenderRoomScreen(); return; }
+  const prev = _bqHistory.pop();
+  _bqCatIdx = prev.catIdx; _bqQIdx = prev.qIdx; _bqNoPrefCategory = prev.noPref; _bqCtx = prev.ctxSnapshot;
+  bqRenderQuestion();
+}
+window.bqBack = bqBack;
+
+function bqShowReview() {
+  const rows = BATHROOM_GUIDED_FLOW.map(cat => {
+    const parts = cat.questions.map(q => {
+      const val = _bqCtx[`${cat.id}_${q.key}`];
+      return val ? `${q.key}: ${val}` : null;
+    }).filter(Boolean);
+    return `<tr><td style="padding:8px;border-bottom:1px solid var(--line);font-weight:600">${esc(cat.label)}</td>
+             <td style="padding:8px;border-bottom:1px solid var(--line)">${esc(parts.join(' | '))}</td></tr>`;
+  }).join('');
+  document.getElementById('guidedBreadcrumb').textContent = `${_bqRoom} › Draft Scope Summary`;
+  document.getElementById('guidedBody').innerHTML = `
+    <div style="font-size:1.05rem;font-weight:700;margin-bottom:14px">Draft Scope Summary (demo — no pricing attached yet)</div>
+    <table style="width:100%;border-collapse:collapse;font-size:.85rem">${rows}</table>
+    <div class="small muted" style="margin-top:14px;font-style:italic">This is a demo of the question flow only. Pricing is not yet attached to these categories — that comes once the Lowe's scan sheets are priced out.</div>`;
+  document.getElementById('guidedFooter').innerHTML =
+    `<button class="btn-amber" style="width:100%;padding:12px" onclick="bqFinish()">Done — Back to Room Picker</button>`;
+  bqUpdateBackBtn();
+}
+function bqFinish() {
+  _bqRoom = null; _bqCatIdx = 0; _bqQIdx = 0; _bqCtx = {}; _bqHistory = []; _bqNoPrefCategory = false;
+  guidedRenderRoomScreen();
+}
+window.bqFinish = bqFinish;
+
 const ROOM_WALKTHROUGHS = {
   "Hallway": {
     categories: [
@@ -29210,7 +29386,7 @@ window.openGuidedAdd = openGuidedAdd;
 // Dispatches the modal's single Back button to whichever engine is
 // currently active -- the original phase-by-phase GUIDED_SCRIPTS flow
 // (Roofing) or the newer continuous ROOM_WALKTHROUGHS flow.
-function guidedBackDispatch() { if (_wtWalkthrough) wtBack(); else guidedBack(); }
+function guidedBackDispatch() { if (_bqRoom) bqBack(); else if (_wtWalkthrough) wtBack(); else guidedBack(); }
 window.guidedBackDispatch = guidedBackDispatch;
 
 function guidedRenderCategoryScreen() {
@@ -29264,6 +29440,9 @@ function guidedPickRoom(room) {
   if (!room) return;
   guidedPush({ t: 'room' });
   _guidedRoom = room;
+  // Bathrooms get the new purpose-built grade/type guided flow (demo --
+  // question logic only, pricing not yet attached pending Lowe's scan data)
+  if (/bath/i.test(room)) { bqStart(room); return; }
   // Rooms with a continuous ROOM_WALKTHROUGHS entry get the new
   // one-session-through-every-category experience instead of the
   // old pick-one-phase-at-a-time dropdown.
