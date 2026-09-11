@@ -949,6 +949,22 @@ function conGenJobNumber() {
   return 'JOB-' + year + '-' + num;
 }
 
+let _jobAddressAutocompleteInit = false;
+function initJobAddressAutocomplete() {
+  if (_jobAddressAutocompleteInit) return; // Google's widget attaches to the DOM node itself and persists across modal open/close, so only init once
+  const input = document.getElementById('jobAddress');
+  if (!input || typeof google === 'undefined' || !google.maps || !google.maps.places) return;
+  const autocomplete = new google.maps.places.Autocomplete(input, { types: ['address'] });
+  autocomplete.addListener('place_changed', () => {
+    const place = autocomplete.getPlace();
+    if (place && place.formatted_address) {
+      input.value = place.formatted_address;
+    }
+  });
+  _jobAddressAutocompleteInit = true;
+}
+window.initJobAddressAutocomplete = initJobAddressAutocomplete;
+
 function onJobStatusRowsChange() {
   const status = document.getElementById('jobStatus')?.value;
   const pastNewLead = status && status !== 'New Lead';
@@ -989,6 +1005,7 @@ function openNewJobModal() {
   const pickerRow0 = document.getElementById('jobAddressPickerRow');
   if (pickerRow0) pickerRow0.style.display = 'none';
   onJobStatusRowsChange();
+  initJobAddressAutocomplete();
   kOpen('newJobModal');
 }
 
@@ -1125,6 +1142,7 @@ function prefillNewJobForCustomerData(customer) {
   if (pmEl) pmEl.innerHTML = getTeamMemberOpts();
   // Switch to Jobs page and open modal
   ktNav('jobs', null);
+  initJobAddressAutocomplete();
   kOpen('newJobModal');
   // Focus on job name so user can type the job description
   setTimeout(() => {
@@ -3355,6 +3373,7 @@ function editCurrentJob() {
   const pickerRow1 = document.getElementById('jobAddressPickerRow');
   if (pickerRow1) pickerRow1.style.display = 'none';
   kClose('jobDetailModal');
+  initJobAddressAutocomplete();
   kOpen('newJobModal');
 }
 
