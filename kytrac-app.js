@@ -29962,7 +29962,18 @@ function jobPickCustomer(id) {
   document.getElementById('jobClient').value = c.name || '';
   document.getElementById('jobPhone').value = c.phone || '';
   document.getElementById('jobEmail').value = c.email || '';
-  if (c.address) document.getElementById('jobAddress').value = c.address;
+  const addresses = (c.addresses && c.addresses.length) ? c.addresses : (c.address ? [c.address] : []);
+  const pickerRow = document.getElementById('jobAddressPickerRow');
+  const picker = document.getElementById('jobAddressPicker');
+  if (addresses.length > 1 && pickerRow && picker) {
+    picker.innerHTML = addresses.map(a => `<option value="${a.replace(/"/g,'&quot;')}">${a}</option>`).join('');
+    picker.value = addresses[0];
+    document.getElementById('jobAddress').value = addresses[0];
+    pickerRow.style.display = '';
+  } else {
+    if (pickerRow) pickerRow.style.display = 'none';
+    if (addresses[0]) document.getElementById('jobAddress').value = addresses[0];
+  }
   document.getElementById('jobCustomerDrop').style.display = 'none';
 }
 function jobOpenAddCustomer() {
