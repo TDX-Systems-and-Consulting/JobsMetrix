@@ -28897,6 +28897,9 @@ const GUIDED_QTY_LABELS = {
 
 const GRADE_OPTIONS = ['Contractor Grade', 'Design Grade', 'Premium', 'No Preference'];
 const BATHROOM_GUIDED_FLOW = [
+  { id:'jobContext', label:'Job Context', questions:[
+      { key:'scope', label:'Is this bathroom part of a whole-house remodel, or a standalone job?', options:['Part of whole-house remodel','Standalone job'], shareKey:'jobScope' }
+  ], note:'Haul-off/debris disposal: $0 if part of a whole-house remodel (already covered there), $109 flat if this is a standalone job -- one charge for the whole job, not per fixture.' },
   { id:'drywall', label:'Drywall', questions:[
       { key:'material', label:'Drywall material?', options:['Standard Drywall','Moisture-Resistant (Green/Purple Board)'] },
       { key:'thickness', label:'Drywall thickness?', options:['1/2" Thickness','5/8" Thickness'] }
