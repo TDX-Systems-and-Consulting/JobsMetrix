@@ -28932,18 +28932,29 @@ const BATHROOM_GUIDED_FLOW = [
       { key:'laborOk', label:'Standard toilet install labor apply here (no unusual access/plumbing issues)?', options:['Yes, standard labor rate applies','No, this job has a complication (specify in notes)'] }
   ], note:'Standard bundle auto-applies: wax ring, flange kit, supply line, shutoff valve — no separate question needed.' },
   { id:'vanity', label:'Vanity', questions:[
-      { key:'sinkConfig', label:'Sink configuration?', options:['Single Sink','Double Sink'], shareKey:'vanitySinkConfig' },
-      { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true },
-      { key:'width', label:'Vanity width?', options: ctx => ctx.vanitySinkConfig === 'Double Sink' ? ['60"','72"','Custom'] : ['24"','30"','36"','Custom'], shareKey:'vanityWidth' }
+      { key:'action', label:'New vanity or keep the current one?', options:['New Vanity','Keep Current Vanity'], shareKey:'vanityAction' },
+      { key:'sinkConfig', label:'Sink configuration?', options:['Single Sink','Double Sink'], shareKey:'vanitySinkConfig', skipIf: ctx => ctx.vanityAction === 'Keep Current Vanity', skipValue:'N/A (keeping current vanity)' },
+      { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true, skipIf: ctx => ctx.vanityAction === 'Keep Current Vanity', skipValue:'N/A (keeping current vanity)' },
+      { key:'width', label:'Vanity width?', options: ctx => ctx.vanitySinkConfig === 'Double Sink' ? ['60"','72"','Custom'] : ['24"','30"','36"','Custom'], shareKey:'vanityWidth', skipIf: ctx => ctx.vanityAction === 'Keep Current Vanity', skipValue:'N/A (keeping current vanity)' }
   ]},
   { id:'vanityFaucet', label:'Vanity Faucet', questions:[
-      { key:'mountType', label:'Mount type?', options:['Centerset','Widespread','Single-Hole','Keep Current Faucet'] },
+      { key:'mountType', label:'Mount type?', options:['Centerset','Widespread','Single-Hole','Keep Current Faucet'], shareKey:'vanityFaucetMountType' },
       { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true, skipIf: ctx => ctx.vanityFaucet_mountType === 'Keep Current Faucet', skipValue:'N/A (keeping current faucet)' }
-  ]},
+  ],
+  // PRICING NOTE (not yet wired -- for whoever attaches pricing to this flow):
+  // The Faucet Connection Kit (2 supply lines + 2 shutoff valves, $51.96 cost / $59.75 price
+  // per the Bathroom Category Pricing sheet) fires exactly ONCE per bathroom if EITHER
+  // vanityAction === 'New Vanity' OR vanityFaucet_mountType !== 'Keep Current Faucet'.
+  // It must NOT fire twice if both are new, and must be skipped only when vanityAction ===
+  // 'Keep Current Vanity' AND vanityFaucet_mountType === 'Keep Current Faucet' (a true
+  // touch-nothing job). Vanity's own Materials Kit (caulk + mount kit, $23.26) is separate
+  // and only fires when vanityAction === 'New Vanity' -- it does NOT include the connection
+  // kit parts, those were deliberately split out for exactly this reason.
+  },
   { id:'mirror', label:'Mirror / Medicine Cabinet', questions:[
       { key:'type', label:'Type?', options:['Plain Mirror','Medicine Cabinet'] },
       { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true },
-      { key:'width', label: ctx => ctx.vanityWidth ? `Width? (vanity is ${ctx.vanityWidth} — suggest matching)` : 'Width?', options:['24"','30"','36"'] }
+      { key:'width', label: ctx => (ctx.vanityWidth && !String(ctx.vanityWidth).startsWith('N/A')) ? `Width? (vanity is ${ctx.vanityWidth} — suggest matching)` : 'Width?', options:['24"','30"','36"'] }
   ]},
   { id:'lighting', label:'Bathroom Lighting', questions:[
       { key:'fixtureType', label:'Fixture type?', options:['Vanity Bar Light','Flush-Mount Ceiling Light'], shareKey:'lightingFixtureType' },
