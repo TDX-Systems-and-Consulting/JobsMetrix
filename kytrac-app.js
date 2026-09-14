@@ -8,6 +8,25 @@
 // outside of git's content-addressing, is the only way to show the
 // ACTUAL commit currently running. See loadVersionTag() below.
 
+// ═══════════════════════════════════════════════════════════════════════
+// JTXD LOCKED FINANCIAL RATES -- the single source of truth for the
+// Overhead/Marketing/Flex/Taxes waterfall. Every function that computes
+// this split MUST read from this object, never hardcode its own copy of
+// these numbers. This exists because three separate functions
+// (computeLockedBucketSplit, calcTrueMargin, computeEstimatedBreakdown)
+// each had their own hardcoded literals, and drifted apart across
+// several real formula corrections without anyone noticing until real
+// invoice numbers came out wrong. Confirmed correct and locked in on
+// 2026-09-14 after that incident -- do not change these without Travis's
+// explicit confirmation, the same way the 6%/5% correction was made.
+// ═══════════════════════════════════════════════════════════════════════
+const JTXD_LOCKED_RATES = {
+  overhead: 0.18,   // of JTXD Pool (Labor Billed minus real subcontractor/labor cost)
+  marketing: 0.06,  // of JTXD Pool
+  flex: 0.05,       // of the remainder after Overhead + Marketing
+  taxes: 0.275,     // of the remainder after Flex
+};
+
 const esc = s => ((s==null?'':s)).toString().replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 // For embedding a value as a JS string-literal ARGUMENT inside an
 // onclick="..." HTML attribute -- a genuinely different job from esc()
@@ -12289,12 +12308,12 @@ async function computeLockedBucketSplit(job) {
   // FULL revenue can exceed what's actually left over (confirmed on a
   // real $2,698 job: 28% of revenue was $755 against only $656 truly
   // retained). Same formula Travis's calculator now uses.
-  const overhead = jtxdActual * 0.18;
-  const marketing = jtxdActual * 0.06;
+  const overhead = jtxdActual * JTXD_LOCKED_RATES.overhead;
+  const marketing = jtxdActual * JTXD_LOCKED_RATES.marketing;
   const remainAfterOhMkt = jtxdActual - overhead - marketing;
-  const flex = remainAfterOhMkt * 0.05;
+  const flex = remainAfterOhMkt * JTXD_LOCKED_RATES.flex;
   const remainAfterFlex = remainAfterOhMkt - flex;
-  const taxes = remainAfterFlex * 0.275;
+  const taxes = remainAfterFlex * JTXD_LOCKED_RATES.taxes;
   // Real Stripe processing fees (card ~2.9%+$0.30, ACH/US bank
   // account meaningfully less) come straight out of Retained Earnings
   // -- true profit is what's left after every real cost, and this is
@@ -22362,12 +22381,12 @@ function calcTrueMargin(allItems) {
   // this same number algebraically anyway; this is just honest about it).
   const jtxdActual = laborBilled - realLaborCost;
 
-  const overhead = jtxdActual * 0.18;
-  const marketing = jtxdActual * 0.06;
+  const overhead = jtxdActual * JTXD_LOCKED_RATES.overhead;
+  const marketing = jtxdActual * JTXD_LOCKED_RATES.marketing;
   const rem1 = jtxdActual - overhead - marketing;
-  const flex = rem1 * 0.05;
+  const flex = rem1 * JTXD_LOCKED_RATES.flex;
   const rem2 = rem1 - flex;
-  const taxes = rem2 * 0.275;
+  const taxes = rem2 * JTXD_LOCKED_RATES.taxes;
   const retainedEarnings = rem2 - taxes;
 
   const trueMarginPct = revenue > 0 ? (retainedEarnings / revenue) * 100 : 0;
@@ -22482,7 +22501,10 @@ window.exportEstimateBreakdown = exportEstimateBreakdown;
 // earlier 15/12/3-of-revenue model this function used before that —
 // Materials is raw billed (the ~15% markup is Travis's own deliberate
 // overrun float, staying IN the bucket, never backed out), Overhead
-// is 18% of revenue, Marketing is 1.5%. Labor Budget here is a
+// is 18% of revenue, Marketing is 6% (both read from JTXD_LOCKED_RATES,
+// corrected 2026-09-14 -- this comment previously said 1.5%, which was
+// itself a stale, unfixed copy of the same drift found and corrected in
+// computeLockedBucketSplit and calcTrueMargin). Labor Budget here is a
 // pre-negotiation CEILING — the whole remainder after Materials/
 // Overhead/Marketing, before Flex/Taxes/Profit are carved out of it.
 // That's a real, stated modeling choice, not an attempt to replicate
@@ -22491,8 +22513,8 @@ window.exportEstimateBreakdown = exportEstimateBreakdown;
 async function computeEstimatedBreakdown(job) {
   const { materials: billedMaterials } = await fetchEstimateCostSplitFresh(job.id);
   const revenue = getJobValue(job) || 0;
-  const overhead = revenue * 0.18;
-  const marketing = revenue * 0.015;
+  const overhead = revenue * JTXD_LOCKED_RATES.overhead;
+  const marketing = revenue * JTXD_LOCKED_RATES.marketing;
   const labor = Math.max(0, revenue - billedMaterials - overhead - marketing);
   const r = v => Math.round(v * 100) / 100;
   return {
