@@ -28962,10 +28962,12 @@ const BATHROOM_GUIDED_FLOW = [
   ], note:'Haul-off/debris disposal: $0 if part of a whole-house remodel (already covered there), $109 flat if this is a standalone job -- one charge for the whole job, not per fixture.' },
   { id:'drywall', label:'Drywall', questions:[
       { key:'material', label:'Drywall material?', options:['Standard Drywall','Moisture-Resistant (Green/Purple Board)'], shareKey:'drywallMaterial' },
-      { key:'thickness', label:'Drywall thickness?', options: ctx => ctx.drywallMaterial === 'Moisture-Resistant (Green/Purple Board)' ? ['1/2" Thickness'] : ['1/2" Thickness','5/8" Thickness'] }
+      { key:'thickness', label:'Drywall thickness?', options: ctx => ctx.drywallMaterial === 'Moisture-Resistant (Green/Purple Board)' ? ['1/2" Thickness'] : ['1/2" Thickness','5/8" Thickness'] },
+      { key:'sqft', label:'How many square feet of drywall?', type:'number', placeholder:'e.g. 120' }
   ], note:'5/8" Moisture-Resistant dropped from standard options -- manual add if requested. For full-room/whole-house drywall, a $6.50/sqft blended rate (materials+labor) is also available as an alternative to this itemized pricing -- ask Travis which applies before finalizing.' },
   { id:'wallTile', label:'Wall Tile', questions:[
-      { key:'grade', label:'What grade level for the wall tile?', options:GRADE_OPTIONS, isGrade:true }
+      { key:'grade', label:'What grade level for the wall tile?', options:GRADE_OPTIONS, isGrade:true },
+      { key:'sqft', label:'How many square feet of wall tile?', type:'number', placeholder:'e.g. 80', skipIf: ctx => ctx.wallTile_grade === 'No Preference', skipValue:0 }
   ]},
   { id:'tubPan', label:'Tub or Shower Pan', questions:[
       { key:'action', label:'New Tub/Pan or keep the current one?', options:['New Tub/Pan','Keep Current Tub/Pan'], shareKey:'tubPanAction' },
@@ -28988,7 +28990,8 @@ const BATHROOM_GUIDED_FLOW = [
   ], note:'Frame Type (Framed/Frameless) is independent of Grade -- any grade can be either. Labor is driven by frame type and who supplies the door, not by grade.' },
   { id:'flooring', label:'Flooring', questions:[
       { key:'material', label:'Flooring material?', options:['LVP','Tile'], shareKey:'flooringMaterial' },
-      { key:'grade', label:'What grade level?', options: ctx => ctx.flooringMaterial === 'LVP' ? ['Contractor Grade (12 mil)','Design Grade (20 mil)','Premium (24+ mil)'] : GRADE_OPTIONS, isGrade:true }
+      { key:'grade', label:'What grade level?', options: ctx => ctx.flooringMaterial === 'LVP' ? ['Contractor Grade (12 mil)','Design Grade (20 mil)','Premium (24+ mil)'] : GRADE_OPTIONS, isGrade:true },
+      { key:'sqft', label:'How many square feet of flooring?', type:'number', placeholder:'e.g. 60', skipIf: ctx => ctx.flooring_grade === 'No Preference', skipValue:0 }
   ], note:'No named colors tracked -- grade tier (mil rating for LVP) is the only pricing lever. Color is a customer aesthetic pick with zero pricing impact. One transition strip included by default for LVP jobs.' },
   { id:'toilet', label:'Toilet', questions:[
       { key:'qty', label:'How many toilets?', options:['1','2','3','4+'] },
@@ -29077,9 +29080,24 @@ function bqRenderQuestion() {
   }
   const { cat, q } = found;
   const label = typeof q.label === 'function' ? q.label(_bqCtx) : q.label;
-  const options = typeof q.options === 'function' ? q.options(_bqCtx) : q.options;
   document.getElementById('guidedBreadcrumb').textContent = `${_bqRoom} › ${cat.label}`;
   let noteHtml = cat.note && _bqQIdx === 0 ? `<div class="small muted" style="margin-bottom:14px;font-style:italic">${esc(cat.note)}</div>` : '';
+
+  if (q.type === 'number') {
+    document.getElementById('guidedBody').innerHTML = `
+      ${noteHtml}
+      <div style="font-size:1.05rem;font-weight:700;margin-bottom:16px">${esc(label)}</div>
+      <input id="bqNumberInput" type="number" min="0" step="0.1" placeholder="${esc(q.placeholder||'0')}"
+             style="width:100%;padding:12px 16px;font-size:1rem;margin-bottom:10px" />
+      <button class="btn-amber" style="width:100%;padding:12px" onclick="bqSubmitNumber()">Next</button>`;
+    document.getElementById('guidedFooter').innerHTML =
+      `<span class="small muted">${esc(cat.label)} — question ${_bqQIdx+1} of ${cat.questions.length}</span>`;
+    bqUpdateBackBtn();
+    setTimeout(() => { const el = document.getElementById('bqNumberInput'); if (el) el.focus(); }, 50);
+    return;
+  }
+
+  const options = typeof q.options === 'function' ? q.options(_bqCtx) : q.options;
   document.getElementById('guidedBody').innerHTML = `
     ${noteHtml}
     <div style="font-size:1.05rem;font-weight:700;margin-bottom:16px">${esc(label)}</div>
@@ -29091,12 +29109,20 @@ function bqRenderQuestion() {
   bqUpdateBackBtn();
 }
 
+function bqSubmitNumber() {
+  const el = document.getElementById('bqNumberInput');
+  const val = parseFloat(el.value);
+  if (isNaN(val) || val < 0) { el.style.borderColor = 'red'; return; }
+  bqAnswer(val);
+}
+window.bqSubmitNumber = bqSubmitNumber;
+
 function bqAnswer(value) {
   const { cat, q, ctxKey } = bqCurrentQuestion();
   _bqHistory.push({ catIdx:_bqCatIdx, qIdx:_bqQIdx, noPref:_bqNoPrefCategory, ctxSnapshot:{..._bqCtx} });
   _bqCtx[ctxKey] = value;
   if (q.shareKey) _bqCtx[q.shareKey] = value;
-  if (String(value).toLowerCase().includes('no preference')) _bqNoPrefCategory = true;
+  if (typeof value === 'string' && value.toLowerCase().includes('no preference')) _bqNoPrefCategory = true;
   _bqQIdx++;
   bqRenderQuestion();
 }
@@ -29123,18 +29149,22 @@ function bqComputePricing(ctx) {
   if (ctx.jobContext_scope === 'Standalone job') push('Haul Off', 'Standalone job debris disposal', BQ_PRICE.haulOff.standalone);
   else push('Haul Off', 'Part of whole-house remodel (covered elsewhere)', 0);
 
-  // Drywall -- per sqft rate only, no sqft quantity captured in this flow yet
+  // Drywall -- now multiplies by real captured sqft
   {
     const key = `${ctx.drywall_material}|${ctx.drywall_thickness}`;
     const rate = BQ_PRICE.drywall[key];
-    if (rate !== undefined) push('Drywall', `Materials (${key}) -- RATE ONLY, multiply by real sqft`, rate, 'per sqft');
-    push('Drywall', 'Standard supplies -- RATE ONLY, multiply by real sqft', BQ_PRICE.drywall.supplies, 'per sqft');
+    const sqft = ctx.drywall_sqft || 0;
+    if (rate !== undefined && sqft > 0) push('Drywall', `Materials (${key}) x ${sqft} sqft`, rate * sqft);
+    if (sqft > 0) push('Drywall', `Standard supplies x ${sqft} sqft`, BQ_PRICE.drywall.supplies * sqft);
   }
 
-  // Wall Tile -- per sqft rate only
+  // Wall Tile -- now multiplies by real captured sqft
   if (ctx.wallTile_grade && ctx.wallTile_grade !== 'No Preference') {
-    push('Wall Tile', `Materials (${ctx.wallTile_grade}) -- RATE ONLY, multiply by real sqft`, BQ_PRICE.wallTile.materials[ctx.wallTile_grade], 'per sqft');
-    push('Wall Tile', 'Labor -- RATE ONLY, multiply by real sqft', BQ_PRICE.wallTile.labor, 'per sqft');
+    const sqft = ctx.wallTile_sqft || 0;
+    if (sqft > 0) {
+      push('Wall Tile', `Materials (${ctx.wallTile_grade}) x ${sqft} sqft`, BQ_PRICE.wallTile.materials[ctx.wallTile_grade] * sqft);
+      push('Wall Tile', `Labor x ${sqft} sqft`, BQ_PRICE.wallTile.labor * sqft);
+    }
   }
 
   // Tub or Shower Pan
@@ -29175,14 +29205,20 @@ function bqComputePricing(ctx) {
     }
   }
 
-  // Flooring -- per sqft rate only
+  // Flooring -- now multiplies by real captured sqft
   if (ctx.flooring_material === 'LVP' && ctx.flooring_grade) {
-    push('Flooring', `LVP Materials (${ctx.flooring_grade}) -- RATE ONLY, multiply by real sqft`, BQ_PRICE.flooring.lvp.materials[ctx.flooring_grade], 'per sqft');
-    push('Flooring', 'LVP Labor -- RATE ONLY, multiply by real sqft', BQ_PRICE.flooring.lvp.labor, 'per sqft');
-    push('Flooring', 'Transition Strip (1 included)', BQ_PRICE.flooring.lvp.transitionStripMaterial + BQ_PRICE.flooring.lvp.transitionStripLabor);
+    const sqft = ctx.flooring_sqft || 0;
+    if (sqft > 0) {
+      push('Flooring', `LVP Materials (${ctx.flooring_grade}) x ${sqft} sqft`, BQ_PRICE.flooring.lvp.materials[ctx.flooring_grade] * sqft);
+      push('Flooring', `LVP Labor x ${sqft} sqft`, BQ_PRICE.flooring.lvp.labor * sqft);
+      push('Flooring', 'Transition Strip (1 included)', BQ_PRICE.flooring.lvp.transitionStripMaterial + BQ_PRICE.flooring.lvp.transitionStripLabor);
+    }
   } else if (ctx.flooring_material === 'Tile' && ctx.flooring_grade && ctx.flooring_grade !== 'No Preference') {
-    push('Flooring', `Tile Materials (${ctx.flooring_grade}) -- RATE ONLY, multiply by real sqft`, BQ_PRICE.flooring.tile.materials[ctx.flooring_grade], 'per sqft');
-    push('Flooring', 'Tile Labor -- RATE ONLY, multiply by real sqft', BQ_PRICE.flooring.tile.labor, 'per sqft');
+    const sqft = ctx.flooring_sqft || 0;
+    if (sqft > 0) {
+      push('Flooring', `Tile Materials (${ctx.flooring_grade}) x ${sqft} sqft`, BQ_PRICE.flooring.tile.materials[ctx.flooring_grade] * sqft);
+      push('Flooring', `Tile Labor x ${sqft} sqft`, BQ_PRICE.flooring.tile.labor * sqft);
+    }
   }
 
   // Toilet (qty-aware; "4+" treated as 4 for calculation, flag for manual review above that)
@@ -29258,33 +29294,22 @@ function bqComputePricing(ctx) {
 
 function bqShowReview() {
   const priced = bqComputePricing(_bqCtx);
-  const unitLines = priced.filter(l => !l.note.includes('per sqft'));
-  const rateLines = priced.filter(l => l.note.includes('per sqft'));
-  const total = unitLines.reduce((sum, l) => sum + l.price, 0);
+  const total = priced.reduce((sum, l) => sum + l.price, 0);
 
-  const unitRows = unitLines.map(l => `
+  const rows = priced.map(l => `
     <tr><td style="padding:6px 8px;border-bottom:1px solid var(--line)">${esc(l.category)}</td>
         <td style="padding:6px 8px;border-bottom:1px solid var(--line)">${esc(l.item)}</td>
         <td style="padding:6px 8px;border-bottom:1px solid var(--line);text-align:right">$${l.price.toFixed(2)}</td></tr>`).join('');
-  const rateRows = rateLines.map(l => `
-    <tr><td style="padding:6px 8px;border-bottom:1px solid var(--line)">${esc(l.category)}</td>
-        <td style="padding:6px 8px;border-bottom:1px solid var(--line)">${esc(l.item)}</td>
-        <td style="padding:6px 8px;border-bottom:1px solid var(--line);text-align:right">$${l.price.toFixed(2)}/sqft</td></tr>`).join('');
 
   document.getElementById('guidedBreadcrumb').textContent = `${_bqRoom} › Priced Estimate`;
   document.getElementById('guidedBody').innerHTML = `
     <div style="font-size:1.05rem;font-weight:700;margin-bottom:10px">Priced Line Items</div>
     <table style="width:100%;border-collapse:collapse;font-size:.85rem;margin-bottom:16px">
       <tr style="font-weight:700"><td style="padding:6px 8px">Category</td><td style="padding:6px 8px">Item</td><td style="padding:6px 8px;text-align:right">Price</td></tr>
-      ${unitRows}
-      <tr><td colspan="2" style="padding:8px;font-weight:700;text-align:right">Subtotal (per-unit items)</td><td style="padding:8px;font-weight:700;text-align:right">$${total.toFixed(2)}</td></tr>
+      ${rows}
+      <tr><td colspan="2" style="padding:8px;font-weight:700;text-align:right">TOTAL</td><td style="padding:8px;font-weight:700;text-align:right">$${total.toFixed(2)}</td></tr>
     </table>
-    ${rateRows ? `<div style="font-size:1.05rem;font-weight:700;margin-bottom:10px">Per-Sqft Rates (multiply by real square footage)</div>
-    <table style="width:100%;border-collapse:collapse;font-size:.85rem;margin-bottom:16px">
-      <tr style="font-weight:700"><td style="padding:6px 8px">Category</td><td style="padding:6px 8px">Item</td><td style="padding:6px 8px;text-align:right">Rate</td></tr>
-      ${rateRows}
-    </table>` : ''}
-    <div class="small muted" style="font-style:italic">Per-sqft categories (Drywall, Wall Tile, Flooring) show a confirmed rate only -- this flow doesn't yet capture square footage, so multiply manually by the real measurement before adding to the subtotal above.</div>`;
+    <div class="small muted" style="font-style:italic">Prices shown include the standard 15% markup. Custom sizes and manually-added items (Dual Flush, 72" vanity, Medicine Cabinet, Fan Only, etc.) are not included -- price those separately.</div>`;
   document.getElementById('guidedFooter').innerHTML =
     `<button class="btn-amber" style="width:100%;padding:12px" onclick="bqFinish()">Done — Back to Room Picker</button>`;
   bqUpdateBackBtn();
