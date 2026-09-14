@@ -22363,9 +22363,9 @@ function calcTrueMargin(allItems) {
   const jtxdActual = laborBilled - realLaborCost;
 
   const overhead = jtxdActual * 0.18;
-  const marketing = jtxdActual * 0.10;
+  const marketing = jtxdActual * 0.06;
   const rem1 = jtxdActual - overhead - marketing;
-  const flex = rem1 * 0.10;
+  const flex = rem1 * 0.05;
   const rem2 = rem1 - flex;
   const taxes = rem2 * 0.275;
   const retainedEarnings = rem2 - taxes;
