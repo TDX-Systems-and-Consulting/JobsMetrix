@@ -12290,9 +12290,9 @@ async function computeLockedBucketSplit(job) {
   // real $2,698 job: 28% of revenue was $755 against only $656 truly
   // retained). Same formula Travis's calculator now uses.
   const overhead = jtxdActual * 0.18;
-  const marketing = jtxdActual * 0.015;
+  const marketing = jtxdActual * 0.06;
   const remainAfterOhMkt = jtxdActual - overhead - marketing;
-  const flex = remainAfterOhMkt * 0.20;
+  const flex = remainAfterOhMkt * 0.05;
   const remainAfterFlex = remainAfterOhMkt - flex;
   const taxes = remainAfterFlex * 0.275;
   // Real Stripe processing fees (card ~2.9%+$0.30, ACH/US bank
