@@ -28896,69 +28896,120 @@ const GUIDED_QTY_LABELS = {
 // ============================================================
 
 const GRADE_OPTIONS = ['Contractor Grade', 'Design Grade', 'Premium', 'No Preference'];
+// ═══════════════════════════════════════════════════════════════════════
+// BATHROOM PRICE TABLE — every number here is a real, Travis-confirmed
+// price from the Bathroom Category Pricing rebuild (Cost / Price at the
+// standard 15% markup). This is intentionally separate from CATALOG_DATA:
+// these are conceptual grade-tier prices (Contractor/Design/Premium), not
+// tied to any specific branded SKU, by deliberate design decision.
+// ═══════════════════════════════════════════════════════════════════════
+const BQ_PRICE = {
+  haulOff: { standalone: 109, remodel: 0 },
+  drywall: { // per sqft, material only
+    'Standard Drywall|1/2" Thickness': 0.54,
+    'Standard Drywall|5/8" Thickness': 0.59,
+    'Moisture-Resistant (Green/Purple Board)|1/2" Thickness': 0.71,
+    supplies: 0.07, // per sqft
+    blendedFullJob: 6.50 // per sqft, materials+labor combined, full room/whole-house only
+  },
+  wallTile: { materials: { 'Contractor Grade':6, 'Design Grade':8, 'Premium':10 }, labor: 15 }, // per sqft
+  tubPan: {
+    'Walk-in Shower (pan, no tub)': { 'Contractor Grade':249, 'Design Grade':299, 'Premium':349 },
+    'Tub/Shower Combo (soaking tub)': { 'Contractor Grade':729, 'Design Grade':899, 'Premium':1099 },
+    labor: 600
+  },
+  surround: {
+    fixture: { 'Contractor Grade':289.99, 'Design Grade':399, 'Premium':699 }, // same both configs
+    laborStandalone: 359 // only when tub/pan is being kept, not replaced
+  },
+  faucetValve: { fixture: 79.97, labor: 150 }, // flat regardless of handle count
+  showerDoor: {
+    slidingFixture: { 'Contractor Grade':349, 'Design Grade':549, 'Premium':699 },
+    laborFramed: 579, laborFrameless: 900, laborCustomerSupplied: 379,
+    curtainRodLabor: 59
+  },
+  flooring: {
+    lvp: { materials: { 'Contractor Grade (12 mil)':1.89, 'Design Grade (20 mil)':2.49, 'Premium (24+ mil)':2.89 }, labor: 5,
+           transitionStripMaterial: 39.98, transitionStripLabor: 35 },
+    tile: { materials: { 'Contractor Grade':2.75, 'Design Grade':4.50, 'Premium':6 }, labor: 15 }
+  },
+  toilet: { fixture: { 'Contractor Grade':129, 'Design Grade':209, 'Premium':279 }, materialsKit: 49.42, labor: 100 },
+  vanity: {
+    fixture: {
+      'Single Sink|24"': { 'Contractor Grade':149, 'Design Grade':259, 'Premium':379 },
+      'Single Sink|30"': { 'Contractor Grade':199, 'Design Grade':359, 'Premium':579 },
+      'Single Sink|36"': { 'Contractor Grade':259, 'Design Grade':449, 'Premium':649 },
+      'Double Sink|60"': { 'Contractor Grade':659, 'Design Grade':899, 'Premium':1199 }
+    },
+    materialsKit: 23.26, labor: 200
+  },
+  vanityFaucet: { fixture: { 'Contractor Grade':39.96, 'Design Grade':99, 'Premium':179 }, labor: 100 },
+  connectionKit: { materials: 57.94, labor: 100 }, // p-trap + supply lines + shutoffs, fires once if vanity OR faucet is new
+  oneOffRepair: { ptrapLabor: 100, supplyLineLabor: 50, shutoffLabor: 50 }, // standalone only, not part of a vanity/faucet job
+  packageLabor: 389, // replaces Vanity Labor + Faucet Labor + Connection Kit Labor when BOTH vanity and faucet are new
+  mirror: { fixture: { 'Contractor Grade':49.97, 'Design Grade':79.98, 'Premium':199.97 }, labor: 50 }, // Plain Mirror only
+  lighting: {
+    'Vanity Bar Light': { 'Contractor Grade':49.99, 'Design Grade':79.99, 'Premium':129 },
+    'Flush-Mount Ceiling Light': { 'Contractor Grade':29.99, 'Design Grade':79.99, 'Premium':129.99 },
+    labor: 59
+  },
+  exhaustFan: { fixture: { 'Contractor Grade':79, 'Design Grade':129, 'Premium':199 }, labor: 59 } // Fan+Light Combo only
+};
+
 const BATHROOM_GUIDED_FLOW = [
   { id:'jobContext', label:'Job Context', questions:[
       { key:'scope', label:'Is this bathroom part of a whole-house remodel, or a standalone job?', options:['Part of whole-house remodel','Standalone job'], shareKey:'jobScope' }
   ], note:'Haul-off/debris disposal: $0 if part of a whole-house remodel (already covered there), $109 flat if this is a standalone job -- one charge for the whole job, not per fixture.' },
   { id:'drywall', label:'Drywall', questions:[
-      { key:'material', label:'Drywall material?', options:['Standard Drywall','Moisture-Resistant (Green/Purple Board)'] },
-      { key:'thickness', label:'Drywall thickness?', options:['1/2" Thickness','5/8" Thickness'] }
-  ]},
+      { key:'material', label:'Drywall material?', options:['Standard Drywall','Moisture-Resistant (Green/Purple Board)'], shareKey:'drywallMaterial' },
+      { key:'thickness', label:'Drywall thickness?', options: ctx => ctx.drywallMaterial === 'Moisture-Resistant (Green/Purple Board)' ? ['1/2" Thickness'] : ['1/2" Thickness','5/8" Thickness'] }
+  ], note:'5/8" Moisture-Resistant dropped from standard options -- manual add if requested. For full-room/whole-house drywall, a $6.50/sqft blended rate (materials+labor) is also available as an alternative to this itemized pricing -- ask Travis which applies before finalizing.' },
   { id:'wallTile', label:'Wall Tile', questions:[
       { key:'grade', label:'What grade level for the wall tile?', options:GRADE_OPTIONS, isGrade:true }
   ]},
   { id:'tubPan', label:'Tub or Shower Pan', questions:[
-      { key:'configuration', label:'Configuration?', options:['Tub/Shower Combo (soaking tub)','Walk-in Shower (pan, no tub)'], shareKey:'showerConfig' },
-      { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true }
+      { key:'action', label:'New Tub/Pan or keep the current one?', options:['New Tub/Pan','Keep Current Tub/Pan'], shareKey:'tubPanAction' },
+      { key:'configuration', label:'Configuration?', options:['Tub/Shower Combo (soaking tub)','Walk-in Shower (pan, no tub)'], shareKey:'showerConfig', skipIf: ctx => ctx.tubPanAction === 'Keep Current Tub/Pan', skipValue:'N/A (keeping current)' },
+      { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true, skipIf: ctx => ctx.tubPanAction === 'Keep Current Tub/Pan', skipValue:'N/A (keeping current)' }
   ]},
   { id:'surround', label:'Shower/Tub Surround', questions:[
       { key:'configuration', label:'Configuration?', options:['Tub/Shower Combo (soaking tub)','Walk-in Shower (pan, no tub)'], carryFrom:'showerConfig' },
       { key:'grade', label:'What grade level for the surround?', options:GRADE_OPTIONS, isGrade:true }
-  ]},
+  ], note:'Surround labor is included in Tub/Pan\'s $600 labor when Tub/Pan is also new. A separate $359 standalone labor rate applies only when the existing tub/pan is being kept.' },
   { id:'faucetValve', label:'Tub/Shower Faucet & Valve', questions:[
       { key:'handleCount', label:'Handle count?', options:['1-Handle','2-Handle','3-Handle'] },
       { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true }
-  ]},
+  ], note:'Fixture price is flat ($79.97) regardless of handle count -- handle count is tracked for scope/ordering purposes only.' },
   { id:'showerDoor', label:'Shower Door', questions:[
-      { key:'doorType', label:'Door type?', options:['Sliding Glass Door','Curtain Rod'] },
-      { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true }
-  ]},
+      { key:'doorType', label:'Door type?', options:['Sliding Glass Door','Curtain Rod'], shareKey:'showerDoorType' },
+      { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true, skipIf: ctx => ctx.showerDoorType === 'Curtain Rod', skipValue:'N/A (curtain rod)' },
+      { key:'suppliedBy', label:'Who supplies the door?', options:['JTXD Supplies & Installs','Customer Supplies (labor only)'], shareKey:'showerDoorSuppliedBy', skipIf: ctx => ctx.showerDoorType === 'Curtain Rod', skipValue:'N/A (curtain rod)' },
+      { key:'frameType', label:'Framed or Frameless glass?', options:['Framed','Frameless'], skipIf: ctx => ctx.showerDoorType === 'Curtain Rod' || ctx.showerDoorSuppliedBy === 'Customer Supplies (labor only)', skipValue:'N/A' }
+  ], note:'Frame Type (Framed/Frameless) is independent of Grade -- any grade can be either. Labor is driven by frame type and who supplies the door, not by grade.' },
   { id:'flooring', label:'Flooring', questions:[
-      { key:'material', label:'Flooring material?', options:['LVP','Tile'] },
-      { key:'grade', label:'What grade level?', options:['Contractor Grade (12 mil / basic tile)','Design Grade (20 mil / mid tile)','Premium (24+ mil / high-end tile)','No Preference'], isGrade:true }
-  ]},
+      { key:'material', label:'Flooring material?', options:['LVP','Tile'], shareKey:'flooringMaterial' },
+      { key:'grade', label:'What grade level?', options: ctx => ctx.flooringMaterial === 'LVP' ? ['Contractor Grade (12 mil)','Design Grade (20 mil)','Premium (24+ mil)'] : GRADE_OPTIONS, isGrade:true }
+  ], note:'No named colors tracked -- grade tier (mil rating for LVP) is the only pricing lever. Color is a customer aesthetic pick with zero pricing impact. One transition strip included by default for LVP jobs.' },
   { id:'toilet', label:'Toilet', questions:[
       { key:'qty', label:'How many toilets?', options:['1','2','3','4+'] },
       { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true },
-      { key:'flush', label:'Flush type?', options:['Single Flush','Dual Flush'] },
       { key:'shape', label:'Bowl shape?', options:['Round','Elongated'] },
       { key:'laborOk', label:'Standard toilet install labor apply here (no unusual access/plumbing issues)?', options:['Yes, standard labor rate applies','No, this job has a complication (specify in notes)'] }
-  ], note:'Standard bundle auto-applies: wax ring, flange kit, supply line, shutoff valve — no separate question needed.' },
+  ], note:'Single Flush only -- Dual Flush dropped from standard options, manual add if requested. Round and Elongated are the same price. Standard bundle auto-applies: wax ring, flange kit, supply line, shutoff valve, caulk.' },
   { id:'vanity', label:'Vanity', questions:[
       { key:'action', label:'New vanity or keep the current one?', options:['New Vanity','Keep Current Vanity'], shareKey:'vanityAction' },
       { key:'sinkConfig', label:'Sink configuration?', options:['Single Sink','Double Sink'], shareKey:'vanitySinkConfig', skipIf: ctx => ctx.vanityAction === 'Keep Current Vanity', skipValue:'N/A (keeping current vanity)' },
       { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true, skipIf: ctx => ctx.vanityAction === 'Keep Current Vanity', skipValue:'N/A (keeping current vanity)' },
-      { key:'width', label:'Vanity width?', options: ctx => ctx.vanitySinkConfig === 'Double Sink' ? ['60"','72"','Custom'] : ['24"','30"','36"','Custom'], shareKey:'vanityWidth', skipIf: ctx => ctx.vanityAction === 'Keep Current Vanity', skipValue:'N/A (keeping current vanity)' }
-  ]},
+      { key:'width', label:'Vanity width?', options: ctx => ctx.vanitySinkConfig === 'Double Sink' ? ['60"','Custom'] : ['24"','30"','36"','Custom'], shareKey:'vanityWidth', skipIf: ctx => ctx.vanityAction === 'Keep Current Vanity', skipValue:'N/A (keeping current vanity)' }
+  ], note:'72" Double Sink dropped from standard options -- manual add if requested.' },
   { id:'vanityFaucet', label:'Vanity Faucet', questions:[
       { key:'mountType', label:'Mount type?', options:['Centerset','Widespread','Single-Hole','Keep Current Faucet'], shareKey:'vanityFaucetMountType' },
       { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true, skipIf: ctx => ctx.vanityFaucet_mountType === 'Keep Current Faucet', skipValue:'N/A (keeping current faucet)' }
-  ],
-  // PRICING NOTE (not yet wired -- for whoever attaches pricing to this flow):
-  // The Faucet Connection Kit (2 supply lines + 2 shutoff valves, $51.96 cost / $59.75 price
-  // per the Bathroom Category Pricing sheet) fires exactly ONCE per bathroom if EITHER
-  // vanityAction === 'New Vanity' OR vanityFaucet_mountType !== 'Keep Current Faucet'.
-  // It must NOT fire twice if both are new, and must be skipped only when vanityAction ===
-  // 'Keep Current Vanity' AND vanityFaucet_mountType === 'Keep Current Faucet' (a true
-  // touch-nothing job). Vanity's own Materials Kit (caulk + mount kit, $23.26) is separate
-  // and only fires when vanityAction === 'New Vanity' -- it does NOT include the connection
-  // kit parts, those were deliberately split out for exactly this reason.
-  },
-  { id:'mirror', label:'Mirror / Medicine Cabinet', questions:[
-      { key:'type', label:'Type?', options:['Plain Mirror','Medicine Cabinet'] },
+  ], note:'Fixture price is flat ($39.96/$99/$179) regardless of mount type -- mount type is tracked for scope/ordering purposes only.' },
+  { id:'mirror', label:'Mirror', questions:[
       { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true },
       { key:'width', label: ctx => (ctx.vanityWidth && !String(ctx.vanityWidth).startsWith('N/A')) ? `Width? (vanity is ${ctx.vanityWidth} — suggest matching)` : 'Width?', options:['24"','30"','36"'] }
-  ]},
+  ], note:'Medicine Cabinet dropped from standard options -- Plain Mirror only now, manual add if a medicine cabinet is requested.' },
   { id:'lighting', label:'Bathroom Lighting', questions:[
       { key:'fixtureType', label:'Fixture type?', options:['Vanity Bar Light','Flush-Mount Ceiling Light'], shareKey:'lightingFixtureType' },
       { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true },
@@ -28966,10 +29017,8 @@ const BATHROOM_GUIDED_FLOW = [
   ]},
   { id:'exhaustFan', label:'Exhaust Fan', questions:[
       { key:'needed', label:'Does this bathroom need an exhaust fan?', options:['Yes','No (not applicable)'], shareKey:'fanNeeded' },
-      { key:'feature', label:'Feature?', options:['Fan Only','Fan+Light Combo','No Preference'], skipIf: ctx => ctx.fanNeeded === 'No (not applicable)', skipValue:'N/A' },
-      { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true, skipIf: ctx => ctx.fanNeeded === 'No (not applicable)', skipValue:'N/A' },
-      { key:'cfm', label:'CFM rating?', options:['50 CFM (small bath)','80-110 CFM (standard)','150+ CFM (large bath)'], skipIf: ctx => ctx.fanNeeded === 'No (not applicable)', skipValue:'N/A' }
-  ]}
+      { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true, skipIf: ctx => ctx.fanNeeded === 'No (not applicable)', skipValue:'N/A' }
+  ], note:'Fan Only dropped from standard options -- Fan+Light Combo only now, manual add if a fan-only unit is requested. CFM tiers removed -- pricing does not vary by CFM.' }
 ];
 
 let _bqRoom = null, _bqCatIdx = 0, _bqQIdx = 0, _bqCtx = {}, _bqHistory = [], _bqNoPrefCategory = false;
@@ -29000,13 +29049,17 @@ function bqCurrentQuestion() {
     }
     // Structural skip (e.g. Keep Current Faucet, No Fan Needed)
     if (q.skipIf && q.skipIf(_bqCtx)) {
-      _bqCtx[ctxKey] = q.skipValue !== undefined ? q.skipValue : 'N/A';
+      const val = q.skipValue !== undefined ? q.skipValue : 'N/A';
+      _bqCtx[ctxKey] = val;
+      if (q.shareKey) _bqCtx[q.shareKey] = val;
       _bqQIdx++;
       continue;
     }
     // No Preference cascade -- once triggered anywhere in this category, auto-resolve the rest
     if (_bqNoPrefCategory) {
-      _bqCtx[ctxKey] = bqResolveNoPreferenceDefault(q);
+      const val = bqResolveNoPreferenceDefault(q);
+      _bqCtx[ctxKey] = val;
+      if (q.shareKey) _bqCtx[q.shareKey] = val;
       _bqQIdx++;
       continue;
     }
@@ -29061,20 +29114,177 @@ function bqBack() {
 }
 window.bqBack = bqBack;
 
+function bqComputePricing(ctx) {
+  const lines = []; // { category, item, cost, price, note }
+  const push = (category, item, cost, note) => lines.push({ category, item, cost: cost, price: Math.round(cost*1.15*100)/100, note: note||'' });
+  const g = v => v; // grade key passthrough, values already match BQ_PRICE keys
+
+  // Haul Off (job-level)
+  if (ctx.jobContext_scope === 'Standalone job') push('Haul Off', 'Standalone job debris disposal', BQ_PRICE.haulOff.standalone);
+  else push('Haul Off', 'Part of whole-house remodel (covered elsewhere)', 0);
+
+  // Drywall -- per sqft rate only, no sqft quantity captured in this flow yet
+  {
+    const key = `${ctx.drywall_material}|${ctx.drywall_thickness}`;
+    const rate = BQ_PRICE.drywall[key];
+    if (rate !== undefined) push('Drywall', `Materials (${key}) -- RATE ONLY, multiply by real sqft`, rate, 'per sqft');
+    push('Drywall', 'Standard supplies -- RATE ONLY, multiply by real sqft', BQ_PRICE.drywall.supplies, 'per sqft');
+  }
+
+  // Wall Tile -- per sqft rate only
+  if (ctx.wallTile_grade && ctx.wallTile_grade !== 'No Preference') {
+    push('Wall Tile', `Materials (${ctx.wallTile_grade}) -- RATE ONLY, multiply by real sqft`, BQ_PRICE.wallTile.materials[ctx.wallTile_grade], 'per sqft');
+    push('Wall Tile', 'Labor -- RATE ONLY, multiply by real sqft', BQ_PRICE.wallTile.labor, 'per sqft');
+  }
+
+  // Tub or Shower Pan
+  const tubPanIsNew = ctx.tubPan_action === 'New Tub/Pan';
+  if (tubPanIsNew) {
+    const cfg = ctx.tubPan_configuration;
+    const grade = ctx.tubPan_grade;
+    if (BQ_PRICE.tubPan[cfg] && BQ_PRICE.tubPan[cfg][grade]) {
+      push('Tub/Pan', `Fixture (${cfg}, ${grade})`, BQ_PRICE.tubPan[cfg][grade]);
+    }
+    push('Tub/Pan', 'Labor -- Standard Install', BQ_PRICE.tubPan.labor);
+  }
+
+  // Surround
+  if (ctx.surround_grade && ctx.surround_grade !== 'No Preference') {
+    push('Surround', `Fixture (${ctx.surround_grade})`, BQ_PRICE.surround.fixture[ctx.surround_grade]);
+    if (!tubPanIsNew) push('Surround', 'Labor -- Surround Only (tub/pan being kept)', BQ_PRICE.surround.laborStandalone);
+    else push('Surround', 'Labor -- included in Tub/Pan labor above', 0);
+  }
+
+  // Faucet & Valve (tub/shower)
+  if (ctx.faucetValve_grade && ctx.faucetValve_grade !== 'No Preference') {
+    push('Faucet/Valve', `Fixture (${ctx.faucetValve_handleCount})`, BQ_PRICE.faucetValve.fixture);
+    push('Faucet/Valve', 'Labor -- Standard Install', BQ_PRICE.faucetValve.labor);
+  }
+
+  // Shower Door
+  if (ctx.showerDoor_doorType === 'Curtain Rod') {
+    push('Shower Door', 'Curtain Rod -- Labor', BQ_PRICE.showerDoor.curtainRodLabor);
+  } else if (ctx.showerDoor_doorType === 'Sliding Glass Door') {
+    if (ctx.showerDoor_suppliedBy === 'Customer Supplies (labor only)') {
+      push('Shower Door', 'Labor Only -- customer supplies door', BQ_PRICE.showerDoor.laborCustomerSupplied);
+    } else {
+      const grade = ctx.showerDoor_grade;
+      if (BQ_PRICE.showerDoor.slidingFixture[grade]) push('Shower Door', `Sliding Door Fixture (${grade})`, BQ_PRICE.showerDoor.slidingFixture[grade]);
+      const frameLabor = ctx.showerDoor_frameType === 'Frameless' ? BQ_PRICE.showerDoor.laborFrameless : BQ_PRICE.showerDoor.laborFramed;
+      push('Shower Door', `Labor -- ${ctx.showerDoor_frameType}, Fully Installed`, frameLabor);
+    }
+  }
+
+  // Flooring -- per sqft rate only
+  if (ctx.flooring_material === 'LVP' && ctx.flooring_grade) {
+    push('Flooring', `LVP Materials (${ctx.flooring_grade}) -- RATE ONLY, multiply by real sqft`, BQ_PRICE.flooring.lvp.materials[ctx.flooring_grade], 'per sqft');
+    push('Flooring', 'LVP Labor -- RATE ONLY, multiply by real sqft', BQ_PRICE.flooring.lvp.labor, 'per sqft');
+    push('Flooring', 'Transition Strip (1 included)', BQ_PRICE.flooring.lvp.transitionStripMaterial + BQ_PRICE.flooring.lvp.transitionStripLabor);
+  } else if (ctx.flooring_material === 'Tile' && ctx.flooring_grade && ctx.flooring_grade !== 'No Preference') {
+    push('Flooring', `Tile Materials (${ctx.flooring_grade}) -- RATE ONLY, multiply by real sqft`, BQ_PRICE.flooring.tile.materials[ctx.flooring_grade], 'per sqft');
+    push('Flooring', 'Tile Labor -- RATE ONLY, multiply by real sqft', BQ_PRICE.flooring.tile.labor, 'per sqft');
+  }
+
+  // Toilet (qty-aware; "4+" treated as 4 for calculation, flag for manual review above that)
+  if (ctx.toilet_grade && ctx.toilet_grade !== 'No Preference') {
+    const qtyRaw = ctx.toilet_qty || '1';
+    const qty = qtyRaw === '4+' ? 4 : parseInt(qtyRaw, 10) || 1;
+    const qtyNote = qtyRaw === '4+' ? ' (4+ requested -- verify exact count manually)' : (qty > 1 ? ` x${qty}` : '');
+    push('Toilet', `Fixture (${ctx.toilet_grade})${qtyNote}`, BQ_PRICE.toilet.fixture[ctx.toilet_grade] * qty);
+    push('Toilet', `Materials Kit${qty > 1 ? ' x'+qty : ''}`, BQ_PRICE.toilet.materialsKit * qty);
+    push('Toilet', `Labor${qty > 1 ? ' x'+qty : ''}`, BQ_PRICE.toilet.labor * qty);
+  }
+
+  // Vanity
+  const vanityIsNew = ctx.vanity_action === 'New Vanity';
+  if (vanityIsNew) {
+    const key = `${ctx.vanity_sinkConfig}|${ctx.vanity_width}`;
+    const grade = ctx.vanity_grade;
+    if (BQ_PRICE.vanity.fixture[key] && BQ_PRICE.vanity.fixture[key][grade]) {
+      push('Vanity', `Fixture (${key}, ${grade})`, BQ_PRICE.vanity.fixture[key][grade]);
+    } else {
+      push('Vanity', `Fixture (${key}, ${grade}) -- CUSTOM SIZE, price manually`, 0, 'manual pricing needed');
+    }
+    push('Vanity', 'Materials Kit (caulk, mount kit)', BQ_PRICE.vanity.materialsKit);
+  }
+
+  // Vanity Faucet
+  const vanityFaucetIsNew = ctx.vanityFaucet_mountType !== 'Keep Current Faucet';
+  if (vanityFaucetIsNew) {
+    const grade = ctx.vanityFaucet_grade;
+    if (BQ_PRICE.vanityFaucet.fixture[grade]) push('Vanity Faucet', `Fixture (${ctx.vanityFaucet_mountType}, ${grade})`, BQ_PRICE.vanityFaucet.fixture[grade]);
+  } else {
+    push('Vanity Faucet', 'Keep Current Faucet', 0);
+  }
+
+  // Package Labor vs individual labor lines (Vanity Labor + Vanity Faucet Labor + Connection Kit)
+  const bothNew = vanityIsNew && vanityFaucetIsNew;
+  if (vanityIsNew || vanityFaucetIsNew) {
+    if (bothNew) {
+      push('Package Labor', 'Vanity + Faucet + Connection Kit, done together', BQ_PRICE.packageLabor,
+           'replaces $200 Vanity Labor + $100 Faucet Labor + $100 Connection Kit Labor ($400 individually)');
+    } else {
+      if (vanityIsNew) push('Vanity', 'Labor -- Standard Install', BQ_PRICE.vanity.labor);
+      if (vanityFaucetIsNew) push('Vanity Faucet', 'Labor -- Standard Install', BQ_PRICE.vanityFaucet.labor);
+      push('Connection Kit', 'Materials (2 supply lines + 2 shutoffs + P-trap)', BQ_PRICE.connectionKit.materials);
+      push('Connection Kit', 'Labor -- Bundled (P-trap + Supply Lines + Shutoffs)', BQ_PRICE.connectionKit.labor);
+    }
+  }
+
+  // Mirror
+  if (ctx.mirror_grade && ctx.mirror_grade !== 'No Preference') {
+    push('Mirror', `Plain Mirror (${ctx.mirror_grade}, ${ctx.mirror_width})`, BQ_PRICE.mirror.fixture[ctx.mirror_grade]);
+    push('Mirror', 'Labor -- Standard Install', BQ_PRICE.mirror.labor);
+  }
+
+  // Lighting
+  if (ctx.lighting_grade && ctx.lighting_grade !== 'No Preference') {
+    const type = ctx.lighting_fixtureType;
+    const grade = ctx.lighting_grade;
+    if (BQ_PRICE.lighting[type] && BQ_PRICE.lighting[type][grade]) {
+      push('Lighting', `${type} (${grade}, ${ctx.lighting_size})`, BQ_PRICE.lighting[type][grade]);
+    }
+    push('Lighting', 'Labor -- Standard Install', BQ_PRICE.lighting.labor);
+  }
+
+  // Exhaust Fan
+  if (ctx.exhaustFan_needed === 'Yes' && ctx.exhaustFan_grade && ctx.exhaustFan_grade !== 'No Preference') {
+    push('Exhaust Fan', `Fan+Light Combo (${ctx.exhaustFan_grade})`, BQ_PRICE.exhaustFan.fixture[ctx.exhaustFan_grade]);
+    push('Exhaust Fan', 'Labor -- Standard Install', BQ_PRICE.exhaustFan.labor);
+  }
+
+  return lines;
+}
+
 function bqShowReview() {
-  const rows = BATHROOM_GUIDED_FLOW.map(cat => {
-    const parts = cat.questions.map(q => {
-      const val = _bqCtx[`${cat.id}_${q.key}`];
-      return val ? `${q.key}: ${val}` : null;
-    }).filter(Boolean);
-    return `<tr><td style="padding:8px;border-bottom:1px solid var(--line);font-weight:600">${esc(cat.label)}</td>
-             <td style="padding:8px;border-bottom:1px solid var(--line)">${esc(parts.join(' | '))}</td></tr>`;
-  }).join('');
-  document.getElementById('guidedBreadcrumb').textContent = `${_bqRoom} › Draft Scope Summary`;
+  const priced = bqComputePricing(_bqCtx);
+  const unitLines = priced.filter(l => !l.note.includes('per sqft'));
+  const rateLines = priced.filter(l => l.note.includes('per sqft'));
+  const total = unitLines.reduce((sum, l) => sum + l.price, 0);
+
+  const unitRows = unitLines.map(l => `
+    <tr><td style="padding:6px 8px;border-bottom:1px solid var(--line)">${esc(l.category)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid var(--line)">${esc(l.item)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid var(--line);text-align:right">$${l.price.toFixed(2)}</td></tr>`).join('');
+  const rateRows = rateLines.map(l => `
+    <tr><td style="padding:6px 8px;border-bottom:1px solid var(--line)">${esc(l.category)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid var(--line)">${esc(l.item)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid var(--line);text-align:right">$${l.price.toFixed(2)}/sqft</td></tr>`).join('');
+
+  document.getElementById('guidedBreadcrumb').textContent = `${_bqRoom} › Priced Estimate`;
   document.getElementById('guidedBody').innerHTML = `
-    <div style="font-size:1.05rem;font-weight:700;margin-bottom:14px">Draft Scope Summary (demo — no pricing attached yet)</div>
-    <table style="width:100%;border-collapse:collapse;font-size:.85rem">${rows}</table>
-    <div class="small muted" style="margin-top:14px;font-style:italic">This is a demo of the question flow only. Pricing is not yet attached to these categories — that comes once the Lowe's scan sheets are priced out.</div>`;
+    <div style="font-size:1.05rem;font-weight:700;margin-bottom:10px">Priced Line Items</div>
+    <table style="width:100%;border-collapse:collapse;font-size:.85rem;margin-bottom:16px">
+      <tr style="font-weight:700"><td style="padding:6px 8px">Category</td><td style="padding:6px 8px">Item</td><td style="padding:6px 8px;text-align:right">Price</td></tr>
+      ${unitRows}
+      <tr><td colspan="2" style="padding:8px;font-weight:700;text-align:right">Subtotal (per-unit items)</td><td style="padding:8px;font-weight:700;text-align:right">$${total.toFixed(2)}</td></tr>
+    </table>
+    ${rateRows ? `<div style="font-size:1.05rem;font-weight:700;margin-bottom:10px">Per-Sqft Rates (multiply by real square footage)</div>
+    <table style="width:100%;border-collapse:collapse;font-size:.85rem;margin-bottom:16px">
+      <tr style="font-weight:700"><td style="padding:6px 8px">Category</td><td style="padding:6px 8px">Item</td><td style="padding:6px 8px;text-align:right">Rate</td></tr>
+      ${rateRows}
+    </table>` : ''}
+    <div class="small muted" style="font-style:italic">Per-sqft categories (Drywall, Wall Tile, Flooring) show a confirmed rate only -- this flow doesn't yet capture square footage, so multiply manually by the real measurement before adding to the subtotal above.</div>`;
   document.getElementById('guidedFooter').innerHTML =
     `<button class="btn-amber" style="width:100%;padding:12px" onclick="bqFinish()">Done — Back to Room Picker</button>`;
   bqUpdateBackBtn();
