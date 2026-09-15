@@ -22761,19 +22761,25 @@ async function computeRealJobCost(jobId) {
     } catch (e) { /* fall through to placeholder */ }
   }
 
-  // Last-resort placeholder: 40% of Labor Billed, the SAME confirmed
-  // default the JTXD Job Margin Calculator and the Estimate tab's
-  // calcTrueMargin() both use -- NOT computeEstimatedBreakdown's old
-  // "revenue minus materials minus overhead minus marketing" residual,
-  // which silently computed to a flat $0 for every job without an
-  // approved contract value yet (getJobValue returns 0 pre-approval),
-  // exactly the same class of bug fixed elsewhere in
+  // Last-resort placeholder: 40% of full Revenue (materials + labor),
+  // the SAME confirmed default rate (JTXD_LOCKED_RATES.realLaborCostPct)
+  // used everywhere else this placeholder applies -- NOT
+  // computeEstimatedBreakdown's old "revenue minus materials minus
+  // overhead minus marketing" residual, which silently computed to a
+  // flat $0 for every job without an approved contract value yet
+  // (getJobValue returns 0 pre-approval), exactly the same class of bug
+  // fixed elsewhere in
   // computeLockedBucketSplit. Every un-approved job -- which is most
   // jobs sitting at the estimate stage -- fell through to this
   // placeholder and got labor=$0, silently understating Cost to
   // Complete down to materials-only.
   const { laborAndOther: billedLabor } = await fetchEstimateCostSplitFresh(jobId);
-  return { materials, materialsSource, labor: billedLabor * 0.40, source: 'PLACEHOLDER — 40% of Labor Billed, no real subcontractor cost logged yet' };
+  // Corrected 2026-09-14: this must be 40% of full Revenue (materials +
+  // labor), not 40% of billedLabor alone -- billedLabor is already the
+  // post-materials 65% slice, so using it as the base understated real
+  // labor cost by the same class of bug fixed in calcTrueMargin tonight.
+  const revenueForPlaceholder = billedMaterials + billedLabor;
+  return { materials, materialsSource, labor: revenueForPlaceholder * JTXD_LOCKED_RATES.realLaborCostPct, source: 'PLACEHOLDER — 40% of full Revenue, no real subcontractor cost logged yet' };
 }
 
 // Delegates to computeLockedBucketSplit (the real formula locked
