@@ -25,6 +25,7 @@ const JTXD_LOCKED_RATES = {
   marketing: 0.06,  // of JTXD Pool
   flex: 0.05,       // of the remainder after Overhead + Marketing
   taxes: 0.275,     // of the remainder after Flex
+  realLaborCostPct: 0.40, // of Contract Total/Revenue (NOT of Labor Billed -- corrected 2026-09-14, see calcTrueMargin)
 };
 
 const esc = s => ((s==null?'':s)).toString().replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -22364,12 +22365,12 @@ function calcTrueMargin(allItems) {
   const revenue = materialsPrice + laborPrice;
   const laborBilled = laborPrice;
 
-  // Real Subcontractor/Labor Total placeholder defaults to 40% of Labor
-  // Billed -- NOT the catalog-summed labor cost. This is the confirmed
-  // default rate from the finalized JTXD Job Margin Calculator template;
-  // still overridable with a real negotiated subcontractor amount once
-  // one exists for this job.
-  const realLaborCost = laborBilled * 0.40;
+  // Real Subcontractor/Labor Total placeholder defaults to 40% of Contract
+  // Total/Revenue -- NOT 40% of Labor Billed (that was itself already
+  // reduced by the 35% materials cut, which understated true labor cost).
+  // Corrected 2026-09-14. Still overridable with a real negotiated
+  // subcontractor amount once one exists for this job.
+  const realLaborCost = revenue * JTXD_LOCKED_RATES.realLaborCostPct;
 
   // Estimated hours for completion at 77% Efficiency = (Labor Billed /
   // $300/hr billed rate) / 0.77 efficiency factor.
