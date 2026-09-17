@@ -2574,3 +2574,4 @@ async function runSLATriggers(db, companyId) {
 
   console.log(`SLA triggers complete for ${companyId}`);
 }
+// deploy trigger: testing Secret Manager permission fix 2026-09-17T16:37:25Z
