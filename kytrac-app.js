@@ -19060,7 +19060,7 @@ function renderPortalProposal(prop, jobId) {
   const data = prop.snapshot || { rooms: [], grandTotal: 0, itemized: false, paymentSchedule: null };
   const roomsHtml = data.rooms.map(room => {
     const catHtml = (room.catBlocks || []).map(c => {
-      const priceHtml = (data.itemized && !c.descriptionOnly)
+      const priceHtml = !c.descriptionOnly
         ? ` <span style="float:right;color:#eaf0fb;font-weight:700">$${c.price.toFixed(2)}</span>` : '';
       const scopeHtml = c.scopeNotes
         ? `<div style="font-size:.8rem;color:var(--muted);font-style:italic;white-space:pre-wrap;margin:2px 0 6px;padding-left:8px">${esc(c.scopeNotes)}</div>` : '';
@@ -19084,7 +19084,7 @@ function renderPortalProposal(prop, jobId) {
       </div>`;
     }).join('');
     const directHtml = (room.directBlocks || []).map(d => {
-      const priceHtml = data.itemized ? ` <span style="float:right;color:#eaf0fb;font-weight:700">$${d.price.toFixed(2)}</span>` : '';
+      const priceHtml = ` <span style="float:right;color:#eaf0fb;font-weight:700">$${d.price.toFixed(2)}</span>`;
       const notesHtml = d.notes
         ? `<div style="font-size:.8rem;color:var(--muted);font-style:italic;white-space:pre-wrap;margin:2px 0 6px;padding-left:8px">${esc(d.notes)}</div>` : '';
       return `<div style="font-size:.86rem;color:var(--muted);padding-left:8px;margin-bottom:4px">
@@ -24225,7 +24225,7 @@ function renderProposalDocumentHtml(data, job, co, autoPrint) {
 
   const roomSections = data.rooms.map(room => {
     const catHtml = room.catBlocks.map(c => {
-      const priceHtml = (itemized && !c.descriptionOnly) ? `<span style="float:right;font-weight:700;color:#1f2937">$${c.price.toFixed(2)}</span>` : '';
+      const priceHtml = !c.descriptionOnly ? `<span style="float:right;font-weight:700;color:#1f2937">$${c.price.toFixed(2)}</span>` : '';
       const bidCaveat = c.pendingBid
         ? `<div class="cat-bid-caveat">⚠ ${esc(c.pendingBidNote || 'Pricing for this item is preliminary and may be adjusted once final vendor bids are in.')}</div>`
         : '';
@@ -24252,7 +24252,7 @@ function renderProposalDocumentHtml(data, job, co, autoPrint) {
       </div>`;
     }).join('');
     const directHtml = room.directBlocks.map(d => {
-      const priceHtml = itemized ? `<span style="float:right;font-weight:700;color:#1f2937">$${d.price.toFixed(2)}</span>` : '';
+      const priceHtml = `<span style="float:right;font-weight:700;color:#1f2937">$${d.price.toFixed(2)}</span>`;
       return `<div class="cat-block">
         <div class="cat-name">${esc(d.label)}${priceHtml}</div>
         ${d.notes ? `<div class="cat-scope">${esc(d.notes)}</div>` : ''}
