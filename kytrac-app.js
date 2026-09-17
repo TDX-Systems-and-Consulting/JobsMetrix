@@ -28975,6 +28975,17 @@ const GRADE_OPTIONS = ['Contractor Grade', 'Design Grade', 'Premium', 'No Prefer
 // these are conceptual grade-tier prices (Contractor/Design/Premium), not
 // tied to any specific branded SKU, by deliberate design decision.
 // ═══════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
+// PAINT PRICE — shared reference data, not a standalone room. Kitchen and
+// Bathroom (and any future room) pull from this when a Paint question is
+// relevant, rather than each duplicating its own copy.
+// ═══════════════════════════════════════════════════════════════════════
+const PAINT_PRICE = {
+  materials: 0.75, // per sqft, 1 coat
+  labor: 3.0,      // per sqft, 1 coat
+  kit: 84.42       // 1 kit per 1,000 sqft, round up -- tape/roller/brush/builder's paper
+};
+
 const BQ_PRICE = {
   haulOff: { standalone: 109, remodel: 0 },
   drywall: { // per sqft, material only
@@ -29037,6 +29048,9 @@ const BATHROOM_GUIDED_FLOW = [
       { key:'thickness', label:'Drywall thickness?', options: ctx => ctx.drywallMaterial === 'Moisture-Resistant (Green/Purple Board)' ? ['1/2" Thickness'] : ['1/2" Thickness','5/8" Thickness'] },
       { key:'sqft', label:'How many square feet of drywall?', type:'number', placeholder:'e.g. 120' }
   ], note:'5/8" Moisture-Resistant dropped from standard options -- manual add if requested. For full-room/whole-house drywall, a $6.50/sqft blended rate (materials+labor) is also available as an alternative to this itemized pricing -- ask Travis which applies before finalizing.' },
+  { id:'paint', label:'Paint', questions:[
+      { key:'sqft', label:'How many square feet of paint (1 coat)?', type:'number', placeholder:'e.g. 500' }
+  ], note:'Materials, labor, and the paint kit (tape/roller/brush/builder\'s paper, 1 per 1,000 sqft round up) all compute automatically from this one number.' },
   { id:'wallTile', label:'Wall Tile', questions:[
       { key:'grade', label:'What grade level for the wall tile?', options:GRADE_OPTIONS, isGrade:true },
       { key:'sqft', label:'How many square feet of wall tile?', type:'number', placeholder:'e.g. 80', skipIf: ctx => ctx.wallTile_grade === 'No Preference', skipValue:0 }
@@ -29359,6 +29373,17 @@ function bqComputePricing(ctx) {
   if (ctx.exhaustFan_needed === 'Yes' && ctx.exhaustFan_grade && ctx.exhaustFan_grade !== 'No Preference') {
     push('Exhaust Fan', `Fan+Light Combo (${ctx.exhaustFan_grade})`, BQ_PRICE.exhaustFan.fixture[ctx.exhaustFan_grade]);
     push('Exhaust Fan', 'Labor -- Standard Install', BQ_PRICE.exhaustFan.labor);
+  }
+
+  // Paint (reference data, shared with Kitchen -- see PAINT_PRICE)
+  {
+    const sqft = ctx.paint_sqft || 0;
+    if (sqft > 0) {
+      push('Paint', `Materials x ${sqft} sqft`, PAINT_PRICE.materials * sqft);
+      push('Paint', `Labor x ${sqft} sqft`, PAINT_PRICE.labor * sqft);
+      const kits = Math.ceil(sqft / 1000);
+      push('Paint', `Paint Kit x ${kits} (1 per 1,000 sqft, rounded up)`, PAINT_PRICE.kit * kits);
+    }
   }
 
   return lines;
@@ -29835,7 +29860,10 @@ const KITCHEN_GUIDED_FLOW = [
       { key:'material', label:'Drywall material?', options:['Standard Drywall','Moisture-Resistant (Green/Purple Board)'], shareKey:'kDrywallMaterial' },
       { key:'thickness', label:'Drywall thickness?', options: ctx => ctx.kDrywallMaterial === 'Moisture-Resistant (Green/Purple Board)' ? ['1/2" Thickness'] : ['1/2" Thickness','5/8" Thickness'] },
       { key:'sqft', label:'How many square feet of drywall?', type:'number', placeholder:'e.g. 300' }
-  ]}
+  ]},
+  { id:'paint', label:'Paint', questions:[
+      { key:'sqft', label:'How many square feet of paint (1 coat)?', type:'number', placeholder:'e.g. 800' }
+  ], note:'Materials, labor, and the paint kit (tape/roller/brush/builder\'s paper, 1 per 1,000 sqft round up) all compute automatically from this one number.' }
 ];
 
 function kqComputePricing(ctx) {
@@ -29937,6 +29965,17 @@ function kqComputePricing(ctx) {
     const sqft = ctx.drywall_sqft || 0;
     if (rate !== undefined && sqft > 0) push('Drywall', `Materials (${key}) x ${sqft} sqft`, rate * sqft);
     if (sqft > 0) push('Drywall', `Standard supplies x ${sqft} sqft`, BQ_PRICE.drywall.supplies * sqft);
+  }
+
+  // Paint (reference data, shared with Bathroom -- see PAINT_PRICE)
+  {
+    const sqft = ctx.paint_sqft || 0;
+    if (sqft > 0) {
+      push('Paint', `Materials x ${sqft} sqft`, PAINT_PRICE.materials * sqft);
+      push('Paint', `Labor x ${sqft} sqft`, PAINT_PRICE.labor * sqft);
+      const kits = Math.ceil(sqft / 1000);
+      push('Paint', `Paint Kit x ${kits} (1 per 1,000 sqft, rounded up)`, PAINT_PRICE.kit * kits);
+    }
   }
 
   return lines;
