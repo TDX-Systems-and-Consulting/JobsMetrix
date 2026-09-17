@@ -19064,13 +19064,13 @@ function renderPortalProposal(prop, jobId) {
         ? ` <span style="float:right;color:#eaf0fb;font-weight:700">$${c.price.toFixed(2)}</span>` : '';
       const scopeHtml = c.scopeNotes
         ? `<div style="font-size:.8rem;color:var(--muted);font-style:italic;white-space:pre-wrap;margin:2px 0 6px;padding-left:8px">${esc(c.scopeNotes)}</div>` : '';
-      // Same independence as the internal document renderer: a note shows
-      // even in lump-sum mode, but that line's price never does unless
-      // Itemized is on.
+      // Same independence as the internal document renderer: the item's
+      // name and any note always show, so the full scope stays visible --
+      // only that line's price is gated behind Itemized.
       const itemsHtml = (c.items || []).length
-        ? c.items.filter(it => data.itemized || it.notes).map(it => {
-            const nameLine = data.itemized
-              ? `${esc(it.label)}<span style="float:right;color:#cbd5e1">$${it.price.toFixed(2)}</span>` : '';
+        ? c.items.filter(it => it.label || it.notes).map(it => {
+            const itPrice = data.itemized ? `<span style="float:right;color:#cbd5e1">$${it.price.toFixed(2)}</span>` : '';
+            const nameLine = it.label ? `${esc(it.label)}${itPrice}` : '';
             return `<div style="font-size:.82rem;color:var(--muted);padding-left:16px;margin-bottom:2px">
               ${nameLine}
               ${it.notes ? `<div style="font-size:.78rem;font-style:italic;color:var(--muted);white-space:pre-wrap">${esc(it.notes)}</div>` : ''}
@@ -24229,15 +24229,15 @@ function renderProposalDocumentHtml(data, job, co, autoPrint) {
       const bidCaveat = c.pendingBid
         ? `<div class="cat-bid-caveat">⚠ ${esc(c.pendingBidNote || 'Pricing for this item is preliminary and may be adjusted once final vendor bids are in.')}</div>`
         : '';
-      // Item notes and item prices are independent: a non-itemized proposal
-      // still shows any note text on a line (e.g. "Remove vegetation & debris
-      // along fence line") without ever exposing that line's $ amount -- only
-      // the name+price row is gated behind Itemized; the note itself is not.
+      // Item name, item notes, and item price are all independent: a
+      // non-itemized proposal always shows the item's name (so a nitpicky
+      // customer still sees the full scope), and always shows note text if
+      // present -- but that line's $ amount only shows when Itemized is on.
       const itemsHtml = (c.items || []).length
         ? `<div class="cat-items">${c.items.map(it => {
-            if (!itemized && !it.notes) return '';
+            if (!it.label && !it.notes) return '';
             const itPrice = itemized ? `<span style="float:right;font-weight:600;color:#374151">$${it.price.toFixed(2)}</span>` : '';
-            const nameLine = itemized ? `<div class="cat-item-name">${esc(it.label)}${itPrice}</div>` : '';
+            const nameLine = it.label ? `<div class="cat-item-name">${esc(it.label)}${itPrice}</div>` : '';
             return `<div class="cat-item">
               ${nameLine}
               ${it.notes ? `<div class="cat-item-note">${esc(it.notes)}</div>` : ''}
