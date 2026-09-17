@@ -21783,6 +21783,17 @@ let _estCollapsed = {}; // groupId/subgroupId -> bool
 let _editingGroupId = null;
 let _editingSubgroupId = null;
 let _editingSubSubgroupId = null;
+// True original location of the item being edited, captured once when
+// the modal opens and never overwritten by the Group/Subgroup dropdowns
+// afterward. Needed to detect a genuine move (dropdown changed mid-edit)
+// vs. a same-location edit -- saveEstItem() used to blindly overwrite
+// _editingGroupId/_editingSubgroupId from the dropdown's current value,
+// so moving an item's group and hitting Save tried to .update() the old
+// item ID against the NEW group's items subcollection, where that
+// document never existed -- "No document to update" in Firestore.
+let _editingOriginalGroupId = null;
+let _editingOriginalSubgroupId = null;
+let _editingOriginalSubSubgroupId = null;
 let _editingEstItemId = null;
 
 const COST_TYPES = ['Labor','Materials','Subcontractor','Equipment','Permits & Fees','Overhead','Other'];
@@ -23698,6 +23709,11 @@ function openAddEstItemModal(itemId, groupId, subgroupId, subSubgroupId) {
   _editingGroupId = groupId || null;
   _editingSubgroupId = subgroupId || null;
   _editingSubSubgroupId = subSubgroupId || null;
+  // Snapshot the true original location -- these never get touched again
+  // until the modal is reopened, regardless of what the dropdowns do.
+  _editingOriginalGroupId = groupId || null;
+  _editingOriginalSubgroupId = subgroupId || null;
+  _editingOriginalSubSubgroupId = subSubgroupId || null;
 
   const flatToggle = document.getElementById('estItemFlatRateToggle');
   if (flatToggle) flatToggle.checked = false;
@@ -23967,9 +23983,36 @@ function saveEstItem() {
     colRef = jobRef.collection('estimateGroups').doc(groupId).collection('items');
   }
 
-  const promise = _editingEstItemId
-    ? colRef.doc(_editingEstItemId).update(data)
-    : colRef.add({ ...data, order: 0, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+  // A genuine move: editing an existing item whose Group/Subgroup/
+  // Sub-subgroup dropdown now points somewhere different from where it
+  // truly lives. Items are per-group Firestore subcollections, so this
+  // can't be a same-ID .update() -- that old ID was never created in
+  // the new location. Delete the old doc and create a fresh one there
+  // instead, preserving everything else about the item.
+  const isMove = _editingEstItemId && (
+    groupId !== _editingOriginalGroupId ||
+    subgroupId !== _editingOriginalSubgroupId ||
+    subSubgroupId !== _editingOriginalSubSubgroupId
+  );
+
+  let oldColRef = null;
+  if (isMove) {
+    const ogId = _editingOriginalGroupId, osId = _editingOriginalSubgroupId, ossId = _editingOriginalSubSubgroupId;
+    if (ossId && osId) {
+      oldColRef = jobRef.collection('estimateGroups').doc(ogId).collection('subgroups').doc(osId).collection('subgroups').doc(ossId).collection('items');
+    } else if (osId) {
+      oldColRef = jobRef.collection('estimateGroups').doc(ogId).collection('subgroups').doc(osId).collection('items');
+    } else {
+      oldColRef = jobRef.collection('estimateGroups').doc(ogId).collection('items');
+    }
+  }
+
+  const promise = isMove
+    ? colRef.add({ ...data, order: 0, createdAt: firebase.firestore.FieldValue.serverTimestamp() })
+        .then(() => oldColRef.doc(_editingEstItemId).delete())
+    : (_editingEstItemId
+        ? colRef.doc(_editingEstItemId).update(data)
+        : colRef.add({ ...data, order: 0, createdAt: firebase.firestore.FieldValue.serverTimestamp() }));
 
   // If this item was picked from a catalog entry that bundles both a
   // materials AND a labor price, and the "also add labor line"
