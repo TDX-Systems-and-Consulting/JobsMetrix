@@ -13643,7 +13643,7 @@ const DEFAULT_COMPANY_PROFILE = {
   payTerms: 30,
   taxRate: 0,
   invNotes: 'Payment due within 30 days. Thank you for your business!',
-  defaultMaterialsMarkup: 25,
+  defaultMaterialsMarkup: 15,
   defaultLaborMarkup: 15,
   burdenRatePerManHour: 60,
   otWeeklyThreshold: 40,
@@ -13877,7 +13877,7 @@ function populateSettingsForm() {
   setVal('settPayTerms', p.payTerms || 30);
   setVal('settTaxRate', p.taxRate || 0);
   setVal('settInvNotes', p.invNotes);
-  setVal('settMaterialsMarkup', p.defaultMaterialsMarkup !== undefined ? p.defaultMaterialsMarkup : 25);
+  setVal('settMaterialsMarkup', p.defaultMaterialsMarkup !== undefined ? p.defaultMaterialsMarkup : 15);
   setVal('settLaborMarkup', p.defaultLaborMarkup !== undefined ? p.defaultLaborMarkup : 15);
   setVal('settBurdenRate', p.burdenRatePerManHour !== undefined ? p.burdenRatePerManHour : 60);
   setVal('settOtThreshold', p.otWeeklyThreshold !== undefined ? p.otWeeklyThreshold : 40);
@@ -13936,7 +13936,7 @@ function saveCompanyProfile() {
     ownerUid: document.getElementById('settPlannerxdOwnerUid')?.value.trim() || '',
     updatedAt: firebase.firestore.FieldValue.serverTimestamp()
   };
-  if (isNaN(profile.defaultMaterialsMarkup)) profile.defaultMaterialsMarkup = 25;
+  if (isNaN(profile.defaultMaterialsMarkup)) profile.defaultMaterialsMarkup = 15;
   if (isNaN(profile.defaultLaborMarkup)) profile.defaultLaborMarkup = 15;
   if (isNaN(profile.burdenRatePerManHour)) profile.burdenRatePerManHour = 60;
   if (isNaN(profile.otWeeklyThreshold)) profile.otWeeklyThreshold = 40;
@@ -23868,7 +23868,7 @@ function onEstSubgroupChange() {
 // rate (no separately-confirmed real rate exists for Equipment/Overhead).
 const MATERIALS_RATE_COST_TYPES = new Set(['Materials', 'Subcontractor']);
 function getDefaultMarkupForCostType(costType) {
-  const materialsRate = companyProfile.defaultMaterialsMarkup !== undefined ? companyProfile.defaultMaterialsMarkup : 25;
+  const materialsRate = companyProfile.defaultMaterialsMarkup !== undefined ? companyProfile.defaultMaterialsMarkup : 15;
   const laborRate = companyProfile.defaultLaborMarkup !== undefined ? companyProfile.defaultLaborMarkup : 15;
   return MATERIALS_RATE_COST_TYPES.has(costType) ? materialsRate : laborRate;
 }
