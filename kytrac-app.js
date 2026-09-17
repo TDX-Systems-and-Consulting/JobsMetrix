@@ -29707,7 +29707,7 @@ window.openGuidedAdd = openGuidedAdd;
 // Dispatches the modal's single Back button to whichever engine is
 // currently active -- the original phase-by-phase GUIDED_SCRIPTS flow
 // (Roofing) or the newer continuous ROOM_WALKTHROUGHS flow.
-function guidedBackDispatch() { if (_bqRoom) bqBack(); else if (_wtWalkthrough) wtBack(); else guidedBack(); }
+function guidedBackDispatch() { if (_kqRoom) kqBack(); else if (_bqRoom) bqBack(); else if (_wtWalkthrough) wtBack(); else guidedBack(); }
 window.guidedBackDispatch = guidedBackDispatch;
 
 function guidedRenderCategoryScreen() {
@@ -29757,6 +29757,330 @@ function guidedPickCategory(cat) {
 }
 window.guidedPickCategory = guidedPickCategory;
 
+// ═══════════════════════════════════════════════════════════════════════
+// KITCHEN PRICE TABLE — every number here confirmed real this session
+// (Cabinets, Faucet, Lighting, Countertops, Appliance Package, Sink).
+// Same conceptual grade-tier approach as bathroom, deliberately kept
+// separate from CATALOG_DATA for the same reason as BQ_PRICE.
+// ═══════════════════════════════════════════════════════════════════════
+const KQ_PRICE = {
+  cabinets: {
+    materials: { 'Contractor Grade': 120, 'Design Grade': 170, 'Premium': 280 }, // per LF
+    labor: 83 // per LF, flat all grades
+  },
+  countertop: {
+    'Contractor Grade': 59, 'Design Grade': 97, 'Premium': 189 // per sqft, all-in materials+labor
+  },
+  sink: {
+    'Single Bowl': 101, 'Double Bowl': 147.72, // includes strainer
+    labor: 300
+  },
+  faucet: {
+    fixture: { 'Contractor Grade': 109, 'Design Grade': 219, 'Premium': 349 },
+    labor: 100,
+    connectionKitMaterials: 89.68,
+    connectionKitLabor: 100
+  },
+  backsplash: { materials: { 'Contractor Grade': 6, 'Design Grade': 8, 'Premium': 10 }, labor: 15 }, // per sqft, same as bathroom wall tile
+  lighting: {
+    canLight: { materials: 40, labor: 50 },
+    pendant: { fixture: { 'Contractor Grade': 40, 'Design Grade': 75, 'Premium': 175 }, labor: 50 },
+    underCabinet: { materials: 2.50, labor: 15 } // per LF
+  },
+  appliancePackage: {
+    dishwasher: { 'Contractor Grade': 400, 'Design Grade': 500, 'Premium': 700 },
+    range: { 'Contractor Grade': 600, 'Design Grade': 759, 'Premium': 1100 },
+    fridge: { 'Contractor Grade': 550, 'Design Grade': 700, 'Premium': 1000 },
+    otr: { 'Contractor Grade': 180, 'Design Grade': 229, 'Premium': 400 },
+    labor: { dishwasher: 300, range: 100, fridge: 100, otr: 100 } // flat all grades
+  }
+};
+
+const KITCHEN_GUIDED_FLOW = [
+  { id:'cabinets', label:'Cabinets', questions:[
+      { key:'grade', label:'What grade level for the cabinets?', options:GRADE_OPTIONS, isGrade:true },
+      { key:'lf', label:'How many linear feet of cabinets?', type:'number', placeholder:'e.g. 30', skipIf: ctx => ctx.cabinets_grade === 'No Preference', skipValue:0 }
+  ]},
+  { id:'countertop', label:'Countertop', questions:[
+      { key:'grade', label:'What grade level for the countertop?', options:GRADE_OPTIONS, isGrade:true, shareKey:'countertopGrade' },
+      { key:'sqft', label:'How many square feet of countertop?', type:'number', placeholder:'e.g. 27', skipIf: ctx => ctx.countertop_grade === 'No Preference', skipValue:0 }
+  ], note:'Design Grade and Premium both include undermount sink installation in this price -- no separate sink charge for those two tiers.' },
+  { id:'sink', label:'Kitchen Sink', questions:[
+      { key:'config', label:'Sink configuration?', options:['Single Bowl','Double Bowl'], skipIf: ctx => ctx.countertopGrade === 'Design Grade' || ctx.countertopGrade === 'Premium', skipValue:'N/A (bundled with countertop)' }
+  ], note:'Only applies with Contractor Grade countertop -- Design and Premium already include the sink.' },
+  { id:'kitchenFaucet', label:'Kitchen Faucet', questions:[
+      { key:'grade', label:'What grade level for the kitchen faucet?', options:GRADE_OPTIONS, isGrade:true }
+  ]},
+  { id:'backsplash', label:'Backsplash', questions:[
+      { key:'grade', label:'What grade level for the backsplash tile?', options:GRADE_OPTIONS, isGrade:true },
+      { key:'sqft', label:'How many square feet of backsplash?', type:'number', placeholder:'e.g. 30', skipIf: ctx => ctx.backsplash_grade === 'No Preference', skipValue:0 }
+  ]},
+  { id:'lighting', label:'Kitchen Lighting', questions:[
+      { key:'canQty', label:'How many can lights?', type:'number', placeholder:'e.g. 6' },
+      { key:'pendantNeeded', label:'Any pendant lights (over island/peninsula)?', options:['Yes','No'], shareKey:'pendantNeeded' },
+      { key:'pendantGrade', label:'What grade level for the pendant?', options:GRADE_OPTIONS, isGrade:true, skipIf: ctx => ctx.pendantNeeded === 'No', skipValue:'N/A' },
+      { key:'pendantQty', label:'How many pendants?', type:'number', placeholder:'e.g. 3', skipIf: ctx => ctx.pendantNeeded === 'No', skipValue:0 },
+      { key:'underCabLf', label:'How many linear feet of under-cabinet lighting?', type:'number', placeholder:'e.g. 12' }
+  ]},
+  { id:'appliancePackage', label:'Appliance Package', questions:[
+      { key:'needed', label:'Is a new appliance package part of this job?', options:['Yes','No'], shareKey:'applianceNeeded' },
+      { key:'grade', label:'What grade level? (Stove, OTR, Dishwasher, Fridge as one package)', options:['Contractor Grade (White)','Design Grade (Stainless)','Premium (High-End Stainless)'], skipIf: ctx => ctx.applianceNeeded === 'No', skipValue:'N/A' }
+  ]},
+  { id:'flooring', label:'Flooring', questions:[
+      { key:'material', label:'Flooring material?', options:['LVP','Tile'], shareKey:'kFlooringMaterial' },
+      { key:'grade', label:'What grade level?', options: ctx => ctx.kFlooringMaterial === 'LVP' ? ['Contractor Grade (12 mil)','Design Grade (20 mil)','Premium (24+ mil)'] : GRADE_OPTIONS, isGrade:true },
+      { key:'sqft', label:'How many square feet of flooring?', type:'number', placeholder:'e.g. 200', skipIf: ctx => ctx.flooring_grade === 'No Preference', skipValue:0 }
+  ]},
+  { id:'drywall', label:'Drywall', questions:[
+      { key:'material', label:'Drywall material?', options:['Standard Drywall','Moisture-Resistant (Green/Purple Board)'], shareKey:'kDrywallMaterial' },
+      { key:'thickness', label:'Drywall thickness?', options: ctx => ctx.kDrywallMaterial === 'Moisture-Resistant (Green/Purple Board)' ? ['1/2" Thickness'] : ['1/2" Thickness','5/8" Thickness'] },
+      { key:'sqft', label:'How many square feet of drywall?', type:'number', placeholder:'e.g. 300' }
+  ]}
+];
+
+function kqComputePricing(ctx) {
+  const lines = [];
+  const push = (category, item, cost) => lines.push({ category, item, cost, price: Math.round(cost*1.15*100)/100 });
+
+  // Cabinets
+  if (ctx.cabinets_grade && ctx.cabinets_grade !== 'No Preference') {
+    const lf = ctx.cabinets_lf || 0;
+    if (lf > 0) {
+      push('Cabinets', `Materials (${ctx.cabinets_grade}) x ${lf} LF`, KQ_PRICE.cabinets.materials[ctx.cabinets_grade] * lf);
+      push('Cabinets', `Labor x ${lf} LF`, KQ_PRICE.cabinets.labor * lf);
+    }
+  }
+
+  // Countertop
+  if (ctx.countertop_grade && ctx.countertop_grade !== 'No Preference') {
+    const sqft = ctx.countertop_sqft || 0;
+    if (sqft > 0) push('Countertop', `${ctx.countertop_grade} x ${sqft} sqft (materials + labor)`, KQ_PRICE.countertop[ctx.countertop_grade] * sqft);
+  }
+
+  // Sink (only if Contractor countertop, or countertop not addressed)
+  if (ctx.sink_config && !String(ctx.sink_config).startsWith('N/A')) {
+    push('Sink', `${ctx.sink_config} (includes strainer)`, KQ_PRICE.sink[ctx.sink_config]);
+    push('Sink', 'Labor -- Standard Install', KQ_PRICE.sink.labor);
+  }
+
+  // Kitchen Faucet
+  if (ctx.kitchenFaucet_grade && ctx.kitchenFaucet_grade !== 'No Preference') {
+    const grade = ctx.kitchenFaucet_grade;
+    push('Kitchen Faucet', `Fixture (${grade})`, KQ_PRICE.faucet.fixture[grade]);
+    push('Kitchen Faucet', 'Labor', KQ_PRICE.faucet.labor);
+    push('Kitchen Faucet', 'Connection Kit Materials', KQ_PRICE.faucet.connectionKitMaterials);
+    push('Kitchen Faucet', 'Connection Kit Labor', KQ_PRICE.faucet.connectionKitLabor);
+  }
+
+  // Backsplash
+  if (ctx.backsplash_grade && ctx.backsplash_grade !== 'No Preference') {
+    const sqft = ctx.backsplash_sqft || 0;
+    if (sqft > 0) {
+      push('Backsplash', `Materials (${ctx.backsplash_grade}) x ${sqft} sqft`, KQ_PRICE.backsplash.materials[ctx.backsplash_grade] * sqft);
+      push('Backsplash', `Labor x ${sqft} sqft`, KQ_PRICE.backsplash.labor * sqft);
+    }
+  }
+
+  // Lighting
+  const canQty = ctx.lighting_canQty || 0;
+  if (canQty > 0) {
+    push('Lighting', `Can Light Materials x ${canQty}`, KQ_PRICE.lighting.canLight.materials * canQty);
+    push('Lighting', `Can Light Labor x ${canQty}`, KQ_PRICE.lighting.canLight.labor * canQty);
+  }
+  if (ctx.pendantNeeded === 'Yes' && ctx.lighting_pendantGrade && ctx.lighting_pendantGrade !== 'No Preference') {
+    const qty = ctx.lighting_pendantQty || 0;
+    if (qty > 0) {
+      push('Lighting', `Pendant Fixture (${ctx.lighting_pendantGrade}) x ${qty}`, KQ_PRICE.lighting.pendant.fixture[ctx.lighting_pendantGrade] * qty);
+      push('Lighting', `Pendant Labor x ${qty}`, KQ_PRICE.lighting.pendant.labor * qty);
+    }
+  }
+  const underCabLf = ctx.lighting_underCabLf || 0;
+  if (underCabLf > 0) {
+    push('Lighting', `Under-Cabinet Materials x ${underCabLf} LF`, KQ_PRICE.lighting.underCabinet.materials * underCabLf);
+    push('Lighting', `Under-Cabinet Labor x ${underCabLf} LF`, KQ_PRICE.lighting.underCabinet.labor * underCabLf);
+  }
+
+  // Appliance Package
+  if (ctx.applianceNeeded === 'Yes' && ctx.appliancePackage_grade && ctx.appliancePackage_grade !== 'N/A') {
+    const gradeMap = { 'Contractor Grade (White)':'Contractor Grade', 'Design Grade (Stainless)':'Design Grade', 'Premium (High-End Stainless)':'Premium' };
+    const g = gradeMap[ctx.appliancePackage_grade];
+    const ap = KQ_PRICE.appliancePackage;
+    push('Appliance Package', `Dishwasher (${g})`, ap.dishwasher[g]);
+    push('Appliance Package', `Range (${g})`, ap.range[g]);
+    push('Appliance Package', `Refrigerator (${g})`, ap.fridge[g]);
+    push('Appliance Package', `OTR Microwave (${g})`, ap.otr[g]);
+    push('Appliance Package', 'Labor -- Dishwasher Install', ap.labor.dishwasher);
+    push('Appliance Package', 'Labor -- Range Install', ap.labor.range);
+    push('Appliance Package', 'Labor -- Refrigerator Install', ap.labor.fridge);
+    push('Appliance Package', 'Labor -- OTR Install', ap.labor.otr);
+  }
+
+  // Flooring (reuses bathroom's BQ_PRICE.flooring rates)
+  if (ctx.flooring_material === 'LVP' && ctx.flooring_grade) {
+    const sqft = ctx.flooring_sqft || 0;
+    if (sqft > 0) {
+      push('Flooring', `LVP Materials (${ctx.flooring_grade}) x ${sqft} sqft`, BQ_PRICE.flooring.lvp.materials[ctx.flooring_grade] * sqft);
+      push('Flooring', `LVP Labor x ${sqft} sqft`, BQ_PRICE.flooring.lvp.labor * sqft);
+    }
+  } else if (ctx.flooring_material === 'Tile' && ctx.flooring_grade && ctx.flooring_grade !== 'No Preference') {
+    const sqft = ctx.flooring_sqft || 0;
+    if (sqft > 0) {
+      push('Flooring', `Tile Materials (${ctx.flooring_grade}) x ${sqft} sqft`, BQ_PRICE.flooring.tile.materials[ctx.flooring_grade] * sqft);
+      push('Flooring', `Tile Labor x ${sqft} sqft`, BQ_PRICE.flooring.tile.labor * sqft);
+    }
+  }
+
+  // Drywall (reuses bathroom's BQ_PRICE.drywall rates)
+  {
+    const key = `${ctx.drywall_material}|${ctx.drywall_thickness}`;
+    const rate = BQ_PRICE.drywall[key];
+    const sqft = ctx.drywall_sqft || 0;
+    if (rate !== undefined && sqft > 0) push('Drywall', `Materials (${key}) x ${sqft} sqft`, rate * sqft);
+    if (sqft > 0) push('Drywall', `Standard supplies x ${sqft} sqft`, BQ_PRICE.drywall.supplies * sqft);
+  }
+
+  return lines;
+}
+
+let _kqRoom = null, _kqCatIdx = 0, _kqQIdx = 0, _kqCtx = {}, _kqHistory = [], _kqNoPrefCategory = false;
+
+function kqStart(room) {
+  _kqRoom = room; _kqCatIdx = 0; _kqQIdx = 0; _kqCtx = {}; _kqHistory = []; _kqNoPrefCategory = false;
+  kqRenderQuestion();
+}
+window.kqStart = kqStart;
+
+function kqResolveNoPreferenceDefault(question) {
+  if (question.isGrade) return 'Design Grade';
+  return 'No Preference';
+}
+
+function kqCurrentQuestion() {
+  const cat = KITCHEN_GUIDED_FLOW[_kqCatIdx];
+  if (!cat) return null;
+  while (_kqQIdx < cat.questions.length) {
+    const q = cat.questions[_kqQIdx];
+    const ctxKey = `${cat.id}_${q.key}`;
+    if (q.carryFrom) {
+      _kqCtx[ctxKey] = _kqCtx[q.carryFrom];
+      _kqQIdx++;
+      continue;
+    }
+    if (q.skipIf && q.skipIf(_kqCtx)) {
+      const val = q.skipValue !== undefined ? q.skipValue : 'N/A';
+      _kqCtx[ctxKey] = val;
+      if (q.shareKey) _kqCtx[q.shareKey] = val;
+      _kqQIdx++;
+      continue;
+    }
+    if (_kqNoPrefCategory) {
+      const val = kqResolveNoPreferenceDefault(q);
+      _kqCtx[ctxKey] = val;
+      if (q.shareKey) _kqCtx[q.shareKey] = val;
+      _kqQIdx++;
+      continue;
+    }
+    return { cat, q, ctxKey };
+  }
+  return null;
+}
+
+function kqRenderQuestion() {
+  let found = kqCurrentQuestion();
+  while (!found) {
+    _kqCatIdx++; _kqQIdx = 0; _kqNoPrefCategory = false;
+    if (_kqCatIdx >= KITCHEN_GUIDED_FLOW.length) { kqShowReview(); return; }
+    found = kqCurrentQuestion();
+  }
+  const { cat, q } = found;
+  const label = typeof q.label === 'function' ? q.label(_kqCtx) : q.label;
+  document.getElementById('guidedBreadcrumb').textContent = `${_kqRoom} › ${cat.label}`;
+  let noteHtml = cat.note && _kqQIdx === 0 ? `<div class="small muted" style="margin-bottom:14px;font-style:italic">${esc(cat.note)}</div>` : '';
+
+  if (q.type === 'number') {
+    document.getElementById('guidedBody').innerHTML = `
+      ${noteHtml}
+      <div style="font-size:1.05rem;font-weight:700;margin-bottom:16px">${esc(label)}</div>
+      <input id="kqNumberInput" type="number" min="0" step="0.1" placeholder="${esc(q.placeholder||'0')}"
+             style="width:100%;padding:12px 16px;font-size:1rem;margin-bottom:10px" />
+      <button class="btn-amber" style="width:100%;padding:12px" onclick="kqSubmitNumber()">Next</button>`;
+    document.getElementById('guidedFooter').innerHTML =
+      `<span class="small muted">${esc(cat.label)} — question ${_kqQIdx+1} of ${cat.questions.length}</span>`;
+    kqUpdateBackBtn();
+    setTimeout(() => { const el = document.getElementById('kqNumberInput'); if (el) el.focus(); }, 50);
+    return;
+  }
+
+  const options = typeof q.options === 'function' ? q.options(_kqCtx) : q.options;
+  document.getElementById('guidedBody').innerHTML = `
+    ${noteHtml}
+    <div style="font-size:1.05rem;font-weight:700;margin-bottom:16px">${esc(label)}</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${options.map(o => `<button class="btn" style="text-align:left;padding:12px 16px" onclick="kqAnswer(${JSON.stringify(o).replace(/"/g,'&quot;')})">${esc(o)}</button>`).join('')}
+    </div>`;
+  document.getElementById('guidedFooter').innerHTML =
+    `<span class="small muted">${esc(cat.label)} — question ${_kqQIdx+1} of ${cat.questions.length}</span>`;
+  kqUpdateBackBtn();
+}
+
+function kqSubmitNumber() {
+  const el = document.getElementById('kqNumberInput');
+  const val = parseFloat(el.value);
+  if (isNaN(val) || val < 0) { el.style.borderColor = 'red'; return; }
+  kqAnswer(val);
+}
+window.kqSubmitNumber = kqSubmitNumber;
+
+function kqAnswer(value) {
+  const { cat, q, ctxKey } = kqCurrentQuestion();
+  _kqHistory.push({ catIdx:_kqCatIdx, qIdx:_kqQIdx, noPref:_kqNoPrefCategory, ctxSnapshot:{..._kqCtx} });
+  _kqCtx[ctxKey] = value;
+  if (q.shareKey) _kqCtx[q.shareKey] = value;
+  if (typeof value === 'string' && value.toLowerCase().includes('no preference')) _kqNoPrefCategory = true;
+  _kqQIdx++;
+  kqRenderQuestion();
+}
+window.kqAnswer = kqAnswer;
+
+function kqUpdateBackBtn() {
+  const btn = document.getElementById('guidedBackBtn');
+  if (btn) btn.style.display = 'inline-block';
+}
+function kqBack() {
+  if (!_kqHistory.length) { _kqRoom = null; guidedRenderRoomScreen(); return; }
+  const prev = _kqHistory.pop();
+  _kqCatIdx = prev.catIdx; _kqQIdx = prev.qIdx; _kqNoPrefCategory = prev.noPref; _kqCtx = prev.ctxSnapshot;
+  kqRenderQuestion();
+}
+window.kqBack = kqBack;
+
+function kqShowReview() {
+  const priced = kqComputePricing(_kqCtx);
+  const total = priced.reduce((sum, l) => sum + l.price, 0);
+  const rows = priced.map(l => `
+    <tr><td style="padding:6px 8px;border-bottom:1px solid var(--line)">${esc(l.category)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid var(--line)">${esc(l.item)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid var(--line);text-align:right">$${l.price.toFixed(2)}</td></tr>`).join('');
+
+  document.getElementById('guidedBreadcrumb').textContent = `${_kqRoom} › Priced Estimate`;
+  document.getElementById('guidedBody').innerHTML = `
+    <div style="font-size:1.05rem;font-weight:700;margin-bottom:10px">Priced Line Items</div>
+    <table style="width:100%;border-collapse:collapse;font-size:.85rem;margin-bottom:16px">
+      <tr style="font-weight:700"><td style="padding:6px 8px">Category</td><td style="padding:6px 8px">Item</td><td style="padding:6px 8px;text-align:right">Price</td></tr>
+      ${rows}
+      <tr><td colspan="2" style="padding:8px;font-weight:700;text-align:right">TOTAL</td><td style="padding:8px;font-weight:700;text-align:right">$${total.toFixed(2)}</td></tr>
+    </table>
+    <div class="small muted" style="font-style:italic">Prices shown include the standard 15% markup.</div>`;
+  document.getElementById('guidedFooter').innerHTML =
+    `<button class="btn-amber" style="width:100%;padding:12px" onclick="kqFinish()">Done — Back to Room Picker</button>`;
+  kqUpdateBackBtn();
+}
+function kqFinish() {
+  _kqRoom = null; _kqCatIdx = 0; _kqQIdx = 0; _kqCtx = {}; _kqHistory = []; _kqNoPrefCategory = false;
+  guidedRenderRoomScreen();
+}
+window.kqFinish = kqFinish;
+
 function guidedPickRoom(room) {
   if (!room) return;
   guidedPush({ t: 'room' });
@@ -29764,6 +30088,9 @@ function guidedPickRoom(room) {
   // Bathrooms get the new purpose-built grade/type guided flow (demo --
   // question logic only, pricing not yet attached pending Lowe's scan data)
   if (/bath/i.test(room)) { bqStart(room); return; }
+  // Kitchen gets its own purpose-built guided flow, same pattern as
+  // bathroom but with real pricing attached from the start.
+  if (/kitchen/i.test(room)) { kqStart(room); return; }
   // Rooms with a continuous ROOM_WALKTHROUGHS entry get the new
   // one-session-through-every-category experience instead of the
   // old pick-one-phase-at-a-time dropdown.
