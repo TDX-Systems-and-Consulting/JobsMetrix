@@ -24303,9 +24303,9 @@ function renderProposalDocumentHtml(data, job, co, autoPrint) {
     .prepared-for .label { font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; color: #9ca3af; font-weight: 700; margin-bottom: 4px; }
     .prepared-for .name { font-size: 1.05rem; font-weight: 700; color: #111827; }
     .intro { color: #4b5563; font-size: .92rem; margin-bottom: 32px; }
-    .room-section { margin-bottom: 30px; page-break-inside: avoid; }
-    .room-heading { font-size: 1.15rem; font-weight: 800; color: #fff; background: #1f2937; padding: 10px 16px; border-radius: 8px 8px 0 0; }
-    .cat-block { padding: 14px 16px; border: 1px solid #e5e7eb; border-top: none; }
+    .room-section { margin-bottom: 30px; }
+    .room-heading { font-size: 1.15rem; font-weight: 800; color: #fff; background: #1f2937; padding: 10px 16px; border-radius: 8px 8px 0 0; page-break-after: avoid; break-after: avoid; }
+    .cat-block { padding: 14px 16px; border: 1px solid #e5e7eb; border-top: none; page-break-inside: avoid; break-inside: avoid; }
     .cat-block:last-child { border-radius: 0 0 8px 8px; }
     .cat-name { font-weight: 700; font-size: .98rem; color: #111827; overflow: hidden; }
     .cat-scope { color: #4b5563; font-size: .88rem; margin-top: 6px; line-height: 1.55; white-space: pre-line; }
