@@ -12075,12 +12075,11 @@ function importEstimateToInvoice() {
       }
 
       // Whether to show a room-by-room breakdown or one consolidated
-      // line is controlled by the SAME "Itemized (bank/lender request
-      // only)" checkbox the Proposal document already uses
-      // (proposalItemizedToggle) — not by which payment stage was
-      // picked. That's a single, consistent control the user already
-      // has, not something to infer from context.
-      const itemized = !!document.getElementById('proposalItemizedToggle')?.checked;
+      // line is controlled by the SAME Pricing Detail dropdown the
+      // Proposal document already uses (proposalPricingMode) — not by
+      // which payment stage was picked. That's a single, consistent
+      // control the user already has, not something to infer from context.
+      const itemized = getProposalPricingFlags().itemized;
 
       const jobSnap = jobSnapEarly;
       const jobData = jobSnap.exists ? jobSnap.data() : {};
@@ -19058,9 +19057,13 @@ function renderPortalProposal(prop, jobId) {
   }
 
   const data = prop.snapshot || { rooms: [], grandTotal: 0, itemized: false, paymentSchedule: null };
+  // Same backward-compatible default as the internal renderer: a snapshot
+  // saved before 9/18/26 has no showCategoryPricing field, so default it
+  // to true rather than silently hiding pricing the customer already saw.
+  const showCategoryPricing = ('showCategoryPricing' in data) ? !!data.showCategoryPricing : true;
   const roomsHtml = data.rooms.map(room => {
     const catHtml = (room.catBlocks || []).map(c => {
-      const priceHtml = !c.descriptionOnly
+      const priceHtml = (showCategoryPricing && !c.descriptionOnly)
         ? ` <span style="float:right;color:#eaf0fb;font-weight:700">$${c.price.toFixed(2)}</span>` : '';
       const scopeHtml = c.scopeNotes
         ? `<div style="font-size:.8rem;color:var(--muted);font-style:italic;white-space:pre-wrap;margin:2px 0 6px;padding-left:8px">${esc(c.scopeNotes)}</div>` : '';
@@ -19084,7 +19087,7 @@ function renderPortalProposal(prop, jobId) {
       </div>`;
     }).join('');
     const directHtml = (room.directBlocks || []).map(d => {
-      const priceHtml = ` <span style="float:right;color:#eaf0fb;font-weight:700">$${d.price.toFixed(2)}</span>`;
+      const priceHtml = showCategoryPricing ? ` <span style="float:right;color:#eaf0fb;font-weight:700">$${d.price.toFixed(2)}</span>` : '';
       const notesHtml = d.notes
         ? `<div style="font-size:.8rem;color:var(--muted);font-style:italic;white-space:pre-wrap;margin:2px 0 6px;padding-left:8px">${esc(d.notes)}</div>` : '';
       return `<div style="font-size:.86rem;color:var(--muted);padding-left:8px;margin-bottom:4px">
@@ -24152,7 +24155,24 @@ const TERMS_AND_CONDITIONS = [
 // turns into the printable page. Keeping these separate means a stored
 // snapshot can be reprinted byte-for-byte later even if the live estimate
 // has since changed.
-function computeProposalData(job, itemized) {
+//
+// Single source of truth for the Proposal's pricing-detail level. Replaces
+// the old two-checkbox setup (Itemized + Show Category $), which let you
+// land in a confusing state -- e.g. Itemized unchecked but Show Category $
+// still checked from a previous print. One dropdown, three explicit levels:
+//   totalOnly      -- no room/category $ or item $, just the grand total (default)
+//   categoryTotals -- room/category $ shown, no item-level $
+//   itemized       -- room/category $ AND item-level $ (bank/lender request only)
+function getProposalPricingFlags() {
+  const mode = document.getElementById('proposalPricingMode')?.value || 'totalOnly';
+  return {
+    mode,
+    itemized: mode === 'itemized',
+    showCategoryPricing: mode === 'itemized' || mode === 'categoryTotals'
+  };
+}
+
+function computeProposalData(job, itemized, showCategoryPricing) {
   let grandTotal = 0;
   const rooms = [];
 
@@ -24210,6 +24230,19 @@ function computeProposalData(job, itemized) {
 
   return {
     itemized: !!itemized,
+    // Independent of the item-level Itemized toggle: controls whether
+    // room/category $ amounts show at all. Itemized (bank/lender request)
+    // always implies category pricing too -- a lender breakdown with item
+    // prices but no category subtotal wouldn't make sense. Default is OFF
+    // per Travis's 9/18/26 request: proposals should show just the one
+    // Total Project Investment unless this box is explicitly checked.
+    showCategoryPricing: !!itemized || !!showCategoryPricing,
+    // Explicit record of which of the 3 Pricing Detail dropdown options
+    // produced this snapshot -- itemized/showCategoryPricing above are
+    // still what the renderers actually key off of (kept for backward
+    // compatibility with pre-dropdown snapshots), but storing the mode
+    // name directly makes a saved proposal self-documenting.
+    pricingMode: itemized ? 'itemized' : (showCategoryPricing ? 'categoryTotals' : 'totalOnly'),
     grandTotal,
     rooms,
     jobDescription: job?.notes || '',
@@ -24222,10 +24255,15 @@ function computeProposalData(job, itemized) {
 // version — same renderer, different data source.
 function renderProposalDocumentHtml(data, job, co, autoPrint) {
   const itemized = data.itemized;
+  // Historical snapshots printed before 9/18/26 have no showCategoryPricing
+  // field at all -- default those to true so reprinting an old proposal
+  // byte-for-byte doesn't retroactively strip pricing it was sent with.
+  // Only a snapshot that explicitly recorded the toggle as off hides it.
+  const showCategoryPricing = ('showCategoryPricing' in data) ? !!data.showCategoryPricing : true;
 
   const roomSections = data.rooms.map(room => {
     const catHtml = room.catBlocks.map(c => {
-      const priceHtml = !c.descriptionOnly ? `<span style="float:right;font-weight:700;color:#1f2937">$${c.price.toFixed(2)}</span>` : '';
+      const priceHtml = (showCategoryPricing && !c.descriptionOnly) ? `<span style="float:right;font-weight:700;color:#1f2937">$${c.price.toFixed(2)}</span>` : '';
       const bidCaveat = c.pendingBid
         ? `<div class="cat-bid-caveat">⚠ ${esc(c.pendingBidNote || 'Pricing for this item is preliminary and may be adjusted once final vendor bids are in.')}</div>`
         : '';
@@ -24252,7 +24290,7 @@ function renderProposalDocumentHtml(data, job, co, autoPrint) {
       </div>`;
     }).join('');
     const directHtml = room.directBlocks.map(d => {
-      const priceHtml = `<span style="float:right;font-weight:700;color:#1f2937">$${d.price.toFixed(2)}</span>`;
+      const priceHtml = showCategoryPricing ? `<span style="float:right;font-weight:700;color:#1f2937">$${d.price.toFixed(2)}</span>` : '';
       return `<div class="cat-block">
         <div class="cat-name">${esc(d.label)}${priceHtml}</div>
         ${d.notes ? `<div class="cat-scope">${esc(d.notes)}</div>` : ''}
@@ -24698,7 +24736,7 @@ window.renderProposalHistory = renderProposalHistory;
 function printProposal() {
   const job = conJobs.find(j => j.id === conCurrentJobId);
   const co = companyProfile;
-  const itemized = !!document.getElementById('proposalItemizedToggle')?.checked;
+  const { itemized, showCategoryPricing } = getProposalPricingFlags();
 
   // Same mobile popup-blocker fix as viewInvoiceById etc: open
   // synchronously FIRST, before any async/delayed work — the fallback
@@ -24713,7 +24751,7 @@ function printProposal() {
   if (!estGroups || !estGroups.length) {
     conLoadEstimate(conCurrentJobId);
     setTimeout(() => {
-      const data = computeProposalData(job, itemized);
+      const data = computeProposalData(job, itemized, showCategoryPricing);
       saveProposalSnapshot(conCurrentJobId, data);
       if (!win) { alert('Your browser blocked the popup — check your popup/pop-up blocker settings for this site and try again.'); return; }
       win.document.open();
@@ -24723,7 +24761,7 @@ function printProposal() {
     return;
   }
 
-  const data = computeProposalData(job, itemized);
+  const data = computeProposalData(job, itemized, showCategoryPricing);
   saveProposalSnapshot(conCurrentJobId, data);
   if (!win) { alert('Your browser blocked the popup — check your popup/pop-up blocker settings for this site and try again.'); return; }
   win.document.open();
@@ -24743,7 +24781,7 @@ window.printProposal = printProposal;
 function viewProposal() {
   const job = conJobs.find(j => j.id === conCurrentJobId);
   const co = companyProfile;
-  const itemized = !!document.getElementById('proposalItemizedToggle')?.checked;
+  const { itemized, showCategoryPricing } = getProposalPricingFlags();
 
   const showInModal = (html) => {
     const titleEl = document.getElementById('viewProposalModalTitle');
@@ -24755,13 +24793,13 @@ function viewProposal() {
   if (!estGroups || !estGroups.length) {
     conLoadEstimate(conCurrentJobId);
     setTimeout(() => {
-      const data = computeProposalData(job, itemized);
+      const data = computeProposalData(job, itemized, showCategoryPricing);
       showInModal(renderProposalDocumentHtml(data, job, co, false));
     }, 1500);
     return;
   }
 
-  const data = computeProposalData(job, itemized);
+  const data = computeProposalData(job, itemized, showCategoryPricing);
   showInModal(renderProposalDocumentHtml(data, job, co, false));
 }
 window.viewProposal = viewProposal;
@@ -24819,8 +24857,8 @@ function sendProposalViaEmail(btn) {
     // Sign Proposal" link in the email above actually opens — not just
     // the wrapper email text, so this preview reflects what the
     // recipient really sees, not just the notification pointing to it.
-    const itemized = !!document.getElementById('proposalItemizedToggle')?.checked;
-    const proposalData = computeProposalData(job, itemized);
+    const { itemized, showCategoryPricing } = getProposalPricingFlags();
+    const proposalData = computeProposalData(job, itemized, showCategoryPricing);
     const proposalHtml = renderProposalDocumentHtml(proposalData, job, companyProfile, false);
     document.getElementById('emailPreviewProposalFrame').srcdoc = proposalHtml;
 
