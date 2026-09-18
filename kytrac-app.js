@@ -29449,9 +29449,66 @@ function bqShowReview() {
     `<button class="btn-amber" style="width:100%;padding:12px" onclick="bqFinish()">Done — Back to Room Picker</button>`;
   bqUpdateBackBtn();
 }
-function bqFinish() {
+async function bqCommit() {
+  if (!conDb || !conCurrentJobId) return 0;
+  const priced = bqComputePricing(_bqCtx);
+  if (!priced.length) return 0;
+  const roomName = _bqRoom;
+  const tradeName = 'Bathroom Guided Questions';
+
+  let group = estGroups.find(g => g.name.toLowerCase() === roomName.toLowerCase());
+  if (!group) {
+    const ref = await coll('jobs').doc(conCurrentJobId).collection('estimateGroups').add({
+      name: roomName, order: estGroups.length, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    group = { id: ref.id, name: roomName, order: estGroups.length, subgroups: [], directItems: [] };
+    estGroups.push(group);
+  }
+  let subgroup = group.subgroups?.find(s => s.name.toLowerCase() === tradeName.toLowerCase());
+  if (!subgroup) {
+    const subRef = await coll('jobs').doc(conCurrentJobId).collection('estimateGroups')
+      .doc(group.id).collection('subgroups').add({
+        name: tradeName, order: group.subgroups?.length || 0, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    subgroup = { id: subRef.id, name: tradeName, order: group.subgroups?.length || 0, items: [] };
+    if (!group.subgroups) group.subgroups = [];
+    group.subgroups.push(subgroup);
+  }
+
+  const addPromises = [];
+  let order = subgroup.items?.length || 0;
+  for (const l of priced) {
+    if (l.cost === 0 && l.price === 0) continue; // e.g. "Part of whole-house remodel (covered elsewhere)" $0 lines
+    const isLabor = /labor/i.test(l.item) && !/materials\s*\+\s*labor/i.test(l.item);
+    addPromises.push(coll('jobs').doc(conCurrentJobId).collection('estimateGroups').doc(group.id)
+      .collection('subgroups').doc(subgroup.id).collection('items').add({
+        desc: `${l.category} — ${l.item}`, qty: 1, unit: 'ea', costType: isLabor ? 'Labor' : 'Materials',
+        unitCost: l.cost, markup: 15, unitPrice: l.price, notes: l.note || '', order: order++,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      }));
+  }
+  await Promise.all(addPromises);
+  return addPromises.length;
+}
+window.bqCommit = bqCommit;
+
+async function bqFinish() {
+  const footer = document.getElementById('guidedFooter');
+  if (footer) footer.innerHTML = `<button class="btn-amber" style="width:100%;padding:12px" disabled>Saving to estimate…</button>`;
+  let count = 0;
+  try {
+    count = await bqCommit();
+  } catch (e) {
+    console.error('bqCommit failed', e);
+    alert('⚠ Could not save this Bathroom Guided Questions estimate to the job -- please try again before leaving this screen.');
+    if (footer) footer.innerHTML = `<button class="btn-amber" style="width:100%;padding:12px" onclick="bqFinish()">Done — Back to Room Picker</button>`;
+    return;
+  }
   _bqRoom = null; _bqCatIdx = 0; _bqQIdx = 0; _bqCtx = {}; _bqHistory = []; _bqNoPrefCategory = false;
+  const estTab = document.querySelector('[onclick*="estimate"]');
+  if (estTab) estTab.click(); else loadEstimate(conCurrentJobId);
   guidedRenderRoomScreen();
+  if (count > 0) alert(`✅ Added ${count} line item${count!==1?'s':''} to the Bathroom estimate.`);
 }
 window.bqFinish = bqFinish;
 
@@ -30152,9 +30209,65 @@ function kqShowReview() {
     `<button class="btn-amber" style="width:100%;padding:12px" onclick="kqFinish()">Done — Back to Room Picker</button>`;
   kqUpdateBackBtn();
 }
-function kqFinish() {
+async function kqCommit() {
+  if (!conDb || !conCurrentJobId) return 0;
+  const priced = kqComputePricing(_kqCtx);
+  if (!priced.length) return 0;
+  const roomName = _kqRoom;
+  const tradeName = 'Kitchen Guided Questions';
+
+  let group = estGroups.find(g => g.name.toLowerCase() === roomName.toLowerCase());
+  if (!group) {
+    const ref = await coll('jobs').doc(conCurrentJobId).collection('estimateGroups').add({
+      name: roomName, order: estGroups.length, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    group = { id: ref.id, name: roomName, order: estGroups.length, subgroups: [], directItems: [] };
+    estGroups.push(group);
+  }
+  let subgroup = group.subgroups?.find(s => s.name.toLowerCase() === tradeName.toLowerCase());
+  if (!subgroup) {
+    const subRef = await coll('jobs').doc(conCurrentJobId).collection('estimateGroups')
+      .doc(group.id).collection('subgroups').add({
+        name: tradeName, order: group.subgroups?.length || 0, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    subgroup = { id: subRef.id, name: tradeName, order: group.subgroups?.length || 0, items: [] };
+    if (!group.subgroups) group.subgroups = [];
+    group.subgroups.push(subgroup);
+  }
+
+  const addPromises = [];
+  let order = subgroup.items?.length || 0;
+  for (const l of priced) {
+    const isLabor = /labor/i.test(l.item) && !/materials\s*\+\s*labor/i.test(l.item);
+    addPromises.push(coll('jobs').doc(conCurrentJobId).collection('estimateGroups').doc(group.id)
+      .collection('subgroups').doc(subgroup.id).collection('items').add({
+        desc: `${l.category} — ${l.item}`, qty: 1, unit: 'ea', costType: isLabor ? 'Labor' : 'Materials',
+        unitCost: l.cost, markup: 15, unitPrice: l.price, notes: '', order: order++,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      }));
+  }
+  await Promise.all(addPromises);
+  return priced.length;
+}
+window.kqCommit = kqCommit;
+
+async function kqFinish() {
+  const footer = document.getElementById('guidedFooter');
+  if (footer) footer.innerHTML = `<button class="btn-amber" style="width:100%;padding:12px" disabled>Saving to estimate…</button>`;
+  let count = 0;
+  try {
+    count = await kqCommit();
+  } catch (e) {
+    console.error('kqCommit failed', e);
+    alert('⚠ Could not save this Kitchen Guided Questions estimate to the job -- please try again before leaving this screen.');
+    if (footer) footer.innerHTML = `<button class="btn-amber" style="width:100%;padding:12px" onclick="kqFinish()">Done — Back to Room Picker</button>`;
+    return;
+  }
   _kqRoom = null; _kqCatIdx = 0; _kqQIdx = 0; _kqCtx = {}; _kqHistory = []; _kqNoPrefCategory = false;
+  const estTab = document.querySelector('[onclick*="estimate"]');
+  if (estTab) estTab.click(); else loadEstimate(conCurrentJobId);
   guidedRenderRoomScreen();
+  if (count > 0) alert(`✅ Added ${count} line item${count!==1?'s':''} to the Kitchen estimate.`);
 }
 window.kqFinish = kqFinish;
 
