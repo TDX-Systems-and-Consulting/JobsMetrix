@@ -25,7 +25,7 @@ const JTXD_LOCKED_RATES = {
   marketing: 0.06,  // of JTXD Pool
   flex: 0.05,       // of the remainder after Overhead + Marketing
   taxes: 0.275,     // of the remainder after Flex
-  realLaborCostPct: 0.40, // of Contract Total/Revenue (NOT of Labor Billed -- corrected 2026-09-14, see calcTrueMargin)
+  realLaborCostPct: 0.60, // $180/$300 real subcontractor pay ratio, applied to LABOR BILLED ONLY (never Revenue/materials) -- corrected 2026-09-19 per Travis: subs are paid on billed-equivalent hours (Labor Billed / $300/hr) regardless of actual hours worked; the 0.77 efficiency factor exists ONLY to set the customer-facing days estimate and never touches what a sub is paid or what the company nets. See calcTrueMargin.
 };
 
 const esc = s => ((s==null?'':s)).toString().replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -22353,7 +22353,7 @@ function calcGroupTotals(items) {
 // pass through at full markup (their float isn't part of this pool).
 // Labor is split into a Subcontractor Pay Target (62% of what's billed)
 // and JTXD's own share; JTXD's share funds Overhead (18%), Marketing
-// (10%), Flex (10% of what's left), and Taxes (27.5% of what's left
+// (6%), Flex (5% of what's left), and Taxes (27.5% of what's left
 // after that) -- what remains is Retained Earnings, the actual number
 // this job contributes to profit. Only meaningful at the whole-job
 // level (these percentages are company-wide allocations, not per-room),
@@ -22379,16 +22379,30 @@ function calcTrueMargin(allItems) {
   const revenue = materialsPrice + laborPrice;
   const laborBilled = laborPrice;
 
-  // Real Subcontractor/Labor Total placeholder defaults to 40% of Contract
-  // Total/Revenue -- NOT 40% of Labor Billed (that was itself already
-  // reduced by the 35% materials cut, which understated true labor cost).
-  // Corrected 2026-09-14. Still overridable with a real negotiated
-  // subcontractor amount once one exists for this job.
-  const realLaborCost = revenue * JTXD_LOCKED_RATES.realLaborCostPct;
+  // Real Subcontractor/Labor Total placeholder = 60% of Labor Billed --
+  // NOT of Revenue (materials are unrelated to what a subcontractor is
+  // paid). 60% is the real $180/$300 pay ratio: subs are paid on
+  // billed-equivalent hours (Labor Billed / $300/hr) and eat their own
+  // inefficiency; the 77% efficiency factor below is a separate,
+  // customer-facing days estimate only and must never feed into this
+  // number. Corrected 2026-09-19 per Travis (previously wrongly based on
+  // Revenue as of the 2026-09-14 correction). Still overridable with a
+  // real negotiated subcontractor amount once one exists for this job.
+  const realLaborCost = laborBilled * JTXD_LOCKED_RATES.realLaborCostPct;
 
-  // Estimated hours for completion at 77% Efficiency = (Labor Billed /
-  // $300/hr billed rate) / 0.77 efficiency factor.
-  const estimatedHours = (laborBilled / 300) / 0.77;
+  // Days to Complete -- two numbers, per Travis (2026-09-19): Billed Hours
+  // (Labor Billed / $300/hr) is what subs are paid on and reflects the
+  // job "as billed," with zero inefficiency baked in. Efficiency Hours
+  // divides that by 0.77 to get the real, longer timeline -- this is
+  // ONLY the customer-facing days estimate and never affects sub pay or
+  // JTXD Pool (see realLaborCost above). Both converted to days at 8
+  // hrs/day, the same workday length already used for crew burden calcs
+  // elsewhere in the app (see getBurdenRate/crew size × days × 8 hrs).
+  const billedHours = laborBilled / 300;
+  const efficiencyHours = billedHours / 0.77;
+  const billedDays = billedHours / 8;
+  const efficiencyDays = efficiencyHours / 8;
+  const estimatedHours = efficiencyHours; // kept for back-compat; equals efficiencyHours
 
   // JTXD Actual = Labor Billed minus Real Labor Cost, direct. No
   // theoretical 62%/38% target split -- matches the finalized JTXD Job
@@ -22408,7 +22422,8 @@ function calcTrueMargin(allItems) {
 
   return {
     materialsCost, materialsPrice, laborCost, laborPrice, revenue,
-    realLaborCost, estimatedHours, jtxdActual,
+    realLaborCost, estimatedHours, billedHours, efficiencyHours,
+    billedDays, efficiencyDays, jtxdActual,
     overhead, marketing, flex, taxes,
     retainedEarnings, trueMarginPct
   };
@@ -22775,9 +22790,9 @@ async function computeRealJobCost(jobId) {
     } catch (e) { /* fall through to placeholder */ }
   }
 
-  // Last-resort placeholder: 40% of full Revenue (materials + labor),
-  // the SAME confirmed default rate (JTXD_LOCKED_RATES.realLaborCostPct)
-  // used everywhere else this placeholder applies -- NOT
+  // Last-resort placeholder: 60% of Labor Billed only, the SAME
+  // confirmed default rate (JTXD_LOCKED_RATES.realLaborCostPct) used
+  // everywhere else this placeholder applies -- NOT
   // computeEstimatedBreakdown's old "revenue minus materials minus
   // overhead minus marketing" residual, which silently computed to a
   // flat $0 for every job without an approved contract value yet
@@ -22788,12 +22803,13 @@ async function computeRealJobCost(jobId) {
   // placeholder and got labor=$0, silently understating Cost to
   // Complete down to materials-only.
   const { laborAndOther: billedLabor } = await fetchEstimateCostSplitFresh(jobId);
-  // Corrected 2026-09-14: this must be 40% of full Revenue (materials +
-  // labor), not 40% of billedLabor alone -- billedLabor is already the
-  // post-materials 65% slice, so using it as the base understated real
-  // labor cost by the same class of bug fixed in calcTrueMargin tonight.
-  const revenueForPlaceholder = billedMaterials + billedLabor;
-  return { materials, materialsSource, labor: revenueForPlaceholder * JTXD_LOCKED_RATES.realLaborCostPct, source: 'PLACEHOLDER — 40% of full Revenue, no real subcontractor cost logged yet' };
+  // Corrected 2026-09-19 per Travis: this must be 60% of Labor Billed
+  // ONLY (the real $180/$300 sub pay ratio) -- NOT 40% of full Revenue
+  // (the 2026-09-14 version). Materials dollars have nothing to do with
+  // what a subcontractor is paid, and mixing them in drags this number
+  // around based on a job's materials/labor mix instead of its real
+  // labor cost.
+  return { materials, materialsSource, labor: billedLabor * JTXD_LOCKED_RATES.realLaborCostPct, source: 'PLACEHOLDER — 60% of Labor Billed, no real subcontractor cost logged yet' };
 }
 
 // Delegates to computeLockedBucketSplit (the real formula locked
@@ -23076,12 +23092,18 @@ function updateEstimateSummary() {
   setEl('estKpiPrice', '$'+Math.round(totalPrice).toLocaleString());
   setEl('estKpiJtxdActual', '$'+Math.round(tm.jtxdActual).toLocaleString());
 
-  // Est. Hr to Complete = (Labor Billed / $300 hourly rate) / 77% efficiency.
-  setEl('estKpiHoursToComplete', tm.estimatedHours.toLocaleString(undefined, {maximumFractionDigits: 1}));
+  // Days to Complete -- two numbers per Travis: Billed (Labor Billed /
+  // $300/hr, ÷8 hrs/day) is what subs are paid on; Efficiency (÷0.77 on
+  // top of that) is the real, longer customer-facing timeline. Shown
+  // together in the same tile since they're two views of one KPI slot.
+  setEl('estKpiDaysToComplete',
+    tm.billedDays.toLocaleString(undefined, {maximumFractionDigits: 1}) + ' / ' +
+    tm.efficiencyDays.toLocaleString(undefined, {maximumFractionDigits: 1}));
 
-  // Est. Subcontractor Labor -- defaults to 40% of Labor Billed, same
-  // placeholder the JTXD Margin Calculator's "Real Subcontractor/Labor
-  // Total" cell uses before a real negotiated number is known for this job.
+  // Est. Subcontractor Labor -- defaults to 60% of Labor Billed ($180/$300
+  // real pay ratio), same placeholder the JTXD Margin Calculator's "Real
+  // Subcontractor/Labor Total" cell uses before a real negotiated number
+  // is known for this job.
   setEl('estKpiSubLabor', '$'+Math.round(tm.realLaborCost).toLocaleString());
 
   setEl('estKpiProfit', '$'+Math.round(profit).toLocaleString(), profit>=0?'#1dbb87':'#ef5350');
@@ -23093,7 +23115,7 @@ function updateEstimateSummary() {
     profitEl.title = `Retained Earnings (true profit): $${Math.round(profit).toLocaleString()}. `
       + `Materials $${Math.round(tm.materialsPrice).toLocaleString()} pass through at markup. `
       + `Labor Billed $${Math.round(tm.laborPrice).toLocaleString()} vs. real cost $${Math.round(tm.laborCost).toLocaleString()} `
-      + `feeds Overhead 18% / Marketing 10% / Flex 10% / Taxes 27.5%. True Margin: ${tm.trueMarginPct.toFixed(1)}%.`;
+      + `feeds Overhead 18% / Marketing 6% / Flex 5% / Taxes 27.5%. True Margin: ${tm.trueMarginPct.toFixed(1)}%.`;
   }
 
   // Sync estCost/estPrice from the estimate. Do NOT overwrite contractValue —
