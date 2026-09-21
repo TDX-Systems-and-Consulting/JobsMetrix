@@ -1359,6 +1359,9 @@ function syncDashboardToPlannerXD(data) {
         unprocessedCOs: data.unprocessedCOs,
         collectedMTD: data.collectedMTD,
         netMTD: data.netMTD,
+        closeRate: data.closeRate ?? null,
+        avgMargin: data.avgMargin ?? null,
+        pendingEstimateValue: data.pendingEstimateValue ?? null,
         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
       }, { merge: true }).catch(e => console.warn('Pulse sync write error:', e));
 
@@ -1404,6 +1407,7 @@ function conRenderStats() {
   const avgMargin = margins.length ? margins.reduce((a,b) => a+b,0) / margins.length : 0;
   const marginColor = avgMargin >= 20 ? '#1dbb87' : avgMargin >= 15 ? '#f59e0b' : '#ef5350';
   setTile('statAvgMargin', 'statAvgMarginTile', avgMargin.toFixed(1) + '%', marginColor);
+  _pulseAvgMargin = Math.round(avgMargin * 10) / 10;
 
   // Estimates Pending — proposals in 'pending' status, both count and
   // total dollar value (Outstanding Estimate Value). Same query, just
@@ -1428,6 +1432,7 @@ function conRenderStats() {
       const epColor = pendingCount === 0 ? '#1dbb87' : pendingCount <= 2 ? '#f59e0b' : '#ef5350';
       setTile('statEstPending', 'statEstPendingTile', pendingCount, epColor);
       setTile('statEstPendingValue', 'statEstPendingValueTile', '$'+Math.round(pendingValue).toLocaleString(), epColor);
+      _pulsePendingEstValue = Math.round(pendingValue);
     });
   }
 
@@ -1446,6 +1451,7 @@ function conRenderStats() {
       const rate = total > 0 ? Math.round(approved / total * 100) : null;
       const crColor = rate === null ? '#94a3b8' : rate >= 50 ? '#1dbb87' : rate >= 30 ? '#f59e0b' : '#ef5350';
       setTile('statCloseRate', 'statCloseRateTile', rate !== null ? rate + '%' : '—', crColor);
+      _pulseCloseRate = rate;
     });
   }
 
@@ -1497,13 +1503,9 @@ function conRenderStats() {
   // from amtPaid/paidDate on the invoices themselves means it's always
   // accurate regardless of whether/when anything gets pushed to QBO.
   let _pulseOutstanding = null, _pulseUnprocessedCOs = null;
-  // Shared between all four async blocks below (invoices, vendor bills,
-  // materials, subcontractor payments) so the pulse only syncs once
-  // every real number it needs has actually resolved -- previously
-  // this fired on just two of the four (outstanding + unprocessedCOs),
-  // which is why Collected MTD and Net MTD never made it to PlannerXD
-  // even though both were already being computed correctly for the
-  // dashboard tiles right here.
+  let _pulseCloseRate = null, _pulseAvgMargin = null, _pulsePendingEstValue = null;
+  // Shared between all async blocks so the pulse only syncs once every
+  // real number it needs has actually resolved.
   const _mtd = { collected: null, spent: null };
   const _maybeSyncFullPulse = () => {
     if (_pulseOutstanding === null || _pulseUnprocessedCOs === null || _mtd.collected === null || _mtd.spent === null) return;
@@ -1513,6 +1515,9 @@ function conRenderStats() {
       unprocessedCOs: _pulseUnprocessedCOs,
       collectedMTD: Math.round(_mtd.collected),
       netMTD: Math.round(_mtd.collected - _mtd.spent),
+      closeRate: _pulseCloseRate,
+      avgMargin: _pulseAvgMargin,
+      pendingEstimateValue: _pulsePendingEstValue,
     });
   };
   // Shared between the two async blocks below so Net MTD can combine a
