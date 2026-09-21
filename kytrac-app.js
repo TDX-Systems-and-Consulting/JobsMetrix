@@ -17757,7 +17757,7 @@ function renderGlobalLogCard(log) {
         <span style="font-weight:700;margin-right:6px">⚠️ Issue:</span>${esc(log.issues)}
       </div>`:''}
       ${hasPhotos?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
-        ${log.photos.slice(0,6).map((p,i) => `<img src="${p.dataUrl}" style="width:70px;height:70px;object-fit:cover;border-radius:8px;cursor:pointer;border:1px solid rgba(110,145,210,.2)" onclick="openLightbox('${p.dataUrl.replace(/'/g,"\\'")}')" />`).join('')}
+        ${log.photos.slice(0,6).filter(p => p && p.dataUrl).map((p,i) => `<img src="${p.dataUrl}" style="width:70px;height:70px;object-fit:cover;border-radius:8px;cursor:pointer;border:1px solid rgba(110,145,210,.2)" onclick="openLightbox('${p.dataUrl.replace(/'/g,"\\'")}')" />`).join('')}
         ${log.photos.length>6?`<div style="width:70px;height:70px;border-radius:8px;background:rgba(8,18,36,.8);border:1px solid rgba(110,145,210,.2);display:flex;align-items:center;justify-content:center;font-size:.76rem;color:var(--muted)">+${log.photos.length-6}</div>`:''}
       </div>`:''}
     </div>

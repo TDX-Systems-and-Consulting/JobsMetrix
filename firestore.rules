@@ -42,6 +42,14 @@ service cloud.firestore {
     match /{path=**}/logs/{logId} {
       allow read: if inCompany(resource.data.companyId);
     }
+    // Same pattern for messages and documents — needed for the Home
+    // Activity feed which uses collectionGroup queries.
+    match /{path=**}/messages/{msgId} {
+      allow read: if inCompany(resource.data.companyId);
+    }
+    match /{path=**}/documents/{docId} {
+      allow read: if inCompany(resource.data.companyId);
+    }
 
     // ── Top-level companies collection ──────────────────────────────
     // Needed for company resolution (resolveCompany() / syncMyClaims)
