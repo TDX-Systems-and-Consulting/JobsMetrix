@@ -1384,6 +1384,11 @@ function syncDashboardToPlannerXD(data) {
   }, 2000);
 }
 
+// Pulse accumulator vars — declared here so conRenderStats (below) and
+// the _maybeSyncFullPulse closure (further down) share the same bindings.
+let _pulseOutstanding = null, _pulseUnprocessedCOs = null;
+let _pulseCloseRate = null, _pulseAvgMargin = null, _pulsePendingEstValue = null;
+
 function conRenderStats() {
   const closedStatuses = ['Closed Completed','Closed Lost'];
   const active = conJobs.filter(j => !closedStatuses.includes(j.status));
@@ -1502,10 +1507,12 @@ function conRenderStats() {
   // real, collected revenue was invisible on this tile. Computing it
   // from amtPaid/paidDate on the invoices themselves means it's always
   // accurate regardless of whether/when anything gets pushed to QBO.
-  let _pulseOutstanding = null, _pulseUnprocessedCOs = null;
-  let _pulseCloseRate = null, _pulseAvgMargin = null, _pulsePendingEstValue = null;
-  // Shared between all async blocks so the pulse only syncs once every
-  // real number it needs has actually resolved.
+  // Pulse accumulators declared at module scope above conRenderStats.
+  // Reset them each time syncDashboardToPlannerXD runs so stale values
+  // from a previous render cycle don't bleed into the next sync.
+  _pulseOutstanding = null; _pulseUnprocessedCOs = null;
+  _pulseCloseRate = null; _pulseAvgMargin = null; _pulsePendingEstValue = null;
+
   const _mtd = { collected: null, spent: null };
   const _maybeSyncFullPulse = () => {
     if (_pulseOutstanding === null || _pulseUnprocessedCOs === null || _mtd.collected === null || _mtd.spent === null) return;
