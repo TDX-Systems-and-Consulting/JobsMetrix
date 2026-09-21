@@ -10856,9 +10856,15 @@ function renderActivityFeed(targetElId, itemCap) {
 
   const items = [];
   let pending = 3;
+  let _finished = false;
+  // Safety net — if any query hangs (e.g. missing Firestore index),
+  // render whatever arrived after 8 seconds instead of hanging forever.
+  const _safetyTimer = setTimeout(() => { if (!_finished) { pending = 1; finish(); } }, 8000);
   const finish = () => {
     pending--;
     if (pending > 0) return;
+    _finished = true;
+    clearTimeout(_safetyTimer);
     if (!items.length) { el.innerHTML = '<div class="small muted" style="font-style:italic;padding:10px 0;text-align:center">No activity yet</div>'; return; }
     items.sort((a,b) => (b.ms||0) - (a.ms||0));
     const top = items.slice(0, itemCap);
@@ -10902,7 +10908,8 @@ function renderActivityFeed(targetElId, itemCap) {
       });
       finish();
     })
-    .catch(() => {
+    .catch(e => {
+      console.warn('Activity messages collectionGroup failed (index?):', e.code||e.message);
       if (!conJobs.length) { finish(); return; }
       let jp = conJobs.length;
       conJobs.forEach(job => {
@@ -10929,7 +10936,8 @@ function renderActivityFeed(targetElId, itemCap) {
       });
       finish();
     })
-    .catch(() => {
+    .catch(e => {
+      console.warn('Activity documents collectionGroup failed (index?):', e.code||e.message);
       if (!conJobs.length) { finish(); return; }
       let jp = conJobs.length;
       conJobs.forEach(job => {
