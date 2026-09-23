@@ -29925,6 +29925,268 @@ window.guidedPickCategory = guidedPickCategory;
 // Same conceptual grade-tier approach as bathroom, deliberately kept
 // separate from CATALOG_DATA for the same reason as BQ_PRICE.
 // ═══════════════════════════════════════════════════════════════════════
+// ============================================================================
+// BEDROOM GUIDED QUESTIONS
+//
+// Built on the exact same pattern as BQ_PRICE / BATHROOM_GUIDED_FLOW /
+// bqComputePricing / bqCommit. All rates below are pulled directly from real
+// line items across 6 real jobs (Hilgard, Milan, 707 Karon, Belmont, Lee St,
+// Cleveland) -- not invented.
+//
+// INTEGRATION NOTES:
+//   1. Paste RQ_PRICE and BEDROOM_GUIDED_FLOW near BQ_PRICE/BATHROOM_GUIDED_FLOW.
+//   2. This does NOT include rqRenderQuestion/rqShowReview/rqAnswer/rqBack --
+//      those are pure UI/DOM state-machine plumbing that should be copied
+//      from bqRenderQuestion/bqShowReview/bqAnswer/bqBack verbatim with
+//      s/bq/rq/ and s/BATHROOM_GUIDED_FLOW/BEDROOM_GUIDED_FLOW/ -- I don't
+//      have those two functions' full bodies in this session to safely
+//      hand-copy without risking a mismatch against your actual DOM/render
+//      conventions. rqComputePricing and rqCommit below ARE complete and
+//      follow the bqComputePricing/bqCommit pattern exactly.
+//   3. NOTE ON MARKUP: like bqComputePricing, this hardcodes price =
+//      cost*1.15 in push() and markup:15 in rqCommit(), matching the
+//      confirmed 15%/15% standard -- but same caveat as Bathroom/Kitchen:
+//      it does NOT read companyProfile.defaultMaterialsMarkup/
+//      defaultLaborMarkup. If that's ever meant to be dynamic, all three
+//      guided flows need to change together, not just this one.
+// ============================================================================
+
+const RQ_PRICE = {
+  haulOff: { standalone: 109, remodel: 0 }, // same convention as BQ_PRICE.haulOff
+
+  carpetRemoval: { costPerHr: 100 }, // matches catalog "Carpet removal" cost; hours scale with room size (1hr small, 2hr large -- ask the qty question directly rather than inferring from sqft)
+
+  flooring: {
+    // identical rates to BQ_PRICE.flooring.lvp -- same catalog SKUs
+    lvp: { materials: { 'Contractor Grade (12 mil)':1.89, 'Design Grade (20 mil)':2.49, 'Premium (24+ mil)':2.89 }, labor: 5,
+           transitionStripMaterial: 39.98, transitionStripLabor: 35 },
+    floorRegister: { materials: 12.97, labor: 10 } // per register (Everbilt steel floor register)
+  },
+
+  drywall: {
+    patchPerSqft: 6.50, // blended materials+labor -- matches BQ_PRICE.drywall.blendedFullJob, used for small patch jobs (nail pops, register-opening patches) seen in every bedroom in these 6 jobs
+    fullInstall: { materials: 3.00, labor: 3.50 }, // per sqft -- used when it's a full room (Milan's Bedroom 1: $975/150sqft=$6.50 combined, split ~46/54 materials/labor per that job's actual materials+labor lines)
+    jointCompound: 21.78 // flat, only when explicitly needed (seen in Hilgard/Bedroom 1)
+  },
+
+  smokeDetector: { fixture: 20.00, labor: 10 }, // battery powered, seen in every bedroom across every job
+
+  windowCasing: {
+    material: 1.40, // per LF -- casing/moulding (Alexandria Moulding or CMPC, both ~$1.40-1.58/LF across jobs)
+    labor: 4.50 // per LF trim install labor
+  },
+  windowSillLumber: { material: 19.72, labor: 50 }, // per 1x10x12ft board + its install labor -- Hilgard used 2 boards (30 total LF worth) per pair of windows
+
+  lighting: {
+    // this is the Fixture Type branch question -- flush mount vs ceiling fan, seen used interchangeably across jobs
+    flushMount: { fixture: 22.47, labor: 57.50 }, // 11" Brushed Nickel, matches Hilgard/Milan Bedroom 1&2
+    ceilingFan: { fixture: { 'Contractor Grade':79.00, 'Design Grade':94.97, 'Premium':149.00 }, labor: 60 } // 42in with light kit, Contractor Grade seen at $79 (Milan), Design Grade $94.97 (also Milan Living Room) -- Premium is an estimate, no real job shows one yet, confirm before relying on it
+  },
+
+  baseboard: { material: 0.99, labor: 4.50 }, // per LF -- CMPC Pine Primed Finger-Jointed casing pack, matches every job ($47.52/48lf=$0.99, $216/48lf=$4.50)
+
+  closet: {
+    buildOut: { materials: 1000, labor: 1000 }, // flat -- Milan's "Closet build out" (this is a Travis-negotiated flat quote pattern, not a real per-sqft rate -- keep as an optional flat-price line, not multiplied by anything)
+    cedarLiningRemoval: { costPerHr: 100 } // Milan Bedroom 1: "Remove Cedar Closet Lining, 2 hr $200"
+  },
+
+  interiorDoor: {
+    sixPanelPrehung: { fixture: 145.00, knob: 25.45, knobLabor: 25, installLabor: 100 } // FLAG: not cross-checked to the cent like the others -- verify against your actual door SKU before relying on this one
+  }
+};
+
+const BEDROOM_GUIDED_FLOW = [
+  { id:'jobContext', label:'Job Context', questions:[
+      { key:'scope', label:'Is this bedroom part of a whole-house remodel, or a standalone job?', options:['Part of whole-house remodel','Standalone job'], shareKey:'jobScope' }
+  ], note:'Same haul-off convention as Bathroom: $0 if part of a whole-house remodel, $109 flat if standalone.' },
+
+  { id:'flooring', label:'Flooring', questions:[
+      { key:'existing', label:'What\'s being removed?', options:['Carpet','Nothing -- bare subfloor/existing floor stays'], shareKey:'existingFloor' },
+      { key:'removalHrs', label:'Estimated hours to remove (1 for a small room, 2 for a large one)?', type:'number', placeholder:'e.g. 1', skipIf: ctx => ctx.flooring_existing !== 'Carpet', skipValue:0 },
+      { key:'material', label:'New flooring?', options:['LVP','None (subfloor/existing stays exposed)'], shareKey:'newFlooringMaterial' },
+      { key:'grade', label:'What grade level for the LVP?', options:['Contractor Grade (12 mil)','Design Grade (20 mil)','Premium (24+ mil)'], isGrade:true, skipIf: ctx => ctx.flooring_material !== 'LVP', skipValue:'N/A' },
+      { key:'sqft', label:'How many square feet of flooring?', type:'number', placeholder:'e.g. 150', skipIf: ctx => ctx.flooring_material !== 'LVP', skipValue:0 },
+      { key:'registerCount', label:'How many floor registers need replacing?', type:'number', placeholder:'e.g. 1' }
+  ], note:'Every real bedroom in the sample set had 0-1 registers -- ask rather than assume.' },
+
+  { id:'drywall', label:'Drywall', questions:[
+      { key:'scope', label:'Patch work (nail pops, small holes, register openings) or full room install?', options:['Patch','Full Room Install'], shareKey:'drywallScope' },
+      { key:'sqft', label:'How many square feet?', type:'number', placeholder:'e.g. 50' },
+      { key:'needsJointCompound', label:'Extra joint compound needed beyond the standard kit?', options:['Yes','No'], skipIf: ctx => ctx.drywall_scope !== 'Full Room Install', skipValue:'N/A' }
+  ], note:'Patch uses the $6.50/sqft blended rate (same constant as Bathroom\'s full-room rate). Full Room Install splits materials/labor separately.' },
+
+  { id:'paint', label:'Paint', questions:[
+      { key:'sqft', label:'How many square feet of paint (1 coat)?', type:'number', placeholder:'e.g. 500' }
+  ], note:'Uses shared PAINT_PRICE constant, same as every other room. PAINT_PRICE.materials ($0.75/sqft) is confirmed correct -- this category is fine as-is. Separately, the Rooms/Rehab Template feature has been producing "Paint (1 coat, standard grade)" lines at $0.60/sqft instead of reading this constant; that\'s the thing that needs fixing, not this flow.' },
+
+  { id:'baseboard', label:'Baseboard', questions:[
+      { key:'lf', label:'How many linear feet of baseboard?', type:'number', placeholder:'e.g. 50' }
+  ]},
+
+  { id:'windowCasing', label:'Window Casing', questions:[
+      { key:'windowCount', label:'How many windows need trim?', type:'number', placeholder:'e.g. 2' },
+      { key:'lfPerWindow', label:'Linear feet of casing per window?', type:'number', placeholder:'e.g. 15' },
+      { key:'needsSillLumber', label:'Does this also need 1x10 sill/apron lumber (older homes, no existing sill)?', options:['Yes','No'] }
+  ], note:'Real jobs consistently used 15 LF casing per window, doubled for a pair of windows -- ask per-window rather than hardcoding 15, room sizes vary.' },
+
+  { id:'lighting', label:'Bedroom Lighting', questions:[
+      { key:'fixtureType', label:'Fixture type?', options:['Flush-Mount Light','Ceiling Fan (with light kit)','None -- keeping existing fixture'], shareKey:'bedroomLightType' },
+      { key:'grade', label:'What grade level for the fan?', options:['Contractor Grade','Design Grade','Premium'], isGrade:true, skipIf: ctx => ctx.lighting_fixtureType !== 'Ceiling Fan (with light kit)', skipValue:'N/A' }
+  ], note:'Flush mount is a single flat rate ($22.47) in every real job so far -- no grade tiers seen for it, only for the fan option.' },
+
+  { id:'smokeDetector', label:'Smoke Detector', questions:[
+      { key:'needed', label:'Does this bedroom need a smoke detector?', options:['Yes','No (already present/not required)'], shareKey:'smokeNeeded' }
+  ], note:'Every single bedroom across all 6 jobs got one -- code minimum, default this to Yes rather than making it an easy skip.' },
+
+  { id:'closet', label:'Closet', questions:[
+      { key:'scope', label:'Any closet work?', options:['None','Remove Cedar Lining','Build Out New Closet'], shareKey:'closetScope' },
+      { key:'removalHrs', label:'Estimated hours to remove cedar lining?', type:'number', placeholder:'e.g. 2', skipIf: ctx => ctx.closet_scope !== 'Remove Cedar Lining', skipValue:0 }
+  ], note:'"Build Out New Closet" uses a flat $1,000/$1,000 quote seen in Milan -- this is Travis\'s negotiated flat price for that specific job\'s scope, not a real per-sqft/LF rate. Treat as a placeholder needing confirmation each time, not a trustworthy default.' }
+];
+
+function rqComputePricing(ctx) {
+  const lines = [];
+  const push = (category, item, cost, note) => lines.push({ category, item, cost, price: Math.round(cost*1.15*100)/100, note: note||'' });
+
+  if (ctx.jobContext_scope === 'Standalone job') push('Haul Off', 'Standalone job debris disposal', RQ_PRICE.haulOff.standalone);
+  else push('Haul Off', 'Part of whole-house remodel (covered elsewhere)', 0);
+
+  // Flooring
+  if (ctx.flooring_existing === 'Carpet' && (ctx.flooring_removalHrs || 0) > 0) {
+    push('Flooring', `Carpet removal x ${ctx.flooring_removalHrs} hr`, RQ_PRICE.carpetRemoval.costPerHr * ctx.flooring_removalHrs);
+  }
+  if (ctx.flooring_material === 'LVP') {
+    const sqft = ctx.flooring_sqft || 0;
+    const grade = ctx.flooring_grade;
+    if (sqft > 0 && RQ_PRICE.flooring.lvp.materials[grade] !== undefined) {
+      push('Flooring', `LVP Materials (${grade}) x ${sqft} sqft`, RQ_PRICE.flooring.lvp.materials[grade] * sqft);
+      push('Flooring', `LVP Labor x ${sqft} sqft`, RQ_PRICE.flooring.lvp.labor * sqft);
+    }
+  }
+  const registers = parseInt(ctx.flooring_registerCount, 10) || 0;
+  if (registers > 0) {
+    push('Flooring', `Floor Register Materials x ${registers}`, RQ_PRICE.flooring.floorRegister.materials * registers);
+    push('Flooring', `Floor Register Labor x ${registers}`, RQ_PRICE.flooring.floorRegister.labor * registers);
+  }
+
+  // Drywall
+  {
+    const sqft = ctx.drywall_sqft || 0;
+    if (sqft > 0 && ctx.drywall_scope === 'Patch') {
+      push('Drywall', `Patch x ${sqft} sqft (blended)`, RQ_PRICE.drywall.patchPerSqft * sqft);
+    } else if (sqft > 0 && ctx.drywall_scope === 'Full Room Install') {
+      push('Drywall', `Materials x ${sqft} sqft`, RQ_PRICE.drywall.fullInstall.materials * sqft);
+      push('Drywall', `Labor x ${sqft} sqft`, RQ_PRICE.drywall.fullInstall.labor * sqft);
+      if (ctx.drywall_needsJointCompound === 'Yes') push('Drywall', 'Joint Compound', RQ_PRICE.drywall.jointCompound);
+    }
+  }
+
+  // Paint (shared constant, same as every other room)
+  {
+    const sqft = ctx.paint_sqft || 0;
+    if (sqft > 0) {
+      push('Paint', `Materials x ${sqft} sqft`, PAINT_PRICE.materials * sqft);
+      push('Paint', `Labor x ${sqft} sqft`, PAINT_PRICE.labor * sqft);
+      const kits = Math.ceil(sqft / 1000);
+      push('Paint', `Paint Kit x ${kits}`, PAINT_PRICE.kit * kits);
+    }
+  }
+
+  // Baseboard
+  if ((ctx.baseboard_lf || 0) > 0) {
+    push('Baseboard', `Materials x ${ctx.baseboard_lf} lf`, RQ_PRICE.baseboard.material * ctx.baseboard_lf);
+    push('Baseboard', `Labor x ${ctx.baseboard_lf} lf`, RQ_PRICE.baseboard.labor * ctx.baseboard_lf);
+  }
+
+  // Window Casing
+  {
+    const windowCount = parseInt(ctx.windowCasing_windowCount, 10) || 0;
+    const lfEach = parseFloat(ctx.windowCasing_lfPerWindow) || 0;
+    const totalLf = windowCount * lfEach;
+    if (totalLf > 0) {
+      push('Window Casing', `Materials x ${totalLf} lf (${windowCount} windows)`, RQ_PRICE.windowCasing.material * totalLf);
+      push('Window Casing', `Labor x ${totalLf} lf`, RQ_PRICE.windowCasing.labor * totalLf);
+    }
+    if (ctx.windowCasing_needsSillLumber === 'Yes' && windowCount > 0) {
+      push('Window Casing', `1x10 Sill Lumber x ${windowCount}`, RQ_PRICE.windowSillLumber.material * windowCount);
+      push('Window Casing', `Sill Lumber Labor x ${windowCount}`, RQ_PRICE.windowSillLumber.labor * windowCount);
+    }
+  }
+
+  // Lighting
+  if (ctx.lighting_fixtureType === 'Flush-Mount Light') {
+    push('Lighting', 'Flush Mount Fixture', RQ_PRICE.lighting.flushMount.fixture);
+    push('Lighting', 'Flush Mount Labor', RQ_PRICE.lighting.flushMount.labor);
+  } else if (ctx.lighting_fixtureType === 'Ceiling Fan (with light kit)') {
+    const grade = ctx.lighting_grade;
+    if (RQ_PRICE.lighting.ceilingFan.fixture[grade] !== undefined) {
+      push('Lighting', `Ceiling Fan Fixture (${grade})`, RQ_PRICE.lighting.ceilingFan.fixture[grade],
+           grade === 'Premium' ? 'no real job has priced Premium yet -- confirm before relying on this' : '');
+    }
+    push('Lighting', 'Ceiling Fan Install Labor', RQ_PRICE.lighting.ceilingFan.labor);
+  }
+
+  // Smoke Detector
+  if (ctx.smokeDetector_needed !== 'No (already present/not required)') {
+    push('Smoke Detector', 'Battery Powered Fixture', RQ_PRICE.smokeDetector.fixture);
+    push('Smoke Detector', 'Labor', RQ_PRICE.smokeDetector.labor);
+  }
+
+  // Closet
+  if (ctx.closet_scope === 'Remove Cedar Lining' && (ctx.closet_removalHrs || 0) > 0) {
+    push('Closet', `Remove Cedar Lining x ${ctx.closet_removalHrs} hr`, RQ_PRICE.closet.cedarLiningRemoval.costPerHr * ctx.closet_removalHrs);
+  } else if (ctx.closet_scope === 'Build Out New Closet') {
+    push('Closet', 'Build Out Materials (flat quote -- confirm before using on a new job)', RQ_PRICE.closet.buildOut.materials);
+    push('Closet', 'Build Out Labor (flat quote -- confirm before using on a new job)', RQ_PRICE.closet.buildOut.labor);
+  }
+
+  return lines;
+}
+
+async function rqCommit() {
+  if (!conDb || !conCurrentJobId) return 0;
+  const priced = rqComputePricing(_rqCtx); // _rqCtx populated by rqAnswer(), same convention as _bqCtx
+  if (!priced.length) return 0;
+  const roomName = _rqRoom;
+  const tradeName = 'Bedroom Guided Questions';
+
+  let group = estGroups.find(g => g.name.toLowerCase() === roomName.toLowerCase());
+  if (!group) {
+    const ref = await coll('jobs').doc(conCurrentJobId).collection('estimateGroups').add({
+      name: roomName, order: estGroups.length, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    group = { id: ref.id, name: roomName, order: estGroups.length, subgroups: [], directItems: [] };
+    estGroups.push(group);
+  }
+  let subgroup = group.subgroups?.find(s => s.name.toLowerCase() === tradeName.toLowerCase());
+  if (!subgroup) {
+    const subRef = await coll('jobs').doc(conCurrentJobId).collection('estimateGroups')
+      .doc(group.id).collection('subgroups').add({
+        name: tradeName, order: group.subgroups?.length || 0, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    subgroup = { id: subRef.id, name: tradeName, order: group.subgroups?.length || 0, items: [] };
+    if (!group.subgroups) group.subgroups = [];
+    group.subgroups.push(subgroup);
+  }
+
+  const addPromises = [];
+  let order = subgroup.items?.length || 0;
+  for (const l of priced) {
+    if (l.cost === 0 && l.price === 0) continue;
+    const isLabor = /labor/i.test(l.item) && !/materials\s*\+\s*labor/i.test(l.item);
+    addPromises.push(coll('jobs').doc(conCurrentJobId).collection('estimateGroups').doc(group.id)
+      .collection('subgroups').doc(subgroup.id).collection('items').add({
+        desc: `${l.category} — ${l.item}`, qty: 1, unit: 'ea', costType: isLabor ? 'Labor' : 'Materials',
+        unitCost: l.cost, markup: 15, unitPrice: l.price, notes: l.note || '', order: order++,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      }));
+  }
+  await Promise.all(addPromises);
+  return addPromises.length;
+}
+window.rqCommit = rqCommit;
+
+
 const KQ_PRICE = {
   cabinets: {
     materials: { 'Contractor Grade': 120, 'Design Grade': 170, 'Premium': 280 }, // per LF

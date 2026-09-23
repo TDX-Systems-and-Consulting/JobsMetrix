@@ -89,6 +89,24 @@ service cloud.firestore {
         allow read: if inCompany(companyId);
         allow write: if inCompany(companyId) && hasFullAccess();
       }
+      // ── KYTLEAD leads (surfaced inside PlannerXD, data lives here) ──
+      match /leads/{leadId} {
+        allow read: if inCompany(companyId);
+        allow create: if inCompany(companyId) && request.resource.data.companyId == companyId;
+        allow update: if inCompany(companyId)
+                      && request.resource.data.companyId == resource.data.companyId
+                      && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['convertedJobId'])
+                          || request.resource.data.convertedJobId == resource.data.convertedJobId);
+        allow delete: if inCompany(companyId) && hasFullAccess();
+
+        match /activities/{activityId} {
+          allow read: if inCompany(companyId);
+          allow create: if inCompany(companyId) && request.resource.data.companyId == companyId;
+          allow update: if inCompany(companyId) && request.resource.data.companyId == resource.data.companyId;
+          allow delete: if inCompany(companyId) && hasFullAccess();
+        }
+      }
+
 
       // ── Pulse history (daily snapshot of activeJobs/outstandingInvoices/
       // unprocessedCOs, written client-side, read by the dailyKpiRefresh

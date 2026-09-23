@@ -2575,3 +2575,205 @@ async function runSLATriggers(db, companyId) {
   console.log(`SLA triggers complete for ${companyId}`);
 }
 // deploy trigger: testing Secret Manager permission fix 2026-09-17T16:37:25Z
+
+// ═══════════════════════════════════════════════════════════
+// Added 2026-09-23: KYTLEAD conversion, Stripe entitlements (dormant
+// until Stripe Products/Prices are configured and PRICE_TO_MODULE /
+// SUITE_PRICE_ID below are filled in with real IDs)
+// ═══════════════════════════════════════════════════════════
+// ============================================================================
+// KYTLEAD -> JOBSMETRIX — lead conversion Cloud Function
+//
+// INTEGRATION NOTES:
+//   1. Paste into functions/index.js alongside sendDailyDigest and your
+//      existing functions. Assumes admin.initializeApp() already ran once.
+//   2. This is a Firestore-triggered function (onUpdate), not a scheduled
+//      one -- it fires the instant a lead's `stage` field flips to 'signed',
+//      wherever that write comes from (PlannerXD's pipeline UI, a Zapier
+//      hook, manual Firestore edit, doesn't matter).
+//   3. Idempotent by design: if convertedJobId is already set, it bails
+//      immediately, so a duplicate trigger or a retried write can't create
+//      two jobs from the same lead.
+//   4. Confirm the jobs/{jobId} field names below (client, email, phone,
+//      address, status, source) match your actual JOBSMETRIX job schema --
+//      I'm inferring these from the fields kytrac-app.js reads elsewhere
+//      (job.email, job.client, job.name), but I don't have the job-creation
+//      code itself in this session to verify field-for-field.
+// ============================================================================
+
+
+exports.convertLeadToJob = functions.firestore
+  .document('companies/{companyId}/leads/{leadId}')
+  .onUpdate(async (change, context) => {
+    const before = change.before.data();
+    const after = change.after.data();
+    const { companyId, leadId } = context.params;
+
+    // Only act on the exact moment a lead flips into 'signed'.
+    if (before.stage === 'signed' || after.stage !== 'signed') return null;
+
+    // Idempotency guard -- never create a second job for the same lead.
+    if (after.convertedJobId) {
+      console.warn('convertLeadToJob: lead already converted, skipping', leadId);
+      return null;
+    }
+
+    const db = admin.firestore();
+    const jobRef = db.collection('companies').doc(companyId)
+      .collection('jobs').doc();
+
+    const jobData = {
+      client: after.name || '',
+      email: after.email || '',
+      phone: after.phone || '',
+      address: after.address || '',
+      companyId,
+      status: 'active',
+      source: after.source || 'unknown',
+      convertedFromLeadId: leadId,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdMs: Date.now(),
+    };
+
+    // Write the new job and stamp the lead with convertedJobId in one
+    // atomic batch -- either both happen or neither does.
+    const batch = db.batch();
+    batch.set(jobRef, jobData);
+    batch.update(change.after.ref, {
+      convertedJobId: jobRef.id,
+      convertedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    await batch.commit();
+    console.log(`convertLeadToJob: lead ${leadId} -> job ${jobRef.id}`);
+    return null;
+  });
+
+// ============================================================================
+// ENTITLEMENTS — Stripe webhook
+//
+// INTEGRATION NOTES:
+//   1. npm install stripe (in functions/)
+//   2. Fill in PRICE_TO_MODULE and SUITE_PRICE_ID below with your real Stripe
+//      Price IDs once each Product/Price is created in the Stripe Dashboard
+//      (one Price per module: jobsmetrix, kytlead, kytalyst, kytfolio,
+//      kytvault, kytcrew -- plus one Price for the Suite bundle).
+//   3. Assumes companies/{companyId} has a `stripeCustomerId` field already
+//      set (from whatever checkout flow creates the Stripe customer) --
+//      I don't have that checkout code in this session, so if customerId
+//      isn't already being stored there, that's the other half of this
+//      that needs building alongside the webhook.
+//   4. Register this endpoint's URL in the Stripe Dashboard (Webhooks) for:
+//      checkout.session.completed, customer.subscription.updated,
+//      customer.subscription.deleted -- and set STRIPE_WEBHOOK_SECRET.
+//   5. Deploy: firebase deploy --only functions:stripeWebhook
+//
+// DATA MODEL THIS WRITES:
+//   companies/{companyId}/entitlements/modules  (single doc)
+//     suiteActive        : boolean -- true if the bundle subscription is active
+//     suiteSubscriptionId: string
+//     jobsmetrix: { active: bool, subscriptionId: string, plan: string }
+//     kytlead:    { active: bool, subscriptionId: string, plan: string }
+//     kytalyst:   { active: bool, subscriptionId: string, plan: string }
+//     ... one key per module
+//
+//   Read-side check anywhere in the app (not a Cloud Function, just a
+//   Firestore read + this one line of logic):
+//     const hasAccess = doc.suiteActive || doc[module]?.active === true;
+// ============================================================================
+
+const Stripe = require('stripe');
+
+const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
+
+// TODO: fill in with real Stripe Price IDs from the Dashboard.
+const PRICE_TO_MODULE = {
+  'price_TODO_jobsmetrix': 'jobsmetrix',
+  'price_TODO_kytlead': 'kytlead',
+  'price_TODO_kytalyst': 'kytalyst',
+  'price_TODO_kytfolio': 'kytfolio',
+  'price_TODO_kytvault': 'kytvault',
+  'price_TODO_kytcrew': 'kytcrew',
+};
+const SUITE_PRICE_ID = 'price_TODO_suite';
+
+exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.rawBody, req.headers['stripe-signature'], WEBHOOK_SECRET);
+  } catch (err) {
+    console.error('stripeWebhook: signature verification failed', err.message);
+    res.status(400).send(`Webhook Error: ${err.message}`);
+    return;
+  }
+
+  try {
+    switch (event.type) {
+      case 'checkout.session.completed': {
+        const session = event.data.object;
+        const subscription = await stripe.subscriptions.retrieve(session.subscription);
+        await applySubscriptionState(subscription, true);
+        break;
+      }
+      case 'customer.subscription.updated': {
+        const subscription = event.data.object;
+        const active = ['active', 'trialing'].includes(subscription.status);
+        await applySubscriptionState(subscription, active);
+        break;
+      }
+      case 'customer.subscription.deleted': {
+        const subscription = event.data.object;
+        await applySubscriptionState(subscription, false);
+        break;
+      }
+      default:
+        // Ignore anything else -- invoices, payment intents, etc. aren't
+        // this function's concern.
+        break;
+    }
+    res.json({ received: true });
+  } catch (err) {
+    console.error('stripeWebhook: handler error', err);
+    // 500 tells Stripe to retry -- correct behavior for a transient failure
+    // (Firestore write hiccup, etc.) rather than silently dropping the event.
+    res.status(500).send('Internal error');
+  }
+});
+
+async function applySubscriptionState(subscription, active) {
+  const companyId = subscription.metadata?.companyId;
+  if (!companyId) {
+    console.warn('applySubscriptionState: subscription has no companyId metadata', subscription.id);
+    return;
+  }
+
+  const priceId = subscription.items.data[0]?.price?.id;
+  const db = admin.firestore();
+  const ref = db.collection('companies').doc(companyId)
+    .collection('entitlements').doc('modules');
+
+  if (priceId === SUITE_PRICE_ID) {
+    await ref.set({
+      suiteActive: active,
+      suiteSubscriptionId: active ? subscription.id : admin.firestore.FieldValue.delete(),
+    }, { merge: true });
+    console.log(`entitlements: company ${companyId} suite -> ${active}`);
+    return;
+  }
+
+  const module = PRICE_TO_MODULE[priceId];
+  if (!module) {
+    console.warn('applySubscriptionState: unrecognized price ID', priceId);
+    return;
+  }
+
+  await ref.set({
+    [module]: {
+      active,
+      subscriptionId: active ? subscription.id : admin.firestore.FieldValue.delete(),
+      plan: subscription.items.data[0]?.price?.nickname || 'standard',
+    },
+  }, { merge: true });
+  console.log(`entitlements: company ${companyId} ${module} -> ${active}`);
+}
