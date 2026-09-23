@@ -2710,7 +2710,7 @@ const PRICE_TO_MODULE = {
 };
 const SUITE_PRICE_ID = 'price_TODO_suite';
 
-exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
+exports.kytverseEntitlementsWebhook = functions.https.onRequest(async (req, res) => {
   let event;
   try {
     event = getStripe().webhooks.constructEvent(req.rawBody, req.headers['stripe-signature'], WEBHOOK_SECRET);
