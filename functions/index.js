@@ -2684,7 +2684,19 @@ exports.convertLeadToJob = functions.firestore
 
 const Stripe = require('stripe');
 
-const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+// Lazy singleton, NOT instantiated at module load -- the Stripe SDK's
+// constructor throws synchronously if the API key isn't a valid string.
+// Doing `Stripe(process.env.STRIPE_SECRET_KEY)` at the top level crashed
+// the ENTIRE functions deploy (not just this function) the moment
+// STRIPE_SECRET_KEY was unset, since Firebase has to load this whole file
+// to discover its exports before anything runs. Lazy init means an unset
+// key only breaks this one function, on an actual invocation, not
+// every function in the file at deploy time.
+let _stripeClient = null;
+function getStripe() {
+  if (!_stripeClient) _stripeClient = Stripe(process.env.STRIPE_SECRET_KEY);
+  return _stripeClient;
+}
 const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 
 // TODO: fill in with real Stripe Price IDs from the Dashboard.
@@ -2701,7 +2713,7 @@ const SUITE_PRICE_ID = 'price_TODO_suite';
 exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
   let event;
   try {
-    event = stripe.webhooks.constructEvent(req.rawBody, req.headers['stripe-signature'], WEBHOOK_SECRET);
+    event = getStripe().webhooks.constructEvent(req.rawBody, req.headers['stripe-signature'], WEBHOOK_SECRET);
   } catch (err) {
     console.error('stripeWebhook: signature verification failed', err.message);
     res.status(400).send(`Webhook Error: ${err.message}`);
@@ -2712,7 +2724,7 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
     switch (event.type) {
       case 'checkout.session.completed': {
         const session = event.data.object;
-        const subscription = await stripe.subscriptions.retrieve(session.subscription);
+        const subscription = await getStripe().subscriptions.retrieve(session.subscription);
         await applySubscriptionState(subscription, true);
         break;
       }
