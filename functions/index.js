@@ -3238,3 +3238,27 @@ exports.debugFindJob = functions.https.onRequest(async (req, res) => {
   });
   res.json({ count: matches.length, matches });
 });
+
+// TEMPORARY DEBUG ENDPOINT -- directly test Chat Space creation and return
+// the full error if it fails. Delete after use tonight.
+exports.debugTestChatSpace = functions.runWith({ secrets: ['CHAT_SERVICE_ACCOUNT_KEY'] }).https.onRequest(async (req, res) => {
+  try {
+    const chat = await getChatClient();
+    const space = await chat.spaces.setup({
+      requestBody: {
+        space: { displayName: 'DEBUG TEST SPACE - delete me', spaceType: 'SPACE' },
+        memberships: [{ member: { name: 'users/travis@7pillarsgroup.org', type: 'HUMAN' } }],
+      },
+    });
+    res.json({ success: true, spaceId: space.data.name });
+  } catch (err) {
+    res.json({
+      success: false,
+      message: err.message,
+      code: err.code || null,
+      errors: err.errors || null,
+      responseData: err.response?.data || null,
+      stack: err.stack,
+    });
+  }
+});
