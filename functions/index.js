@@ -3069,3 +3069,4 @@ async function applySubscriptionState(subscription, active) {
 // Retest: GMAIL_SERVICE_ACCOUNT_KEY created in Secret Manager 2026-09-23
 // Retest: appspot runtime SA granted Secret Accessor on GMAIL_SERVICE_ACCOUNT_KEY 2026-09-23
 // Retest: firebase-adminsdk-fbsvc granted Secret Manager Admin 2026-09-23
+// Retest: added --force to deploy args 2026-09-23
