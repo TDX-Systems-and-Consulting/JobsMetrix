@@ -3214,49 +3214,4 @@ function extractChatTeamMembers(data) {
 }
 // Retest: CHAT_SERVICE_ACCOUNT_KEY created + appspot SA granted Secret Accessor 2026-09-23
 
-// TEMPORARY DEBUG ENDPOINT -- find job(s) matching a search term and report
-// their chatSpaceId. Delete this after use tonight, not meant to stay.
-exports.debugFindJob = functions.https.onRequest(async (req, res) => {
-  const term = (req.query.q || '').toLowerCase();
-  if (!term) { res.json({ error: 'pass ?q=searchterm' }); return; }
-  const db = admin.firestore();
-  const snap = await db.collectionGroup('jobs').get();
-  const matches = [];
-  snap.forEach(doc => {
-    const d = doc.data();
-    const hay = `${d.name || ''} ${d.address || ''} ${d.client || ''}`.toLowerCase();
-    if (hay.includes(term)) {
-      matches.push({
-        path: doc.ref.path,
-        name: d.name || null,
-        address: d.address || null,
-        chatSpaceId: d.chatSpaceId || null,
-      });
-    }
-  });
-  res.json({ count: matches.length, matches });
-});
 
-// TEMPORARY DEBUG ENDPOINT -- directly test Chat Space creation and return
-// the full error if it fails. Delete after use tonight.
-exports.debugTestChatSpace = functions.runWith({ secrets: ['CHAT_SERVICE_ACCOUNT_KEY'] }).https.onRequest(async (req, res) => {
-  try {
-    const chat = await getChatClient();
-    const space = await chat.spaces.setup({
-      requestBody: {
-        space: { displayName: 'DEBUG TEST SPACE - delete me', spaceType: 'SPACE' },
-        memberships: [{ member: { name: 'users/travis@7pillarsgroup.org', type: 'HUMAN' } }],
-      },
-    });
-    res.json({ success: true, spaceId: space.data.name });
-  } catch (err) {
-    res.json({
-      success: false,
-      message: err.message,
-      code: err.code || null,
-      errors: err.errors || null,
-      responseData: err.response?.data || null,
-      stack: err.stack,
-    });
-  }
-});
