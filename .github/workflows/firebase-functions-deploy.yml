@@ -31,7 +31,13 @@ jobs:
         run: |
           echo "SENDGRID_KEY=${{ secrets.SENDGRID_API_KEY }}" >> .env
           echo "QBO_TOKEN_ENCRYPTION_KEY=${{ secrets.QBO_TOKEN_ENCRYPTION_KEY }}" >> .env
-          echo 'GMAIL_SERVICE_ACCOUNT_KEY=${{ secrets.GMAIL_SERVICE_ACCOUNT_KEY }}' >> .env
+        # GMAIL_SERVICE_ACCOUNT_KEY intentionally NOT here -- a JSON value
+        # with embedded quotes and escaped newlines breaks Firebase's own
+        # dotenv parser no matter how it's shell-quoted (confirmed: tried
+        # double quotes, tried single quotes, both produced "Invalid
+        # dotenv file"). Using Secret Manager directly instead (see
+        # sendJobspanEmailGmail's .runWith({secrets:[...]}) declaration)
+        # avoids the .env text pipeline entirely for this one value.
         # Written fresh from GitHub secrets on every deploy -- never
         # committed to the repo (functions/.env is gitignored). Both
         # env vars are checked first in code (process.env.SENDGRID_KEY,

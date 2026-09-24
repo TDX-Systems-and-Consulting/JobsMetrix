@@ -2248,7 +2248,7 @@ function buildRawMessage({ to, toName, bccEmail, replyTo, fromName, subject, bod
     .replace(/=+$/, '');
 }
 
-exports.sendJobspanEmailGmail = functions.https.onCall(async (data, context) => {
+exports.sendJobspanEmailGmail = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCOUNT_KEY'] }).https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'Must be signed in.');
   }
