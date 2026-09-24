@@ -2144,6 +2144,204 @@ exports.sendJobspanEmail = functions.https.onCall(async (data, context) => {
   return { success: true, message: `Email sent to ${to}` };
 });
 
+// ============================================================================
+// sendJobspanEmailGmail — deployed as a NEW, separate function first
+//
+// Deliberately named differently from sendJobspanEmail so it can be tested
+// for real (send yourself a test email, check formatting/BCC/log) before
+// doing the actual cutover. Once confirmed working: rename this export to
+// sendJobspanEmail and delete/comment out the old SendGrid version. Don't
+// swap blind -- verify first, same reasoning as everything else tonight.
+//
+// This matches the REAL sendJobspanEmail's full behavior, not a partial
+// reconstruction:
+//   - same params (to, toName, subject, bodyHtml, bodyText, replyTo, docType, jobId)
+//   - same auth check (context.auth + companyId from the token)
+//   - same company branding lookup + HTML wrapper (identical template)
+//   - same BCC-to-self audit copy (now travis@7pillarsgroup.org, matching
+//     the address switch -- confirm that's actually what you want the audit
+//     copies going to, since the real function BCC'd jtxdgroup.com)
+//   - same reply-to default
+//   - same emailLog Firestore write at the end
+//
+// SETUP REQUIRED (Cloud Console + Workspace Admin, one-time):
+//   1. console.cloud.google.com, project kytrac-72d91: APIs & Services >
+//      Library > enable "Gmail API"
+//   2. IAM & Admin > Service Accounts > Create Service Account (name it
+//      something like "gmail-sender"). After creating it, open it > Keys >
+//      Add Key > Create new key > JSON -- downloads a key file.
+//   3. Copy that service account's "Client ID" (a long number, on its
+//      Details page -- NOT the email address).
+//   4. admin.google.com (Workspace Admin -- different site, needs your
+//      Workspace admin login): Security > Access and data control > API
+//      controls > Domain-wide Delegation > Add new:
+//        Client ID: <paste the number from step 3>
+//        OAuth Scopes: https://www.googleapis.com/auth/gmail.send
+//      Authorize.
+//   5. Store the downloaded JSON key as a secret:
+//        firebase functions:secrets:set GMAIL_SERVICE_ACCOUNT_KEY
+//      (paste the full JSON contents when prompted), or via Cloud Console >
+//      Secret Manager if you prefer the UI.
+//   6. npm install googleapis (in functions/, if not already there --
+//      it already is, per package.json: googleapis ^140.0.0).
+//   7. Deploy just this function: firebase deploy --only functions:sendJobspanEmailGmail
+// ============================================================================
+
+const GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.send'];
+const EMAIL_SEND_AS = 'travis@7pillarsgroup.org';
+
+let _gmailClient = null;
+async function getGmailClient() {
+  if (_gmailClient) return _gmailClient;
+  const key = JSON.parse(process.env.GMAIL_SERVICE_ACCOUNT_KEY);
+  const auth = new google.auth.JWT({
+    email: key.client_email,
+    key: key.private_key,
+    scopes: GMAIL_SCOPES,
+    subject: EMAIL_SEND_AS, // domain-wide delegation: send AS this Workspace user
+  });
+  await auth.authorize();
+  _gmailClient = google.gmail({ version: 'v1', auth });
+  return _gmailClient;
+}
+
+function encodeSubject(subject) {
+  return `=?utf-8?B?${Buffer.from(subject, 'utf-8').toString('base64')}?=`;
+}
+
+// Builds a raw RFC 2822 message with To/Bcc/Reply-To headers -- Gmail's API
+// takes a full base64url-encoded MIME message, not a convenience object
+// like SendGrid's {to, subject, html}.
+function buildRawMessage({ to, toName, bccEmail, replyTo, fromName, subject, bodyHtml, bodyText }) {
+  const toHeader = toName ? `"${toName}" <${to}>` : to;
+  const boundary = `bnd_${Date.now()}`;
+
+  const headers = [
+    `From: "${fromName}" <${EMAIL_SEND_AS}>`,
+    `To: ${toHeader}`,
+    bccEmail ? `Bcc: ${bccEmail}` : null,
+    `Reply-To: "${fromName}" <${replyTo || EMAIL_SEND_AS}>`,
+    `Subject: ${encodeSubject(subject)}`,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+  ].filter(Boolean);
+
+  const body = [
+    '',
+    `--${boundary}`,
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    bodyText || subject,
+    `--${boundary}`,
+    'Content-Type: text/html; charset=utf-8',
+    '',
+    bodyHtml || `<p>${bodyText || ''}</p>`,
+    `--${boundary}--`,
+  ];
+
+  const message = headers.join('\r\n') + '\r\n' + body.join('\r\n');
+
+  return Buffer.from(message)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+exports.sendJobspanEmailGmail = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Must be signed in.');
+  }
+
+  const { to, toName, subject, bodyHtml, bodyText, replyTo, docType, jobId } = data;
+  if (!to || !subject || (!bodyHtml && !bodyText)) {
+    throw new functions.https.HttpsError('invalid-argument', 'Missing required email fields.');
+  }
+
+  const companyId = context.auth.token.companyId;
+  if (!companyId) {
+    throw new functions.https.HttpsError('permission-denied', 'No company association found.');
+  }
+
+  // Same branded HTML wrapper as the real sendJobspanEmail -- identical
+  // template, same company name/logo lookup.
+  const db = admin.firestore();
+  let companyName = 'JTXD Contracting';
+  let companyLogo = '';
+  try {
+    const settDoc = await db.collection('companies').doc(companyId)
+      .collection('settings').doc('company').get();
+    if (settDoc.exists) {
+      companyName = settDoc.data().companyName || companyName;
+      companyLogo = settDoc.data().logoUrl || '';
+    }
+  } catch (e) {}
+
+  const brandedHtml = `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f4f4f4;font-family:Arial,sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:32px 0">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:12px;overflow:hidden;max-width:600px;width:100%">
+        <tr><td style="background:#04121f;padding:24px 32px;text-align:center">
+          ${companyLogo ? `<img src="${companyLogo}" style="height:48px;margin-bottom:8px"><br>` : ''}
+          <span style="color:#d97706;font-size:1.3rem;font-weight:800;letter-spacing:.02em">${companyName}</span>
+        </td></tr>
+        <tr><td style="padding:32px;color:#1a1a1a;font-size:15px;line-height:1.6">
+          ${bodyHtml || `<p>${bodyText}</p>`}
+        </td></tr>
+        <tr><td style="background:#f9f9f9;padding:20px 32px;text-align:center;font-size:12px;color:#888;border-top:1px solid #eee">
+          This email was sent by ${companyName} via JOBSpan.<br>
+          Questions? Reply to this email or contact us directly.
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  let gmail;
+  try {
+    gmail = await getGmailClient();
+  } catch (e) {
+    console.error('sendJobspanEmailGmail: Gmail client setup failed', e.message);
+    throw new functions.https.HttpsError('internal', `Gmail auth failed: ${e.message}`);
+  }
+
+  const raw = buildRawMessage({
+    to, toName, replyTo,
+    bccEmail: EMAIL_SEND_AS, // audit copy of every send, same purpose as the
+                              // real function's BCC -- now going to the new
+                              // sending address itself rather than jtxdgroup.com;
+                              // confirm that's actually what you want.
+    fromName: companyName,
+    subject, bodyHtml: brandedHtml, bodyText,
+  });
+
+  try {
+    await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
+  } catch (err) {
+    console.error('sendJobspanEmailGmail: send failed', err);
+    throw new functions.https.HttpsError('internal', `Email send failed: ${err.message}`);
+  }
+
+  if (jobId && docType) {
+    try {
+      await db.collection('companies').doc(companyId)
+        .collection('emailLog').add({
+          jobId, docType, to, subject,
+          sentAt: admin.firestore.FieldValue.serverTimestamp(),
+          sentBy: context.auth.token.email || '',
+          status: 'sent',
+          via: 'gmail', // distinguishes these from historical SendGrid-sent log entries
+        });
+    } catch (e) {}
+  }
+
+  return { success: true, message: `Email sent to ${to}` };
+});
+
 // ════════════════════════════════════════════════════
 // ── dailyKpiRefresh ──────────────────────────────────
 // Runs every day at 6am CT, pulls MTD financials from QBO,
