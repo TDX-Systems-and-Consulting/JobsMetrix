@@ -3088,8 +3088,18 @@ const CHAT_SCOPES = ['https://www.googleapis.com/auth/chat.bot'];
 
 async function getChatClient() {
   const key = JSON.parse(process.env.CHAT_SERVICE_ACCOUNT_KEY);
-  const auth = new google.auth.GoogleAuth({ credentials: key, scopes: CHAT_SCOPES });
-  return google.chat({ version: 'v1', auth: await auth.getClient() });
+  // MUST impersonate a real Workspace user via domain-wide delegation --
+  // a bare service account (no subject) gets "Insufficient Permission"
+  // from the Chat API even with the chat.bot scope authorized. Same
+  // pattern as getGmailClient's subject: EMAIL_SEND_AS.
+  const auth = new google.auth.JWT({
+    email: key.client_email,
+    key: key.private_key,
+    scopes: CHAT_SCOPES,
+    subject: 'travis@7pillarsgroup.org',
+  });
+  await auth.authorize();
+  return google.chat({ version: 'v1', auth });
 }
 
 async function getOrCreateSpaceForJob(chat, db, companyId, jobId, job) {
