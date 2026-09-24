@@ -3070,3 +3070,137 @@ async function applySubscriptionState(subscription, active) {
 // Retest: appspot runtime SA granted Secret Accessor on GMAIL_SERVICE_ACCOUNT_KEY 2026-09-23
 // Retest: firebase-adminsdk-fbsvc granted Secret Manager Admin 2026-09-23
 // Retest: added --force to deploy args 2026-09-23
+
+// ============================================================================
+// JOBSMETRIX <-> GOOGLE CHAT — two-way message sync
+// (corrected to the real path: companies/{companyId}/jobs/{jobId}/messages,
+// matching sendMessageNotificationSms above -- earlier draft had this wrong)
+//
+// DATA MODEL ADDITIONS:
+//   companies/{companyId}/jobs/{jobId}
+//     chatSpaceId  : string -- set once, first message that needs to sync
+//   companies/{companyId}/chatSpaceMap/{spaceId}
+//     jobId        : string -- reverse lookup for inbound Chat events
+//   .../messages/{msgId} gets: syncedToChat (bool), fromChat (bool)
+// ============================================================================
+
+const CHAT_SCOPES = ['https://www.googleapis.com/auth/chat.bot'];
+
+async function getChatClient() {
+  const key = JSON.parse(process.env.CHAT_SERVICE_ACCOUNT_KEY);
+  const auth = new google.auth.GoogleAuth({ credentials: key, scopes: CHAT_SCOPES });
+  return google.chat({ version: 'v1', auth: await auth.getClient() });
+}
+
+async function getOrCreateSpaceForJob(chat, db, companyId, jobId, job) {
+  if (job.chatSpaceId) return job.chatSpaceId;
+
+  const teamDoc = await db.collection('companies').doc(companyId)
+    .collection('settings').doc('team').get();
+  const members = extractChatTeamMembers(teamDoc.exists ? teamDoc.data() : {});
+  const memberEmails = Object.values(members).map(m => m.email).filter(Boolean);
+
+  const space = await chat.spaces.setup({
+    requestBody: {
+      space: {
+        displayName: `Job — ${job.name || job.jobNumber || jobId}`,
+        spaceType: 'SPACE',
+      },
+      memberships: memberEmails.map(email => ({
+        member: { name: `users/${email}`, type: 'HUMAN' },
+      })),
+    },
+  });
+
+  const spaceId = space.data.name;
+  await db.collection('companies').doc(companyId).collection('jobs').doc(jobId)
+    .update({ chatSpaceId: spaceId });
+  await db.collection('companies').doc(companyId)
+    .collection('chatSpaceMap').doc(spaceId.replace('spaces/', ''))
+    .set({ jobId });
+
+  return spaceId;
+}
+
+// --- OUTBOUND: JOBSMETRIX message -> Google Chat ---
+exports.syncMessageToChat = functions.runWith({ secrets: ['CHAT_SERVICE_ACCOUNT_KEY'] }).firestore
+  .document('companies/{companyId}/jobs/{jobId}/messages/{msgId}')
+  .onCreate(async (snap, context) => {
+    const msg = snap.data();
+    if (msg.fromChat || msg.syncedToChat) return null;
+
+    const { companyId, jobId } = context.params;
+    const db = admin.firestore();
+    const jobRef = db.collection('companies').doc(companyId).collection('jobs').doc(jobId);
+    const jobDoc = await jobRef.get();
+    if (!jobDoc.exists) return null;
+    const job = jobDoc.data();
+
+    const chat = await getChatClient();
+    const spaceId = await getOrCreateSpaceForJob(chat, db, companyId, jobId, job);
+
+    const visibility = msg.fromCustomer
+      ? '👤 Customer'
+      : msg.visibleToCustomer
+        ? '💬 Team (customer-visible)'
+        : '🔒 Team only';
+
+    await chat.spaces.messages.create({
+      parent: spaceId,
+      requestBody: { text: `*${msg.authorName || 'Someone'}* (${visibility}):\n${msg.text}` },
+    });
+
+    await snap.ref.update({ syncedToChat: true });
+    return null;
+  });
+
+// --- INBOUND: Google Chat message -> JOBSMETRIX ---
+exports.syncChatToJob = functions.https.onRequest(async (req, res) => {
+  const event = req.body;
+  if (event.type !== 'MESSAGE') { res.json({}); return; }
+
+  const spaceId = event.space?.name?.replace('spaces/', '');
+  const senderEmail = event.message?.sender?.email || event.user?.email || '';
+  const rawText = (event.message?.text || '').trim();
+  if (!spaceId || !rawText) { res.json({}); return; }
+
+  const db = admin.firestore();
+  const companiesSnap = await db.collection('companies').get();
+  let jobId = null, companyId = null;
+  for (const companyDoc of companiesSnap.docs) {
+    const mapDoc = await companyDoc.ref.collection('chatSpaceMap').doc(spaceId).get();
+    if (mapDoc.exists) { jobId = mapDoc.data().jobId; companyId = companyDoc.id; break; }
+  }
+  if (!jobId) { res.json({ text: "I don't recognize this space as linked to a job." }); return; }
+
+  const customerVisible = rawText.startsWith('>customer');
+  const text = customerVisible ? rawText.replace(/^>customer\s*/, '') : rawText;
+
+  await db.collection('companies').doc(companyId).collection('jobs').doc(jobId)
+    .collection('messages').add({
+      text,
+      authorEmail: senderEmail,
+      authorName: event.message?.sender?.displayName || senderEmail || 'Team (via Chat)',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdMs: Date.now(),
+      companyId,
+      fromCustomer: false,
+      visibleToCustomer: customerVisible,
+      fromChat: true,
+      notifyTargets: [],
+      notifyStatus: 'none',
+    });
+
+  res.json({});
+});
+
+function extractChatTeamMembers(data) {
+  if (!data) return {};
+  if (data.members && typeof data.members === 'object') return data.members;
+  const out = {};
+  Object.keys(data).forEach(k => {
+    const v = data[k];
+    if (v && typeof v === 'object' && (v.email || v.role)) out[k] = v;
+  });
+  return out;
+}
