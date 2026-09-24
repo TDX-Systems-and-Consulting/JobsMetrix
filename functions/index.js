@@ -3065,3 +3065,4 @@ async function applySubscriptionState(subscription, active) {
 }
 // Retest trigger: IAM roles (Artifact Registry Administrator, Service Account User) granted 2026-09-23 7:23pm
 // GMAIL_SERVICE_ACCOUNT_KEY secret added 2026-09-23 -- retest trigger
+// Fixed .env quoting for JSON secret 2026-09-23

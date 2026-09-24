@@ -31,7 +31,7 @@ jobs:
         run: |
           echo "SENDGRID_KEY=${{ secrets.SENDGRID_API_KEY }}" >> .env
           echo "QBO_TOKEN_ENCRYPTION_KEY=${{ secrets.QBO_TOKEN_ENCRYPTION_KEY }}" >> .env
-          echo "GMAIL_SERVICE_ACCOUNT_KEY=${{ secrets.GMAIL_SERVICE_ACCOUNT_KEY }}" >> .env
+          echo 'GMAIL_SERVICE_ACCOUNT_KEY=${{ secrets.GMAIL_SERVICE_ACCOUNT_KEY }}' >> .env
         # Written fresh from GitHub secrets on every deploy -- never
         # committed to the repo (functions/.env is gitignored). Both
         # env vars are checked first in code (process.env.SENDGRID_KEY,
