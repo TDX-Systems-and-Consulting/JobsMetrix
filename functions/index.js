@@ -2865,3 +2865,4 @@ async function applySubscriptionState(subscription, active) {
   }, { merge: true });
   console.log(`entitlements: company ${companyId} ${module} -> ${active}`);
 }
+// Retest trigger: IAM roles (Artifact Registry Administrator, Service Account User) granted 2026-09-23 7:23pm
