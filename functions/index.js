@@ -2019,7 +2019,7 @@ exports.sendMessageNotificationSms = functions.firestore
 //
 // Config key: sendgrid.key
 // ════════════════════════════════════════════════════
-exports.sendJobspanEmail = functions.https.onCall(async (data, context) => {
+exports.sendJobspanEmailSendGridBackup = functions.https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'Must be signed in.');
   }
@@ -2248,7 +2248,7 @@ function buildRawMessage({ to, toName, bccEmail, replyTo, fromName, subject, bod
     .replace(/=+$/, '');
 }
 
-exports.sendJobspanEmailGmail = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCOUNT_KEY'] }).https.onCall(async (data, context) => {
+exports.sendJobspanEmail = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCOUNT_KEY'] }).https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'Must be signed in.');
   }
