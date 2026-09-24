@@ -3204,3 +3204,4 @@ function extractChatTeamMembers(data) {
   });
   return out;
 }
+// Retest: CHAT_SERVICE_ACCOUNT_KEY created + appspot SA granted Secret Accessor 2026-09-23
