@@ -12262,6 +12262,26 @@ async function pushInvoiceToQuickBooks(jobId, invId, btnEl) {
 }
 window.pushInvoiceToQuickBooks = pushInvoiceToQuickBooks;
 
+async function pushProposalToQuickBooks(jobId, btnEl) {
+  if (!conFunctions) { alert('QuickBooks connection is still loading — try again in a moment.'); return; }
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = '⏳ Pushing...'; }
+
+  try {
+    const callable = conFunctions.httpsCallable('qbPushEstimate');
+    const result = await callable({ companyId: currentCompanyId, jobId });
+    if (result.data && result.data.success) {
+      alert('✓ Proposal pushed to QuickBooks as an itemized Estimate (QB Estimate #' + result.data.qbEstimateId + ')');
+    } else {
+      throw new Error('Unexpected response from QuickBooks function.');
+    }
+  } catch (e) {
+    alert('Error pushing to QuickBooks: ' + (e.message || e));
+  } finally {
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = '📗 Send to QuickBooks'; }
+  }
+}
+window.pushProposalToQuickBooks = pushProposalToQuickBooks;
+
 // The REAL locked 7-bucket formula (established directly with Travis,
 // not the earlier gross-margin-ratio model computeCOOBudgetBreakdown
 // still uses elsewhere). Materials and Labor are FIXED real costs

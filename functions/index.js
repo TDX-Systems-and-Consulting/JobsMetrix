@@ -1091,22 +1091,98 @@ async function ensureQboEstimate(companyId, jobId, qbCustomerId) {
   const prop = propDoc.data();
   if (prop.qbEstimateId) return prop.qbEstimateId;
 
-  const total = prop.snapshot?.grandTotal || 0;
   const itemId = await getDefaultQboItemId(companyId);
-  const payload = {
-    CustomerRef: { value: qbCustomerId },
-    Line: [{
+
+  // Build one QBO Line per subgroup (catBlock), matching exactly how the
+  // proposal PDF itself is organized (Room -> Subgroup -> price) --
+  // e.g. "Living room: Ceiling Fan Install", "Exterior: Doors & Windows" --
+  // rather than one lump total. This is real proposal data
+  // (prop.snapshot.rooms), not a re-derivation -- same shape
+  // computeProposalData() builds client-side for the PDF/email.
+  const snapshot = prop.snapshot || { rooms: [], grandTotal: 0 };
+  const lines = [];
+  (snapshot.rooms || []).forEach(room => {
+    (room.catBlocks || []).forEach(block => {
+      if (!block.price || block.price <= 0) return;
+      lines.push({
+        Amount: block.price,
+        DetailType: 'SalesItemLineDetail',
+        Description: `${room.name} — ${block.label}`,
+        SalesItemLineDetail: { ItemRef: { value: itemId }, Qty: 1, UnitPrice: block.price },
+      });
+    });
+    (room.directBlocks || []).forEach(block => {
+      if (!block.price || block.price <= 0) return;
+      lines.push({
+        Amount: block.price,
+        DetailType: 'SalesItemLineDetail',
+        Description: `${room.name} — ${block.label}`,
+        SalesItemLineDetail: { ItemRef: { value: itemId }, Qty: 1, UnitPrice: block.price },
+      });
+    });
+  });
+
+  // Fallback for a proposal with no itemized rooms recorded (shouldn't
+  // normally happen, but never send QBO a zero-line Estimate) -- same
+  // single lump-sum line this function used before.
+  if (!lines.length) {
+    const total = snapshot.grandTotal || 0;
+    lines.push({
       Amount: total,
       DetailType: 'SalesItemLineDetail',
       Description: 'JOBSpan Estimate',
-      SalesItemLineDetail: { ItemRef: { value: itemId }, Qty: 1, UnitPrice: total }
-    }]
-  };
+      SalesItemLineDetail: { ItemRef: { value: itemId }, Qty: 1, UnitPrice: total },
+    });
+  }
+
+  const payload = { CustomerRef: { value: qbCustomerId }, Line: lines };
   const created = await qboFetch(companyId, 'POST', 'estimate', payload);
   const qbId = created?.Estimate?.Id;
   if (qbId) await propDoc.ref.update({ qbEstimateId: qbId });
   return qbId;
 }
+
+// qbPushEstimate (callable)
+// ─────────────────────────
+// Standalone "Send to QuickBooks" button for a proposal -- pushes the
+// itemized Estimate immediately, independent of ever creating an
+// invoice. Previously ensureQboEstimate only ran as a side effect of
+// qbCreateInvoice, so there was no way to get a proposal into QBO
+// until the first draw was invoiced. Same auth pattern as qbCreateInvoice.
+exports.qbPushEstimate = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be signed in.');
+  const { companyId, jobId } = data;
+  if (!companyId || !jobId) {
+    throw new functions.https.HttpsError('invalid-argument', 'Missing companyId/jobId.');
+  }
+  if (context.auth.token.companyId !== companyId) {
+    throw new functions.https.HttpsError('permission-denied', 'Not a member of this company.');
+  }
+  if (!isQboFullAccess(context.auth.token)) {
+    throw new functions.https.HttpsError('permission-denied', 'Only Owner, Project Manager, or Accounting can push to QuickBooks.');
+  }
+
+  const db = admin.firestore();
+  const jobDoc = await db.collection('companies').doc(companyId).collection('jobs').doc(jobId).get();
+  if (!jobDoc.exists) throw new functions.https.HttpsError('not-found', 'Job not found.');
+  const job = jobDoc.data();
+  if (!job.customerId) {
+    throw new functions.https.HttpsError('failed-precondition',
+      'This job has no linked Customer record — open the job and set a Customer before pushing to QuickBooks.');
+  }
+
+  try {
+    const qbCustomerId = await ensureQboCustomer(companyId, job.customerId);
+    const qbEstimateId = await ensureQboEstimate(companyId, jobId, qbCustomerId);
+    if (!qbEstimateId) {
+      throw new Error('No proposal found for this job to push.');
+    }
+    return { success: true, qbEstimateId };
+  } catch (e) {
+    console.error('qbPushEstimate failed:', e.message);
+    throw new functions.https.HttpsError('internal', e.message);
+  }
+});
 
 // qbCreateInvoice (callable)
 // ───────────────────────────
