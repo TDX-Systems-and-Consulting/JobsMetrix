@@ -26,6 +26,7 @@ const JTXD_LOCKED_RATES = {
   flex: 0.05,       // of the remainder after Overhead + Marketing
   taxes: 0.275,     // of the remainder after Flex
   realLaborCostPct: 0.60, // $180/$300 real subcontractor pay ratio, applied to LABOR BILLED ONLY (never Revenue/materials) -- corrected 2026-09-19 per Travis: subs are paid on billed-equivalent hours (Labor Billed / $300/hr) regardless of actual hours worked; the 0.77 efficiency factor exists ONLY to set the customer-facing days estimate and never touches what a sub is paid or what the company nets. See calcTrueMargin.
+  jasonCommissionPct: 0.05, // Locked 2026-09-25 per Travis: Jason is JTXD's only salesperson (100% of sales) and acting superintendent, paid a 5% commission on Labor Billed -- same tier as realLaborCostPct above (subtracted from Labor Billed before the JTXD Pool is calculated, not carved out of Overhead/Retained Earnings after the fact). Verified against real jobs before locking: at sustained 3-team volume (~$233K/mo Labor Billed), 5% nets Jason ~$11,666/mo (above his stated $10K target) while keeping the tightest real job (Milan) at 10.9% Retained Earnings, comfortably above the 10% Go/No-Go floor. 7% and 8% were both modeled and rejected -- 8% left Milan at 10.03%, no real cushion.
 };
 
 const esc = s => ((s==null?'':s)).toString().replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -22430,6 +22431,13 @@ function calcTrueMargin(allItems) {
   // real negotiated subcontractor amount once one exists for this job.
   const realLaborCost = laborBilled * JTXD_LOCKED_RATES.realLaborCostPct;
 
+  // Jason's commission -- locked 2026-09-25. Same tier as realLaborCost
+  // above: a real cost subtracted from Labor Billed before the JTXD Pool
+  // exists, not something carved out of Overhead/Retained Earnings
+  // afterward. See JTXD_LOCKED_RATES.jasonCommissionPct for the full
+  // rationale and the numbers that were checked before locking this in.
+  const jasonCommission = laborBilled * JTXD_LOCKED_RATES.jasonCommissionPct;
+
   // Days to Complete -- two numbers, per Travis (2026-09-19): Billed Hours
   // (Labor Billed / $300/hr) is what subs are paid on and reflects the
   // job "as billed," with zero inefficiency baked in. Efficiency Hours
@@ -22444,11 +22452,10 @@ function calcTrueMargin(allItems) {
   const efficiencyDays = efficiencyHours / 8;
   const estimatedHours = efficiencyHours; // kept for back-compat; equals efficiencyHours
 
-  // JTXD Actual = Labor Billed minus Real Labor Cost, direct. No
-  // theoretical 62%/38% target split -- matches the finalized JTXD Job
-  // Margin Calculator template exactly (the split used to cancel out to
-  // this same number algebraically anyway; this is just honest about it).
-  const jtxdActual = laborBilled - realLaborCost;
+  // JTXD Actual = Labor Billed minus Real Labor Cost minus Jason's
+  // commission, direct. Both are real costs taken off Labor Billed
+  // before the pool that funds Overhead/Marketing/Flex/Taxes exists.
+  const jtxdActual = laborBilled - realLaborCost - jasonCommission;
 
   const overhead = jtxdActual * JTXD_LOCKED_RATES.overhead;
   const marketing = jtxdActual * JTXD_LOCKED_RATES.marketing;
@@ -22462,7 +22469,7 @@ function calcTrueMargin(allItems) {
 
   return {
     materialsCost, materialsPrice, laborCost, laborPrice, revenue,
-    realLaborCost, estimatedHours, billedHours, efficiencyHours,
+    realLaborCost, jasonCommission, estimatedHours, billedHours, efficiencyHours,
     billedDays, efficiencyDays, jtxdActual,
     overhead, marketing, flex, taxes,
     retainedEarnings, trueMarginPct
@@ -23145,6 +23152,7 @@ function updateEstimateSummary() {
   // Subcontractor/Labor Total" cell uses before a real negotiated number
   // is known for this job.
   setEl('estKpiSubLabor', '$'+Math.round(tm.realLaborCost).toLocaleString());
+  setEl('estKpiJasonCommission', '$'+Math.round(tm.jasonCommission).toLocaleString());
 
   setEl('estKpiProfit', '$'+Math.round(profit).toLocaleString(), profit>=0?'#1dbb87':'#ef5350');
   const marginColor = tm.trueMarginPct >= 10 ? '#1dbb87' : tm.trueMarginPct >= 5 ? '#f59e0b' : '#ef5350';
