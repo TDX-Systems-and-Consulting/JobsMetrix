@@ -3215,3 +3215,163 @@ function extractChatTeamMembers(data) {
 // Retest: CHAT_SERVICE_ACCOUNT_KEY created + appspot SA granted Secret Accessor 2026-09-23
 
 
+
+// ============================================================================
+// GoHighLevel (GHL) webhook receiver -- single client integration for JTXD
+// Contracting. Maps GHL Contact/Opportunity events into the same
+// companies/{companyId}/leads collection KYTLEAD already uses (rules and
+// convertLeadToJob already deployed tonight -- this just feeds it a new
+// source, no new lead system built).
+//
+// SETUP REQUIRED on the client's GHL side (they do this, not you):
+//   1. In their GHL location: Settings > Integrations > Private Integrations
+//      -- create one, scopes: contacts.readonly, opportunities.readonly
+//      (this integration doesn't need write access back to GHL yet)
+//   2. Automation > Workflows > new workflow, trigger on Contact Created /
+//      Contact Updated / Opportunity Stage Changed, action: Webhook, URL:
+//      the deployed URL for ghlWebhookReceiver below
+//   3. Give you their location ID (find it in GHL under Settings > Business
+//      Info) -- set GHL_LOCATION_TO_COMPANY below to map it to your
+//      companyId, since this receiver could in principle serve multiple
+//      GHL locations later without being rebuilt
+//
+// Public keys are GHL's own, straight from their webhook docs (Sept 2026) --
+// these are not secrets, safe to hardcode, GHL publishes them openly.
+// ============================================================================
+
+const GHL_LEGACY_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAokvo/r9tVgcfZ5DysOSC
+Frm602qYV0MaAiNnX9O8KxMbiyRKWeL9JpCpVpt4XHIcBOK4u3cLSqJGOLaPuXw6
+dO0t6Q/ZVdAV5Phz+ZtzPL16iCGeK9po6D6JHBpbi989mmzMryUnQJezlYJ3DVfB
+csedpinheNnyYeFXolrJvcsjDtfAeRx5ByHQmTnSdFUzuAnC9/GepgLT9SM4nCpv
+uxmZMxrJt5Rw+VUaQ9B8JSvbMPpez4peKaJPZHBbU3OdeCVx5klVXXZQGNHOs8gF
+3kvoV5rTnXV0IknLBXlcKKAQLZcY/Q9rG6Ifi9c+5vqlvHPCUJFT5XUGG5RKgOKU
+J062fRtN+rLYZUV+BjafxQauvC8wSWeYja63VSUruvmNj8xkx2zE/Juc+yjLjTXp
+IocmaiFeAO6fUtNjDeFVkhf5LNb59vECyrHD2SQIrhgXpO4Q3dVNA5rw576PwTzN
+h/AMfHKIjE4xQA1SZuYJmNnmVZLIZBlQAF9Ntd03rfadZ+yDiOXCCs9FkHibELhC
+HULgCsnuDJHcrGNd5/Ddm5hxGQ0ASitgHeMZ0kcIOwKDOzOU53lDza6/Y09T7sYJ
+PQe7z0cvj7aE4B+Ax1ZoZGPzpJlZtGXCsu9aTEGEnKzmsFqwcSsnw3JB31IGKAyk
+T1hhTiaCeIY/OwwwNUY2yvcCAwEAAQ==
+-----END PUBLIC KEY-----`;
+
+const GHL_ED25519_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAi2HR1srL4o18O8BRa7gVJY7G7bupbN3H9AwJrHCDiOg=
+-----END PUBLIC KEY-----`;
+
+// Map GHL location ID -> your companyId. Fill in once the client gives you
+// their location ID (Settings > Business Info in their GHL account).
+const GHL_LOCATION_TO_COMPANY = {
+  // 'PASTE_THEIR_LOCATION_ID_HERE': 'mtOiSAzppjVbxKdHRJBH',
+};
+
+// Best-effort mapping from GHL's custom pipeline stage names to KYTLEAD's
+// stage enum. GHL stage names are whatever the client typed into their own
+// pipeline builder, not a fixed set -- fill this in once you see their real
+// stage names (Opportunities API / their pipeline settings). Unmapped
+// stages fall through to 'follow-up' rather than guessing wrong.
+const GHL_STAGE_MAP = {
+  // 'New Lead': 'new',
+  // 'Contacted': 'contacted',
+  // 'Appointment Scheduled': 'walkthrough-scheduled',
+  // 'Proposal Sent': 'proposal-sent',
+  // 'Won': 'signed',
+  // 'Lost': 'lost',
+};
+
+function verifyGhlLegacy(payload, signature) {
+  try {
+    const verifier = crypto.createVerify('SHA256');
+    verifier.update(payload);
+    return verifier.verify(GHL_LEGACY_PUBLIC_KEY, signature, 'base64');
+  } catch (e) { return false; }
+}
+
+function verifyGhlSignature(payload, signature) {
+  try {
+    const payloadBuffer = Buffer.from(payload, 'utf8');
+    const signatureBuffer = Buffer.from(signature, 'base64');
+    return crypto.verify(null, payloadBuffer, GHL_ED25519_PUBLIC_KEY, signatureBuffer);
+  } catch (e) { return false; }
+}
+
+exports.ghlWebhookReceiver = functions.https.onRequest(async (req, res) => {
+  const rawBody = JSON.stringify(req.body);
+  const ghlSig = req.headers['x-ghl-signature'];
+  const legacySig = req.headers['x-wh-signature'];
+
+  const verified = ghlSig
+    ? verifyGhlSignature(rawBody, ghlSig)
+    : (legacySig ? verifyGhlLegacy(rawBody, legacySig) : false);
+
+  if (!verified) {
+    console.error('ghlWebhookReceiver: signature verification failed');
+    res.status(401).json({ error: 'Invalid signature' });
+    return;
+  }
+
+  // Always ack fast -- GHL retries up to 12x on non-2xx, and we don't want
+  // a slow Firestore write to look like a failed delivery.
+  res.status(200).json({ success: true });
+
+  try {
+    const { type, data, locationId, webhookId } = req.body;
+    const companyId = GHL_LOCATION_TO_COMPANY[locationId];
+    if (!companyId) {
+      console.warn('ghlWebhookReceiver: unmapped GHL location', locationId);
+      return;
+    }
+
+    const db = admin.firestore();
+
+    // Idempotency: skip if we've already processed this exact webhook.
+    const dedupeRef = db.collection('companies').doc(companyId)
+      .collection('ghlProcessedWebhooks').doc(webhookId || `${type}-${Date.now()}`);
+    const dedupeDoc = await dedupeRef.get();
+    if (dedupeDoc.exists) return;
+    await dedupeRef.set({ processedAt: admin.firestore.FieldValue.serverTimestamp() });
+
+    if (type === 'ContactCreate' || type === 'ContactUpdate') {
+      const ghlContactId = data.id || data.contactId;
+      const leadsRef = db.collection('companies').doc(companyId).collection('leads');
+      const existing = await leadsRef.where('ghlContactId', '==', ghlContactId).limit(1).get();
+
+      const leadData = {
+        name: `${data.firstName || ''} ${data.lastName || ''}`.trim() || data.name || '',
+        email: data.email || '',
+        phone: data.phone || '',
+        address: data.address1 || data.address || '',
+        source: 'ghl',
+        ghlContactId,
+        companyId,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      if (existing.empty) {
+        leadData.stage = 'new';
+        leadData.createdAt = admin.firestore.FieldValue.serverTimestamp();
+        await leadsRef.add(leadData);
+      } else {
+        await existing.docs[0].ref.set(leadData, { merge: true });
+      }
+    } else if (type === 'OpportunityCreate' || type === 'OpportunityStatusUpdate' || type === 'OpportunityStageUpdate') {
+      const ghlContactId = data.contactId;
+      const rawStage = data.pipelineStageName || data.stageName || '';
+      const mappedStage = GHL_STAGE_MAP[rawStage] || 'follow-up';
+
+      const leadsRef = db.collection('companies').doc(companyId).collection('leads');
+      const existing = await leadsRef.where('ghlContactId', '==', ghlContactId).limit(1).get();
+      if (!existing.empty) {
+        await existing.docs[0].ref.set({
+          stage: mappedStage,
+          ghlRawStage: rawStage, // keep the real GHL stage name visible too, since the mapping above is a best guess until confirmed
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+      }
+    } else {
+      console.log('ghlWebhookReceiver: unhandled event type', type);
+    }
+  } catch (err) {
+    console.error('ghlWebhookReceiver: processing error', err);
+    // No re-throw -- response already sent, this is just for Cloud Logging.
+  }
+});
