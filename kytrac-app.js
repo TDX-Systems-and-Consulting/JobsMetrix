@@ -23177,6 +23177,7 @@ function updateEstimateSummary() {
   setEl('estKpiJasonCommission', '$'+Math.round(tm.jasonCommission).toLocaleString());
   setEl('estKpiSuperintendentPay', '$'+Math.round(tm.superintendentPay).toLocaleString());
   setEl('estKpiConsultantPay', '$'+Math.round(tm.consultantPay).toLocaleString());
+  setEl('estKpiJasonTotalPay', '$'+Math.round(tm.jasonCommission+tm.superintendentPay+tm.consultantPay).toLocaleString());
 
   setEl('estKpiProfit', '$'+Math.round(profit).toLocaleString(), profit>=0?'#1dbb87':'#ef5350');
   const marginColor = tm.trueMarginPct >= 10 ? '#1dbb87' : tm.trueMarginPct >= 5 ? '#f59e0b' : '#ef5350';
