@@ -26,7 +26,9 @@ const JTXD_LOCKED_RATES = {
   flex: 0.05,       // of the remainder after Overhead + Marketing
   taxes: 0.275,     // of the remainder after Flex
   realLaborCostPct: 0.60, // $180/$300 real subcontractor pay ratio, applied to LABOR BILLED ONLY (never Revenue/materials) -- corrected 2026-09-19 per Travis: subs are paid on billed-equivalent hours (Labor Billed / $300/hr) regardless of actual hours worked; the 0.77 efficiency factor exists ONLY to set the customer-facing days estimate and never touches what a sub is paid or what the company nets. See calcTrueMargin.
-  jasonCommissionPct: 0.05, // Locked 2026-09-25 per Travis: Jason is JTXD's only salesperson (100% of sales) and acting superintendent, paid a 5% commission on Labor Billed -- same tier as realLaborCostPct above (subtracted from Labor Billed before the JTXD Pool is calculated, not carved out of Overhead/Retained Earnings after the fact). Verified against real jobs before locking: at sustained 3-team volume (~$233K/mo Labor Billed), 5% nets Jason ~$11,666/mo (above his stated $10K target) while keeping the tightest real job (Milan) at 10.9% Retained Earnings, comfortably above the 10% Go/No-Go floor. 7% and 8% were both modeled and rejected -- 8% left Milan at 10.03%, no real cushion.
+  jasonCommissionPct: 0.04, // Locked 2026-09-25, SUPERSEDES the earlier 5% same-day lock: Jason's pay is now split three ways -- Sales commission (this rate, 4% of Labor Billed, same tier as realLaborCostPct, subtracted before the JTXD Pool), plus Superintendent and Consultant pay (both below), which come out of the Overhead allocation instead, since that role is ongoing field/advisory work across every job, not a per-sale event. Checked against real jobs before locking: at today's real 3-crew volume (~$135K/mo Labor Billed), 4/2/2 nets Jason $10,800/mo total, with the Overhead bucket still covering the real ~$2,800/mo overhead bill plus both new pieces with ~$548/mo to spare. Honest caveat: at only 2 crews running, Overhead runs about $568/mo short of covering everything -- this structure isn't fully self-sufficient in a slow month, same as every version tried tonight.
+  superintendentPct: 0.02, // Locked 2026-09-25: Jason's ongoing acting-superintendent role, 2% of Labor Billed, paid OUT OF the Overhead allocation (see calcTrueMargin) -- not an additional cut from Labor Billed before the Pool.
+  consultantPct: 0.02, // Locked 2026-09-25: Jason's owner-consultant/mentorship role, 2% of Labor Billed, also paid OUT OF Overhead alongside superintendentPct above.
 };
 
 const esc = s => ((s==null?'':s)).toString().replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -22431,11 +22433,13 @@ function calcTrueMargin(allItems) {
   // real negotiated subcontractor amount once one exists for this job.
   const realLaborCost = laborBilled * JTXD_LOCKED_RATES.realLaborCostPct;
 
-  // Jason's commission -- locked 2026-09-25. Same tier as realLaborCost
-  // above: a real cost subtracted from Labor Billed before the JTXD Pool
-  // exists, not something carved out of Overhead/Retained Earnings
-  // afterward. See JTXD_LOCKED_RATES.jasonCommissionPct for the full
-  // rationale and the numbers that were checked before locking this in.
+  // Jason's SALES commission -- locked 2026-09-25 (this specific piece was
+  // 5% earlier the same day, corrected down to 4% once Superintendent and
+  // Consultant became their own separate pieces below). Same tier as
+  // realLaborCost above: a real cost subtracted from Labor Billed before
+  // the JTXD Pool exists, not something carved out of Overhead/Retained
+  // Earnings afterward. See JTXD_LOCKED_RATES.jasonCommissionPct for the
+  // full rationale and the numbers that were checked before locking this in.
   const jasonCommission = laborBilled * JTXD_LOCKED_RATES.jasonCommissionPct;
 
   // Days to Complete -- two numbers, per Travis (2026-09-19): Billed Hours
@@ -22458,6 +22462,23 @@ function calcTrueMargin(allItems) {
   const jtxdActual = laborBilled - realLaborCost - jasonCommission;
 
   const overhead = jtxdActual * JTXD_LOCKED_RATES.overhead;
+
+  // Superintendent and Consultant pay -- locked 2026-09-25. Both are
+  // percentages of Labor Billed, same as the Sales commission above, but
+  // paid OUT OF the Overhead allocation rather than as an additional cut
+  // before the Pool -- Jason's ongoing field/advisory work isn't a
+  // per-sale event, so it's funded from the same bucket that covers
+  // real recurring overhead costs (rent, utilities, insurance, software),
+  // not carved out of Labor Billed a second time. This does NOT change
+  // the overhead figure subtracted in the waterfall below (still the
+  // full 18% of the Pool) -- these two lines are the transparent
+  // breakdown of what that Overhead money is actually spent on, same
+  // spirit as the Overhead Surplus check in the JTXD_Growth_Model
+  // spreadsheet: real bills + Superintendent + Consultant, with
+  // whatever's left as true company surplus.
+  const superintendentPay = laborBilled * JTXD_LOCKED_RATES.superintendentPct;
+  const consultantPay = laborBilled * JTXD_LOCKED_RATES.consultantPct;
+
   const marketing = jtxdActual * JTXD_LOCKED_RATES.marketing;
   const rem1 = jtxdActual - overhead - marketing;
   const flex = rem1 * JTXD_LOCKED_RATES.flex;
@@ -22469,7 +22490,8 @@ function calcTrueMargin(allItems) {
 
   return {
     materialsCost, materialsPrice, laborCost, laborPrice, revenue,
-    realLaborCost, jasonCommission, estimatedHours, billedHours, efficiencyHours,
+    realLaborCost, jasonCommission, superintendentPay, consultantPay,
+    estimatedHours, billedHours, efficiencyHours,
     billedDays, efficiencyDays, jtxdActual,
     overhead, marketing, flex, taxes,
     retainedEarnings, trueMarginPct
@@ -23153,6 +23175,8 @@ function updateEstimateSummary() {
   // is known for this job.
   setEl('estKpiSubLabor', '$'+Math.round(tm.realLaborCost).toLocaleString());
   setEl('estKpiJasonCommission', '$'+Math.round(tm.jasonCommission).toLocaleString());
+  setEl('estKpiSuperintendentPay', '$'+Math.round(tm.superintendentPay).toLocaleString());
+  setEl('estKpiConsultantPay', '$'+Math.round(tm.consultantPay).toLocaleString());
 
   setEl('estKpiProfit', '$'+Math.round(profit).toLocaleString(), profit>=0?'#1dbb87':'#ef5350');
   const marginColor = tm.trueMarginPct >= 10 ? '#1dbb87' : tm.trueMarginPct >= 5 ? '#f59e0b' : '#ef5350';
