@@ -790,13 +790,22 @@ function isQboFullAccess(token) {
 }
 
 function getQboOAuthConfig() {
-  const cfg = functions.config().qbo || {};
-  if (!cfg.client_id || !cfg.client_secret || !cfg.redirect_uri) return null;
+  // Prefers Secret Manager (process.env), same pattern already used for
+  // QBO_TOKEN_ENCRYPTION_KEY below and for Gmail/Chat/Plivo tonight --
+  // falls back to the legacy functions.config() mechanism (which needs a
+  // local `firebase` CLI session to set, not doable from a browser-only
+  // session) only if the env vars aren't set.
+  const legacy = functions.config().qbo || {};
+  const clientId = process.env.QBO_CLIENT_ID || legacy.client_id;
+  const clientSecret = process.env.QBO_CLIENT_SECRET || legacy.client_secret;
+  const redirectUri = process.env.QBO_REDIRECT_URI || legacy.redirect_uri;
+  const environment = process.env.QBO_ENVIRONMENT || legacy.environment;
+  if (!clientId || !clientSecret || !redirectUri) return null;
   return {
-    clientId: cfg.client_id,
-    clientSecret: cfg.client_secret,
-    redirectUri: cfg.redirect_uri,
-    environment: cfg.environment === 'production' ? 'production' : 'sandbox'
+    clientId,
+    clientSecret,
+    redirectUri,
+    environment: environment === 'production' ? 'production' : 'sandbox'
   };
 }
 
@@ -817,7 +826,7 @@ function qboBasicAuthHeader(cfg) {
 // stricter role check - this connects ONE shared company-wide
 // financial account, so it needs to be locked down harder than an
 // individual's calendar.
-exports.qbOAuthStart = functions.https.onRequest(async (req, res) => {
+exports.qbOAuthStart = functions.runWith({ secrets: ['QBO_CLIENT_ID', 'QBO_CLIENT_SECRET', 'QBO_REDIRECT_URI', 'QBO_ENVIRONMENT', 'QBO_TOKEN_ENCRYPTION_KEY'] }).https.onRequest(async (req, res) => {
   const cfg = getQboOAuthConfig();
   if (!cfg) {
     res.status(500).send('QuickBooks OAuth is not configured yet (functions.config().qbo missing). See functions/DEPLOY_QBO.md.');
@@ -864,7 +873,7 @@ exports.qbOAuthStart = functions.https.onRequest(async (req, res) => {
 // Exchanges the code for tokens and stores the refresh token in the
 // locked-down quickbooksTokens collection (never client-readable),
 // mirroring the googleCalendarTokens pattern above.
-exports.qbOAuthCallback = functions.https.onRequest(async (req, res) => {
+exports.qbOAuthCallback = functions.runWith({ secrets: ['QBO_CLIENT_ID', 'QBO_CLIENT_SECRET', 'QBO_REDIRECT_URI', 'QBO_ENVIRONMENT', 'QBO_TOKEN_ENCRYPTION_KEY'] }).https.onRequest(async (req, res) => {
   const cfg = getQboOAuthConfig();
   if (!cfg) { res.status(500).send('QuickBooks OAuth is not configured yet.'); return; }
   const { code, state, realmId, error } = req.query;
@@ -929,7 +938,7 @@ exports.qbOAuthCallback = functions.https.onRequest(async (req, res) => {
 // Best-effort revokes the token on Intuit's side too (so it also drops
 // out of "My Apps" in their account), then always clears the local
 // connection regardless of whether the revoke call succeeded.
-exports.qbDisconnect = functions.https.onCall(async (data, context) => {
+exports.qbDisconnect = functions.runWith({ secrets: ['QBO_CLIENT_ID', 'QBO_CLIENT_SECRET', 'QBO_REDIRECT_URI', 'QBO_ENVIRONMENT', 'QBO_TOKEN_ENCRYPTION_KEY'] }).https.onCall(async (data, context) => {
   if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be signed in.');
   const companyId = data.companyId;
   if (!companyId || context.auth.token.companyId !== companyId) {
@@ -1162,7 +1171,7 @@ async function ensureQboEstimate(companyId, jobId, qbCustomerId) {
 // invoice. Previously ensureQboEstimate only ran as a side effect of
 // qbCreateInvoice, so there was no way to get a proposal into QBO
 // until the first draw was invoiced. Same auth pattern as qbCreateInvoice.
-exports.qbPushEstimate = functions.https.onCall(async (data, context) => {
+exports.qbPushEstimate = functions.runWith({ secrets: ['QBO_CLIENT_ID', 'QBO_CLIENT_SECRET', 'QBO_REDIRECT_URI', 'QBO_ENVIRONMENT', 'QBO_TOKEN_ENCRYPTION_KEY'] }).https.onCall(async (data, context) => {
   if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be signed in.');
   const { companyId, jobId } = data;
   if (!companyId || !jobId) {
@@ -1302,7 +1311,7 @@ async function syncInvoiceToQbo(companyId, jobId, invoiceId) {
   return { success: true, qbInvoiceId };
 }
 
-exports.qbCreateInvoice = functions.https.onCall(async (data, context) => {
+exports.qbCreateInvoice = functions.runWith({ secrets: ['QBO_CLIENT_ID', 'QBO_CLIENT_SECRET', 'QBO_REDIRECT_URI', 'QBO_ENVIRONMENT', 'QBO_TOKEN_ENCRYPTION_KEY'] }).https.onCall(async (data, context) => {
   if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be signed in.');
   const { companyId, jobId, invoiceId } = data;
   if (!companyId || !jobId || !invoiceId) {
