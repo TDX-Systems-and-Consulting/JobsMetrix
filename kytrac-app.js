@@ -25618,28 +25618,29 @@ function punchListScopeTasks(sub) {
 function printPunchList() {
   const job = conJobs.find(j => j.id === conCurrentJobId);
   const co = companyProfile;
-  const win = window.open('', '_blank');
 
   // Strips tier/product specifics off a bundle-generated name, leaving a
   // generic trade label — "Ceiling Fan Install (High Grade — 52in...) ×1"
   // becomes "Ceiling Fan Install". Crew doesn't need the product spec on
   // the punch list, just what the task is. (toGenericLabel is now shared/global.)
 
-  // Job-wide labor hours (used only for the day-estimate footer — never
-  // shown per room or per item on the printed sheet itself).
-  let totalLaborHours = 0;
+  // Job-wide labor hours (used only for the day-estimate footer -- never
+  // shown per room or per item on the printed sheet itself). MUST use the
+  // same calcTrueMargin() the main dashboard uses -- previously this summed
+  // each labor line item's raw quantity (sqft, linear feet, "ea" counts)
+  // as if every unit were hours, which inflated the total by 20-50x on a
+  // real job (Cleveland: real efficiencyHours ~27, broken sum ~1,080+,
+  // since a 1,000 sqft paint-labor line and a 50 lf fascia-labor line both
+  // got added in as "1000 hours" and "50 hours").
+  let allItemsFlat = [];
 
   const punchPages = [];
 
   estGroups.forEach(group => {
     const allItems = getAllItemsInGroup(group);
+    allItemsFlat.push(...allItems);
     const hasSubgroupScope = (group.subgroups || []).some(sub => punchListScopeTasks(sub).length);
     if (!allItems.length && !hasSubgroupScope) return;
-
-    allItems.forEach(item => {
-      const isLabor = item.costType === 'Labor' || (item.unit||'').toLowerCase() === 'hr';
-      if (isLabor) totalLaborHours += (item.qty || 0);
-    });
 
     // A subgroup is a room. Build one complete printable page for every
     // subgroup instead of combining all rooms beneath the parent group.
@@ -25733,6 +25734,12 @@ function printPunchList() {
 
   // Job-wide crew day estimate — the ONLY place labor time appears on this
   // sheet, and only as a whole-job estimate, not per room or per item.
+  // Real efficiency-adjusted hours, same source as the dashboard's
+  // "Days to Complete (Billed / Efficiency)" tile -- efficiencyHours is
+  // the realistic, single-person-equivalent hour count; dividing by
+  // (crew size x 8) gives a real calendar-day estimate for that crew size.
+  const tm = calcTrueMargin(allItemsFlat);
+  const totalLaborHours = tm.efficiencyHours;
   const days2Man = totalLaborHours > 0 ? Math.ceil(totalLaborHours / (2 * 8)) : 0;
   const days3Man = totalLaborHours > 0 ? Math.ceil(totalLaborHours / (3 * 8)) : 0;
   const dayEstimateBlock = totalLaborHours > 0 ? `
@@ -25743,7 +25750,7 @@ function printPunchList() {
       </div>
     </div>` : '';
 
-  win.document.write(`<!DOCTYPE html><html><head><title>Punch List — ${esc(job?.name||'')}</title>
+  const html = `<!DOCTYPE html><html><head><title>Punch List — ${esc(job?.name||'')}</title>
   <style>
     body{font-family:Arial,sans-serif;max-width:900px;margin:20px auto;padding:0 16px;color:#111}
     @media print{body{margin:10px} .no-print{display:none} section{break-inside:avoid;page-break-inside:avoid} div{page-break-inside:avoid}}
@@ -25757,9 +25764,20 @@ function printPunchList() {
   </div>
   <div style="margin-top:16px;text-align:center;color:#9ca3af;font-size:.75rem">
     ${esc(co.companyName||'')} Punch List · ${esc(job?.name||'')} · Printed ${new Date().toLocaleString()}
-  </div>
-  <script>window.print();<\/script></body></html>`);
-  win.document.close();
+  </div></body></html>`;
+
+  // Same fix already proven for View Proposal and printEstimate (Print
+  // Internal): window.open('', '_blank') + document.write stranded a
+  // dead-end tab on mobile with no back button, made worse here by the
+  // old <script>window.print()</script> auto-firing the OS print sheet
+  // immediately, covering the screen with no visible way out -- exactly
+  // what Travis reported (had to force-close and restart the app).
+  // Reusing the existing in-app modal instead; its own 🖨 Print button
+  // covers printing when the person actually wants it.
+  const titleEl = document.getElementById('viewProposalModalTitle');
+  if (titleEl) titleEl.textContent = '🖨 Punch List — ' + (job?.name || '');
+  document.getElementById('viewProposalIframe').srcdoc = html;
+  kOpen('viewProposalModal');
 }
 
 // Expose estimate functions
