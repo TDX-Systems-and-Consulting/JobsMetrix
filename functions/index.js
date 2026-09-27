@@ -139,6 +139,19 @@ function getTwilioClient() {
   return { client: twilio(sid, token), from };
 }
 
+// Plivo -- replaces Twilio for SMS, migrated 2026-09-26. Deliberately a
+// SEPARATE company from Twilio/SendGrid (which merged Feb 2026) -- the
+// whole point is not having one account review able to take down email
+// AND texting at once, same lesson as the Gmail migration earlier.
+function getPlivoClient() {
+  const authId = process.env.PLIVO_AUTH_ID;
+  const authToken = process.env.PLIVO_AUTH_TOKEN;
+  const from = process.env.PLIVO_FROM;
+  if (!authId || !authToken || !from) return null;
+  const plivo = require('plivo');
+  return { client: new plivo.Client(authId, authToken), from };
+}
+
 // syncMyClaims
 // ────────────
 // Sets Firebase Auth Custom Claims (companyId, role, fullAccessOverride)
@@ -1957,7 +1970,7 @@ async function sendPaymentConfirmationEmail(companyId, job, inv, amountPaidNow, 
   });
 }
 
-exports.sendMessageNotificationSms = functions.firestore
+exports.sendMessageNotificationSms = functions.runWith({ secrets: ['PLIVO_AUTH_ID', 'PLIVO_AUTH_TOKEN', 'PLIVO_FROM'] }).firestore
   .document('companies/{companyId}/jobs/{jobId}/messages/{messageId}')
   .onCreate(async (snap, context) => {
     const msg = snap.data();
@@ -1965,10 +1978,10 @@ exports.sendMessageNotificationSms = functions.firestore
       return null;
     }
 
-    const twilioSetup = getTwilioClient();
-    if (!twilioSetup) {
-      console.warn('Twilio not configured (functions.config().twilio missing) - skipping SMS, marking as skipped.');
-      return snap.ref.update({ notifyStatus: 'skipped_no_twilio_config' });
+    const plivoSetup = getPlivoClient();
+    if (!plivoSetup) {
+      console.warn('Plivo not configured (PLIVO_AUTH_ID/PLIVO_AUTH_TOKEN/PLIVO_FROM missing) - skipping SMS, marking as skipped.');
+      return snap.ref.update({ notifyStatus: 'skipped_no_plivo_config' });
     }
 
     const { companyId, jobId } = context.params;
@@ -1988,14 +2001,10 @@ exports.sendMessageNotificationSms = functions.firestore
     for (const target of msg.notifyTargets) {
       if (!target.phone) { results.push({ ...target, status: 'skipped_no_phone' }); continue; }
       try {
-        await twilioSetup.client.messages.create({
-          body: smsBody,
-          from: twilioSetup.from,
-          to: target.phone
-        });
+        await plivoSetup.client.messages.create(plivoSetup.from, target.phone, smsBody);
         results.push({ ...target, status: 'sent' });
       } catch (err) {
-        console.error('Twilio send failed for', target.phone, err.message);
+        console.error('Plivo send failed for', target.phone, err.message);
         results.push({ ...target, status: 'failed', error: err.message });
       }
     }
@@ -2007,6 +2016,61 @@ exports.sendMessageNotificationSms = functions.firestore
       notifiedAt: admin.firestore.FieldValue.serverTimestamp()
     });
   });
+
+// plivoInboundSms -- NEW, 2026-09-26. The genuinely new half: a customer's
+// real text-message reply to your business number. Plivo POSTs
+// form-encoded From/To/Text (confirmed against Plivo's current docs, not
+// assumed from Twilio's shape) to whatever URL this function deploys to
+// -- that URL gets configured as the "Message URL" on the Plivo
+// Application tied to your number.
+//
+// Matches the inbound number against job.phone. If more than one job
+// shares that phone number (a repeat customer), picks the most recently
+// updated one rather than guessing wrong or breaking -- flagged here so
+// it's a known, deliberate choice, not silently arbitrary.
+exports.plivoInboundSms = functions.https.onRequest(async (req, res) => {
+  const from = req.body.From || req.query.From;
+  const text = req.body.Text || req.query.Text;
+  if (!from || !text) { res.status(200).send('ignored'); return; }
+
+  const db = admin.firestore();
+  const companiesSnap = await db.collection('companies').get();
+
+  let matchedJob = null, matchedCompanyId = null;
+  for (const companyDoc of companiesSnap.docs) {
+    const jobsSnap = await companyDoc.ref.collection('jobs')
+      .where('phone', '==', from)
+      .orderBy('updatedAt', 'desc')
+      .limit(1)
+      .get();
+    if (!jobsSnap.empty) {
+      matchedJob = jobsSnap.docs[0];
+      matchedCompanyId = companyDoc.id;
+      break;
+    }
+  }
+
+  if (!matchedJob) {
+    console.warn('plivoInboundSms: no job found with phone', from);
+    res.status(200).send('no match');
+    return;
+  }
+
+  await matchedJob.ref.collection('messages').add({
+    text,
+    authorEmail: '',
+    authorName: matchedJob.data().client || 'Customer',
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    createdMs: Date.now(),
+    companyId: matchedCompanyId,
+    fromCustomer: true,
+    visibleToCustomer: true,
+    notifyTargets: [], // this message IS the notification -- don't re-text
+    notifyStatus: 'none',
+  });
+
+  res.status(200).send('received');
+});
 
 // ════════════════════════════════════════════════════
 // ── sendJobspanEmail ─────────────────────────────────
