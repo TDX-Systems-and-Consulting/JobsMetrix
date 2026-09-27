@@ -12927,34 +12927,40 @@ async function emailInvoiceToCustomer(jobId, invId) {
   } catch(e) {}
   if (!inv) { alert('Invoice not found.'); return; }
 
-  // STRIPE-ONLY: emailed invoices must carry a Stripe payment link and
-  // NOTHING from QuickBooks. Generate a fresh Stripe link for the
-  // remaining balance every send. If Stripe fails, we send with NO pay
-  // button rather than silently falling back to a QuickBooks link.
-  let stripePayLink = '';
-  let stripeErrorMsg = '';
-  try {
-    if (conFunctions && (inv.total || 0) > (inv.amtPaid || 0)) {
-      const createLink = conFunctions.httpsCallable('createStripePaymentLink');
-      const result = await createLink({ companyId: currentCompanyId, jobId, invoiceId: invId });
-      if (result.data?.url) stripePayLink = result.data.url;
+  // QUICKBOOKS-ONLY, switched from Stripe 2026-09-27 per Travis: push
+  // this invoice to QuickBooks (creating it there if it doesn't exist
+  // yet) and use QuickBooks Payments' own hosted link -- QBO already
+  // captures this automatically as qbPaymentLink whenever an invoice is
+  // pushed (see syncInvoiceToQbo in functions/index.js), it was just
+  // never used here since Stripe was deliberately preferred before.
+  // Same safety rule as the old Stripe version, just pointed at QBO
+  // instead: if there's a balance owed and QBO can't produce a link
+  // (push failed, or QuickBooks Payments isn't enabled on the connected
+  // company), stop and tell Travis rather than emailing a linkless
+  // invoice.
+  let qbPayLink = '';
+  let qbErrorMsg = '';
+  const balanceOwed = (inv.total || 0) - (inv.amtPaid || 0);
+  if (conFunctions && balanceOwed > 0) {
+    try {
+      const pushToQbo = conFunctions.httpsCallable('qbCreateInvoice');
+      await pushToQbo({ companyId: currentCompanyId, jobId, invoiceId: invId });
+      // qbCreateInvoice writes qbPaymentLink onto the Firestore invoice
+      // doc server-side rather than returning it directly -- re-fetch
+      // to pick it up.
+      const freshDoc = await coll('jobs').doc(jobId).collection('invoices').doc(invId).get();
+      if (freshDoc.exists) qbPayLink = freshDoc.data().qbPaymentLink || '';
+    } catch (e) {
+      qbErrorMsg = e.message || String(e);
+      console.warn('QuickBooks push/payment link failed:', qbErrorMsg);
     }
-  } catch (e) {
-    stripeErrorMsg = e.message || String(e);
-    console.warn('Stripe payment link not generated:', stripeErrorMsg);
   }
 
-  // If there's a balance owed but Stripe couldn't produce a link, stop
-  // and tell Travis rather than emailing a linkless (or worse, QB-linked)
-  // invoice. The real error now shows directly in this alert -- not
-  // just the browser console -- since debugging from a phone with no
-  // console access otherwise means finding a computer just to read
-  // one error message.
-  if ((inv.total || 0) > (inv.amtPaid || 0) && !stripePayLink) {
-    alert('Could not generate a Stripe payment link for this invoice.\n\n'
-      + 'The invoice was NOT sent (to avoid emailing a QuickBooks link or no link at all).\n\n'
-      + (stripeErrorMsg ? ('Actual error: ' + stripeErrorMsg + '\n\n') : '')
-      + 'Check that Stripe is connected under Settings, then try again.');
+  if (balanceOwed > 0 && !qbPayLink) {
+    alert('Could not get a QuickBooks payment link for this invoice.\n\n'
+      + 'The invoice was NOT sent (to avoid emailing it with no way to pay).\n\n'
+      + (qbErrorMsg ? ('Actual error: ' + qbErrorMsg + '\n\n') : '')
+      + 'Check that QuickBooks is connected under Settings and that QuickBooks Payments is enabled on that account, then try again.');
     return;
   }
 
@@ -12963,7 +12969,7 @@ async function emailInvoiceToCustomer(jobId, invId) {
   const invNum = inv.number || 'Invoice';
   const total = (inv.total || 0).toLocaleString(undefined, {minimumFractionDigits:2});
   const due = inv.dueDate || '';
-  const payLink = stripePayLink; // Stripe only — never inv.qbPaymentLink
+  const payLink = qbPayLink; // QuickBooks only — Stripe removed from this flow
 
   // Get portal link for invoice viewing
   let portalUrl = '';
@@ -14169,9 +14175,10 @@ function renderInvoiceDocumentHtml(inv, job, otherInvoices, forPrint) {
 
     (inv.notes ? '<div style="background:#f9fafb;border-radius:8px;padding:14px;font-size:.85rem;color:#4b5563;margin-bottom:20px"><strong>Notes & Terms:</strong><br><br>' + esc(inv.notes) + '</div>' : '') +
 
-    (inv.paymentLink ?
+    // QuickBooks only — switched from Stripe 2026-09-27 per Travis.
+    (inv.qbPaymentLink ?
       '<div style="text-align:center;margin:24px 0">' +
-      '<a href="' + inv.paymentLink + '" style="display:inline-block;background:#d97706;color:#fff;font-size:1.1rem;font-weight:800;padding:16px 48px;border-radius:12px;text-decoration:none;letter-spacing:.02em">💳 Pay Now</a>' +
+      '<a href="' + inv.qbPaymentLink + '" style="display:inline-block;background:#d97706;color:#fff;font-size:1.1rem;font-weight:800;padding:16px 48px;border-radius:12px;text-decoration:none;letter-spacing:.02em">💳 Pay Now</a>' +
       '<div style="font-size:.76rem;color:#9ca3af;margin-top:8px">Click to pay securely</div>' +
       '</div>' : '') +
 
@@ -18444,7 +18451,7 @@ function renderPortalInvoices(invs, jobId) {
   el.innerHTML = invs.map(inv => {
     const bal = (inv.total||0) - (inv.amtPaid||0);
     const sColor = statusColors[inv.status] || 'var(--muted)';
-    const payLink = inv.paymentLink; // Stripe only — never inv.qbPaymentLink in the customer portal
+    const payLink = inv.qbPaymentLink; // QuickBooks only — switched from Stripe 2026-09-27 per Travis
     const payBtn = payLink && bal > 0 && inv.status !== 'Paid'
       ? `<a href="${payLink}" target="_blank" style="display:inline-block;margin-top:8px;background:#d97706;color:#fff;font-size:.78rem;font-weight:800;padding:7px 18px;border-radius:8px;text-decoration:none">💳 Pay Now</a>`
       : '';
