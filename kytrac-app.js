@@ -18076,13 +18076,20 @@ window.openJobDetail = function(jobId) {
 let globalPhases = []; // [{...jobData, crewNames}] -- one entry per scheduled job
 
 // Simplified 2026-09-28 per Travis: one calendar entry per JOB (job number
-// + who's assigned), not one per room. Uses the job's own startDate/endDate
-// and its crew list (job.crew, set under that job's Edit button) -- both
-// already sitting in memory on conJobs, so this no longer needs to fetch
-// each job's Rooms at all.
+// + who's assigned), not one per room.
+//
+// Fixed same day: originally read job.startDate/endDate/crew straight off
+// the in-memory conJobs array. Same staleness bug already found and fixed
+// once tonight for updateJobDate's cascade trigger -- conJobs doesn't
+// necessarily reflect a crew edit by the time this runs right after
+// saving, so a job saved with 3 people checked could still show just 1
+// (whatever was true before the edit). Now re-reads every job fresh from
+// Firestore instead of trusting the local cache, same fix, same reason.
 async function loadGlobalPhases() {
-  if (!conJobs.length) return;
-  globalPhases = conJobs
+  if (!conDb || !currentCompanyId) return;
+  const snap = await coll('jobs').get();
+  globalPhases = snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
     .filter(job => job.startDate && job.endDate)
     .map(job => ({
       id: job.id, jobId: job.id,
