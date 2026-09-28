@@ -3448,3 +3448,38 @@ exports.ghlWebhookReceiver = functions.https.onRequest(async (req, res) => {
     // No re-throw -- response already sent, this is just for Cloud Logging.
   }
 });
+
+// TEMPORARY DEBUG -- checking JOB-2026-683's real schedule data. Delete after use.
+exports.debugCheckSchedule = functions.https.onRequest(async (req, res) => {
+  const term = (req.query.q || '2026-683').toLowerCase();
+  const db = admin.firestore();
+  const companiesSnap = await db.collection('companies').get();
+  const out = [];
+  for (const companyDoc of companiesSnap.docs) {
+    const jobsSnap = await companyDoc.ref.collection('jobs').get();
+    for (const jobDoc of jobsSnap.docs) {
+      const j = jobDoc.data();
+      const hay = `${j.name || ''} ${j.jobNumber || ''}`.toLowerCase();
+      if (!hay.includes(term)) continue;
+      const epicsSnap = await jobDoc.ref.collection('estimateGroups').get();
+      const epics = [];
+      for (const epicDoc of epicsSnap.docs) {
+        const subSnap = await epicDoc.ref.collection('subgroups').get();
+        epics.push({
+          epicId: epicDoc.id,
+          epicName: epicDoc.data().name,
+          rooms: subSnap.docs.map(s => ({
+            roomId: s.id, name: s.data().name,
+            startDate: s.data().startDate || null, endDate: s.data().endDate || null,
+          })),
+        });
+      }
+      out.push({
+        jobId: jobDoc.id, name: j.name, jobNumber: j.jobNumber,
+        status: j.status, startDate: j.startDate || null, endDate: j.endDate || null,
+        crew: j.crew || null, epics,
+      });
+    }
+  }
+  res.json({ count: out.length, matches: out });
+});
