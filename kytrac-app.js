@@ -18068,59 +18068,43 @@ window.openJobDetail = function(jobId) {
 // ════════════════════════════════════════════════════
 // ── GLOBAL PHASES (for Calendar) ──
 // ════════════════════════════════════════════════════
-let globalPhases = []; // [{...phaseData, jobId, jobName}]
+let globalPhases = []; // [{...phaseData, jobId, jobName}] -- built from real Room (Feature) data
 
-function loadGlobalPhases() {
-  if (!conDb) return;
-  // Try collectionGroup first
-  conDb.collectionGroup('phases').where('companyId','==',currentCompanyId)
-    .orderBy('startDate')
-    .onSnapshot(snap => {
-      globalPhases = [];
-      snap.forEach(doc => {
-        const jobId = doc.ref.parent.parent.id;
-        const job = conJobs.find(j => j.id === jobId);
-        if (!job) return;
-        globalPhases.push({
-          id: doc.id, jobId,
-          jobName: job.name,
-          jobNumber: job.jobNumber || '',
-          ...doc.data()
-        });
-      });
-      // Re-render calendar if visible
-      const calPage = document.getElementById('ktPageCalendar');
-      if (calPage?.classList.contains('active')) renderCalendar();
-    }, () => {
-      loadGlobalPhasesFallback();
-    });
-}
-
-function loadGlobalPhasesFallback() {
+// Fixed 2026-09-28: this used to watch jobs/{jobId}/phases -- the OLD flat
+// collection that was replaced by estimateGroups/subgroups when the
+// Gantt/Epic rework shipped (same abandoned-path bug already found and
+// fixed for pushPhaseToGCal's Google Calendar trigger, just never caught
+// here too). Nothing writes to that old collection anymore, so this
+// overlay could never show any job's current schedule, no matter how
+// correctly a room's dates were set. Rebuilt to pull real Room-level data
+// via the same loadEpicTree() every other schedule view already uses.
+//
+// Tradeoff: the old version used a live onSnapshot listener for instant
+// updates; reproducing that across every room of every job would mean a
+// listener per room company-wide. This loads once per call instead --
+// re-navigating to the Calendar page (which calls this) picks up recent
+// changes; it won't update itself the instant a date changes elsewhere.
+async function loadGlobalPhases() {
   if (!conDb || !conJobs.length) return;
-  globalPhases = [];
-  let pending = conJobs.length;
-  conJobs.forEach(job => {
-    coll('jobs').doc(job.id).collection('phases')
-      .orderBy('startDate').get()
-      .then(snap => {
-        snap.forEach(doc => {
-          globalPhases.push({
-            id: doc.id, jobId: job.id,
-            jobName: job.name, jobNumber: job.jobNumber || '',
-            ...doc.data()
-          });
+  const results = await Promise.all(conJobs.map(async job => {
+    try {
+      const epics = await loadEpicTree(job.id);
+      const rooms = [];
+      epics.forEach(epic => (epic.features || []).forEach(feature => {
+        if (!feature.startDate) return;
+        rooms.push({
+          id: feature.id, jobId: job.id,
+          jobName: job.name, jobNumber: job.jobNumber || '',
+          name: feature.name, status: feature.status,
+          startDate: feature.startDate, endDate: feature.endDate,
         });
-      })
-      .catch(() => {})
-      .finally(() => {
-        pending--;
-        if (pending === 0) {
-          const calPage = document.getElementById('ktPageCalendar');
-          if (calPage?.classList.contains('active')) renderCalendar();
-        }
-      });
-  });
+      }));
+      return rooms;
+    } catch (e) { return []; }
+  }));
+  globalPhases = results.flat();
+  const calPage = document.getElementById('ktPageCalendar');
+  if (calPage?.classList.contains('active')) renderCalendar();
 }
 
 // ── Update getCalEvents to include phases ──
