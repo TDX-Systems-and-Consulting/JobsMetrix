@@ -18068,41 +18068,23 @@ window.openJobDetail = function(jobId) {
 // ════════════════════════════════════════════════════
 // ── GLOBAL PHASES (for Calendar) ──
 // ════════════════════════════════════════════════════
-let globalPhases = []; // [{...phaseData, jobId, jobName}] -- built from real Room (Feature) data
+let globalPhases = []; // [{...jobData, crewNames}] -- one entry per scheduled job
 
-// Fixed 2026-09-28: this used to watch jobs/{jobId}/phases -- the OLD flat
-// collection that was replaced by estimateGroups/subgroups when the
-// Gantt/Epic rework shipped (same abandoned-path bug already found and
-// fixed for pushPhaseToGCal's Google Calendar trigger, just never caught
-// here too). Nothing writes to that old collection anymore, so this
-// overlay could never show any job's current schedule, no matter how
-// correctly a room's dates were set. Rebuilt to pull real Room-level data
-// via the same loadEpicTree() every other schedule view already uses.
-//
-// Tradeoff: the old version used a live onSnapshot listener for instant
-// updates; reproducing that across every room of every job would mean a
-// listener per room company-wide. This loads once per call instead --
-// re-navigating to the Calendar page (which calls this) picks up recent
-// changes; it won't update itself the instant a date changes elsewhere.
+// Simplified 2026-09-28 per Travis: one calendar entry per JOB (job number
+// + who's assigned), not one per room. Uses the job's own startDate/endDate
+// and its crew list (job.crew, set under that job's Edit button) -- both
+// already sitting in memory on conJobs, so this no longer needs to fetch
+// each job's Rooms at all.
 async function loadGlobalPhases() {
-  if (!conDb || !conJobs.length) return;
-  const results = await Promise.all(conJobs.map(async job => {
-    try {
-      const epics = await loadEpicTree(job.id);
-      const rooms = [];
-      epics.forEach(epic => (epic.features || []).forEach(feature => {
-        if (!feature.startDate) return;
-        rooms.push({
-          id: feature.id, jobId: job.id,
-          jobName: job.name, jobNumber: job.jobNumber || '',
-          name: feature.name, status: feature.status,
-          startDate: feature.startDate, endDate: feature.endDate,
-        });
-      }));
-      return rooms;
-    } catch (e) { return []; }
-  }));
-  globalPhases = results.flat();
+  if (!conJobs.length) return;
+  globalPhases = conJobs
+    .filter(job => job.startDate && job.endDate)
+    .map(job => ({
+      id: job.id, jobId: job.id,
+      jobName: job.name, jobNumber: job.jobNumber || job.name,
+      startDate: job.startDate, endDate: job.endDate,
+      crewNames: (job.crew || []).map(c => c.name || c.email).filter(Boolean),
+    }));
   const calPage = document.getElementById('ktPageCalendar');
   if (calPage?.classList.contains('active')) renderCalendar();
 }
@@ -18111,21 +18093,20 @@ async function loadGlobalPhases() {
 function getCalEvents(dateISO) {
   const events = [];
 
-  // Phases — show on every day between startDate and endDate
-  globalPhases.forEach(phase => {
-    if (!phase.startDate) return;
-    const start = phase.startDate;
-    const end = phase.endDate || phase.startDate;
+  // Jobs — show on every day between startDate and endDate, one entry per
+  // job (job number + assigned crew), not one per room.
+  globalPhases.forEach(job => {
+    if (!job.startDate) return;
+    const start = job.startDate;
+    const end = job.endDate || job.startDate;
     if (dateISO >= start && dateISO <= end) {
-      const statusColors = { 'not-started':'#6b7280', 'in-progress':'#0d9488', 'complete':'#1dbb87' };
-      const color = statusColors[phase.status] || '#0d9488';
-      const isStart = dateISO === start;
+      const crewLabel = job.crewNames.length ? job.crewNames.join(', ') : 'Unassigned';
       events.push({
         type: 'phase',
-        label: `${isStart ? '' : ''}${esc(phase.name||'Phase')} — ${esc(phase.jobName)}`,
-        color,
-        id: phase.id,
-        jobId: phase.jobId
+        label: `${esc(job.jobNumber)} — ${esc(crewLabel)}`,
+        color: '#0d9488',
+        id: job.id,
+        jobId: job.jobId
       });
     }
   });
