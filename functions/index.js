@@ -601,85 +601,100 @@ exports.pushPersonalEventToGCal = functions.firestore
 
 // pushPhaseToGCal
 // ───────────────
-// Job phases are shared across whoever's on the crew, not one person -
-// push to every crew member's calendar who's connected. Tracks each
-// person's Google event ID separately (gcalEventIds: {uid: eventId}),
-// since one JOBSpan phase can correspond to several different Google
-// Calendar events (one per crew member).
-// Trigger comment: redeploy after granting Cloud Scheduler Admin to
-// the deploy service account (9/1/26) -- confirming dailyKpiRefresh
-// finally deploys clean.
-// Watches Features (subgroups) under the current Epic/Feature/Task
-// project model, NOT the old flat jobs/{jobId}/phases/{phaseId}
-// collection this used to watch. That collection was replaced by
-// estimateGroups/subgroups when the Gantt/Epic rework shipped --
-// openAddPhaseModal and every other phase-creation path now write
-// there instead, and migrateLegacyPhaseToFeature exists specifically
-// to move old phases docs into this newer model and delete the
-// original. This function's trigger was never updated to follow that
-// move, so it had been silently watching an effectively abandoned
-// path -- any Feature scheduled after that migration never fired a
-// Firestore write pushPhaseToGCal would see, regardless of whether a
-// team member's Google Calendar was correctly connected.
+// Simplified 2026-09-28 per Travis: now JOB-level, not per-room. Every
+// scheduled job pushes ONE event PER WORK DAY (Mon-Fri) in its
+// startDate..endDate range, 8:00 AM - 4:30 PM Central, to every crew
+// member's calendar who's connected -- not one giant multi-day banner,
+// and not one event per room. Fires on the job document itself now,
+// watching crew/startDate/endDate specifically (not every unrelated job
+// edit -- notes, phone number, etc. shouldn't touch anyone's calendar).
+//
+// gcalEventIds is now nested: {uid: {'YYYY-MM-DD': eventId}}, so each
+// person's each individual work day is tracked separately -- needed to
+// correctly add newly-covered days, update ones whose time didn't
+// change, and delete days that fall out of range (job shortened, a crew
+// member removed) without touching days that are still valid.
+function listWorkDaysISO(startISO, endISO) {
+  const days = [];
+  const d = new Date(startISO + 'T00:00:00');
+  const end = new Date(endISO + 'T00:00:00');
+  while (d <= end) {
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) days.push(d.toISOString().split('T')[0]);
+    d.setDate(d.getDate() + 1);
+  }
+  return days;
+}
+
 exports.pushPhaseToGCal = functions.firestore
-  .document('companies/{companyId}/jobs/{jobId}/estimateGroups/{epicId}/subgroups/{subgroupId}')
+  .document('companies/{companyId}/jobs/{jobId}')
   .onWrite(async (change, context) => {
     const { companyId, jobId } = context.params;
     const before = change.before.exists ? change.before.data() : null;
     const after = change.after.exists ? change.after.data() : null;
+    if (!after) return null; // job deleted -- leaving stray calendar events rather than guessing is safer than a delete-everything path here
 
-    // Only push Features that actually carry a schedule -- most
-    // subgroups are created with no startDate at all (set later via
-    // the Gantt) and shouldn't produce a dateless calendar event.
-    if (!after?.startDate && !before?.startDate) return null;
+    const crewChanged = JSON.stringify(before?.crew||[]) !== JSON.stringify(after?.crew||[]);
+    const datesChanged = before?.startDate !== after?.startDate || before?.endDate !== after?.endDate;
+    if (!crewChanged && !datesChanged) return null;
 
-    const db = admin.firestore();
-    const jobDoc = await db.collection('companies').doc(companyId).collection('jobs').doc(jobId).get();
-    const job = jobDoc.exists ? jobDoc.data() : null;
-    const crew = job?.crew || [];
-    if (!crew.length) return null;
+    const newWorkDays = (after.startDate && after.endDate) ? listWorkDaysISO(after.startDate, after.endDate) : [];
+    const newWorkDaySet = new Set(newWorkDays);
 
-    const gcalEventIds = { ...(after?.gcalEventIds || before?.gcalEventIds || {}) };
+    // Union of before+after crew, so someone just REMOVED from crew
+    // still gets their stale events cleaned up, not just skipped.
+    const allMembers = [...(before?.crew||[]), ...(after?.crew||[])];
+    const seenEmails = new Set();
+    const gcalEventIds = { ...(after.gcalEventIds || {}) };
     let idsChanged = false;
 
-    for (const member of crew) {
-      if (!member.email) continue;
+    for (const member of allMembers) {
+      if (!member.email || seenEmails.has(member.email)) continue;
+      seenEmails.add(member.email);
       const uid = await getUidForEmail(member.email);
       if (!uid) continue;
       const cal = await getCalendarClientForUser(companyId, uid);
       if (!cal) continue;
 
-      if (!after || !after.startDate) {
-        // Feature deleted, or its schedule was cleared - remove from
-        // this person's calendar if we'd pushed one.
-        if (gcalEventIds[uid]) {
-          try { await cal.events.delete({ calendarId: 'primary', eventId: gcalEventIds[uid] }); }
-          catch (e) { console.warn('gcal feature delete failed:', e.message); }
-        }
-        continue;
+      const stillOnCrew = (after.crew||[]).some(c => c.email === member.email);
+      const existingDays = { ...(gcalEventIds[uid] || {}) };
+
+      // Delete any previously-created day that's no longer valid: job
+      // shortened, dates cleared, or this person removed from crew.
+      for (const isoDate of Object.keys(existingDays)) {
+        if (stillOnCrew && newWorkDaySet.has(isoDate)) continue;
+        try { await cal.events.delete({ calendarId: 'primary', eventId: existingDays[isoDate] }); }
+        catch (e) { console.warn('gcal day delete failed:', e.message); }
+        delete existingDays[isoDate];
+        idsChanged = true;
       }
 
-      const eventBody = {
-        summary: `${after.name || 'Feature'} — ${job.name || 'Job'}`,
-        description: `JOBSpan job feature${job.jobNumber ? ' (' + job.jobNumber + ')' : ''}`,
-        start: { date: after.startDate },
-        end: { date: after.endDate || after.startDate }
-      };
-
-      try {
-        if (gcalEventIds[uid]) {
-          await cal.events.update({ calendarId: 'primary', eventId: gcalEventIds[uid], requestBody: eventBody });
-        } else {
-          const created = await cal.events.insert({ calendarId: 'primary', requestBody: eventBody });
-          gcalEventIds[uid] = created.data.id;
-          idsChanged = true;
+      if (stillOnCrew) {
+        for (const isoDate of newWorkDays) {
+          const eventBody = {
+            summary: `${after.jobNumber || after.name || 'Job'} — ${after.name || ''}`.trim(),
+            description: `JOBSpan job schedule${after.jobNumber ? ' (' + after.jobNumber + ')' : ''}`,
+            start: { dateTime: `${isoDate}T08:00:00`, timeZone: 'America/Chicago' },
+            end: { dateTime: `${isoDate}T16:30:00`, timeZone: 'America/Chicago' },
+          };
+          try {
+            if (existingDays[isoDate]) {
+              await cal.events.update({ calendarId: 'primary', eventId: existingDays[isoDate], requestBody: eventBody });
+            } else {
+              const created = await cal.events.insert({ calendarId: 'primary', requestBody: eventBody });
+              existingDays[isoDate] = created.data.id;
+              idsChanged = true;
+            }
+          } catch (e) {
+            console.error('pushPhaseToGCal failed for', member.email, isoDate, ':', e.message);
+          }
         }
-      } catch (e) {
-        console.error('pushPhaseToGCal failed for', member.email, ':', e.message);
       }
+
+      gcalEventIds[uid] = existingDays;
     }
 
-    if (after && idsChanged) {
+    if (idsChanged) {
       await change.after.ref.update({ gcalEventIds });
     }
     return null;

@@ -16684,12 +16684,15 @@ function renderWeekView(weekStart) {
       </div>`;
     }).join('');
 
-  // All-day events row (phases, todos without time)
+  // All-day events row (to-dos and generic events without a specific
+  // time). Job schedule entries (phase) now carry a fixed 8am-4:30pm
+  // window per Travis, so they render in the hourly grid at 8am instead
+  // of sitting in this row.
   const allDayRow = '<div style="font-size:.65rem;color:var(--muted);padding:4px;text-align:right;border-bottom:1px solid rgba(110,145,210,.1)">all-day</div>' +
     weekDays.map(({iso}) => {
-      const allDay = window.getCalEvents(iso).filter(e => e.type === 'phase' || (e.type === 'todo') || (e.type === 'event' && !e.ev?.time));
+      const allDay = window.getCalEvents(iso).filter(e => (e.type === 'todo') || (e.type === 'event' && !e.ev?.time));
       return `<div style="padding:2px;border-bottom:1px solid rgba(110,145,210,.1);min-height:28px">
-        ${allDay.map(e => `<span class="cal-event-pill" style="background:${e.color}20;color:${e.color};border-left-color:${e.color};font-size:.62rem;cursor:${e.type==='phase'||e.type==='event'?'pointer':'default'}" onclick="event.stopPropagation();${e.type==='phase'?`openJobDetail('${e.jobId}');switchDetailTab('phases',null)`:e.type==='event'?`openCalEventModal('${e.id}')`:''}" title="${e.label}">${e.label.slice(0,20)}${e.label.length>20?'…':''}</span>`).join('')}
+        ${allDay.map(e => `<span class="cal-event-pill" style="background:${e.color}20;color:${e.color};border-left-color:${e.color};font-size:.62rem;cursor:${e.type==='event'?'pointer':'default'}" onclick="event.stopPropagation();${e.type==='event'?`openCalEventModal('${e.id}')`:''}" title="${e.label}">${e.label.slice(0,20)}${e.label.length>20?'…':''}</span>`).join('')}
       </div>`;
     }).join('');
 
@@ -16716,6 +16719,8 @@ function renderWeekView(weekStart) {
             return new Date(entry.clockInISO).getHours() === h;
           }
         }
+        // Job schedule entries render once, at their fixed 8am start.
+        if (e.type === 'phase') return h === 8;
         return false;
       });
 
@@ -16724,7 +16729,7 @@ function renderWeekView(weekStart) {
 
       rows += `<div style="border-top:1px solid rgba(110,145,210,.06);min-height:48px;padding:2px;position:relative;background:${isToday?'rgba(217,119,6,.03)':'transparent'}">
         ${timeBarPos >= 0 ? `<div style="position:absolute;left:0;right:0;top:${timeBarPos}%;height:2px;background:var(--amber);z-index:2;opacity:.7"></div>` : ''}
-        ${timedEvents.map(e => `<span class="cal-event-pill" style="background:${e.color}20;color:${e.color};border-left-color:${e.color};font-size:.68rem;cursor:pointer" onclick="${e.type==='event'?`openCalEventModal('${e.id}')`:''}">
+        ${timedEvents.map(e => `<span class="cal-event-pill" style="background:${e.color}20;color:${e.color};border-left-color:${e.color};font-size:.68rem;cursor:pointer" onclick="${e.type==='event'?`openCalEventModal('${e.id}')`:e.type==='phase'?`openJobDetail('${e.jobId}');switchDetailTab('phases',null)`:''}" title="${e.type==='phase'?'8:00 AM - 4:30 PM · ':''}${e.label}">
           ${e.label.slice(0,22)}${e.label.length>22?'…':''}
           ${e.ev?.meetLink?`<a href="${e.ev.meetLink}" target="_blank" onclick="event.stopPropagation()" style="color:#fff;font-size:.6rem;background:#0d9488;border-radius:3px;padding:0 3px;margin-left:2px;text-decoration:none">🎥 Join</a>`:''}
         </span>`).join('')}
