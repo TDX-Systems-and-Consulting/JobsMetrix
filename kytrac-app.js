@@ -4669,15 +4669,26 @@ async function updateJobDate(field, value) {
       [field]: value,
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     });
-    // NEW 2026-09-28: once BOTH the job's start and end date exist, cascade
-    // them down across every room, split proportionally by each room's
-    // estimated labor hours -- per Travis, this is the one action meant to
-    // "schedule the job." Writes real dates onto the same Room-level docs
-    // pushPhaseToGCal already watches, so Google Calendar sync happens
-    // automatically with no separate code path. This OVERWRITES any dates
-    // already set on individual rooms -- the job-level fields are now the
-    // source of truth whenever both are present, not a passive summary.
-    if (job && job.startDate && job.endDate) {
+    // NEW 2026-09-28, fixed same day: once BOTH the job's start and end
+    // date exist, cascade them down across every room, split
+    // proportionally by each room's estimated labor hours -- per Travis,
+    // this is the one action meant to "schedule the job." Writes real
+    // dates onto the same Room-level docs pushPhaseToGCal already
+    // watches, so Google Calendar sync happens automatically with no
+    // separate code path. This OVERWRITES any dates already set on
+    // individual rooms -- the job-level fields are now the source of
+    // truth whenever both are present, not a passive summary.
+    //
+    // Originally checked the local `job` object from conJobs, which can
+    // go stale between two separate date-field edits (Start set first,
+    // Finish set moments later) -- on a real job this meant the cascade
+    // never fired at all despite both dates being correctly saved. Now
+    // re-reads the actual document fresh right after the write, so the
+    // check always reflects what's really in Firestore, not an
+    // in-memory copy that may not have caught up yet.
+    const freshDoc = await coll('jobs').doc(_ganttJobId).get();
+    const freshJob = freshDoc.exists ? freshDoc.data() : null;
+    if (freshJob && freshJob.startDate && freshJob.endDate) {
       await cascadeJobDatesToRooms(_ganttJobId);
     }
     renderJobGantt(_ganttJobId);
