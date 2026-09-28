@@ -3483,3 +3483,4 @@ exports.debugCheckSchedule = functions.https.onRequest(async (req, res) => {
   }
   res.json({ count: out.length, matches: out });
 });
+// Retest: transient 'Failed to list functions' error, retrying 2026-09-28
