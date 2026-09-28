@@ -3517,3 +3517,21 @@ exports.debugCheckSchedule2 = functions.https.onRequest(async (req, res) => {
   }
   res.json({ count: out.length, matches: out });
 });
+
+// TEMPORARY DEBUG -- checking real job.crew value for JOB-2026-683 directly. Delete after use.
+exports.debugCheckCrew = functions.https.onRequest(async (req, res) => {
+  const term = (req.query.q || '2026-683').toLowerCase();
+  const db = admin.firestore();
+  const companiesSnap = await db.collection('companies').get();
+  const out = [];
+  for (const companyDoc of companiesSnap.docs) {
+    const jobsSnap = await companyDoc.ref.collection('jobs').get();
+    for (const jobDoc of jobsSnap.docs) {
+      const j = jobDoc.data();
+      const hay = `${j.name || ''} ${j.jobNumber || ''}`.toLowerCase();
+      if (!hay.includes(term)) continue;
+      out.push({ jobId: jobDoc.id, name: j.name, crew: j.crew || null, crewRaw: JSON.stringify(j.crew) });
+    }
+  }
+  res.json({ count: out.length, matches: out });
+});
