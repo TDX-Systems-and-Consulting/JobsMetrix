@@ -3450,3 +3450,55 @@ exports.ghlWebhookReceiver = functions.https.onRequest(async (req, res) => {
 });
 
 // Retest: transient 'Failed to list functions' error, retrying 2026-09-28
+
+// TEMPORARY DEBUG -- rechecking JOB-2026-683 after the cascade fix + crew
+// assignment, including whether crew emails match real logins and have
+// Google Calendar connected. Delete after use.
+exports.debugCheckSchedule2 = functions.https.onRequest(async (req, res) => {
+  const term = (req.query.q || '2026-683').toLowerCase();
+  const db = admin.firestore();
+  const companiesSnap = await db.collection('companies').get();
+  const out = [];
+  for (const companyDoc of companiesSnap.docs) {
+    const jobsSnap = await companyDoc.ref.collection('jobs').get();
+    for (const jobDoc of jobsSnap.docs) {
+      const j = jobDoc.data();
+      const hay = `${j.name || ''} ${j.jobNumber || ''}`.toLowerCase();
+      if (!hay.includes(term)) continue;
+
+      const crewCheck = [];
+      for (const member of (j.crew || [])) {
+        let uid = null, hasAuth = false, hasGcalToken = false;
+        if (member.email) {
+          try {
+            const user = await admin.auth().getUserByEmail(member.email);
+            uid = user.uid; hasAuth = true;
+            const tokenDoc = await companyDoc.ref.collection('googleCalendarTokens').doc(uid).get();
+            hasGcalToken = tokenDoc.exists;
+          } catch (e) {}
+        }
+        crewCheck.push({ email: member.email || null, hasFirebaseLogin: hasAuth, hasGoogleCalendarConnected: hasGcalToken });
+      }
+
+      const epicsSnap = await jobDoc.ref.collection('estimateGroups').get();
+      const epics = [];
+      for (const epicDoc of epicsSnap.docs) {
+        const subSnap = await epicDoc.ref.collection('subgroups').get();
+        epics.push({
+          epicName: epicDoc.data().name,
+          rooms: subSnap.docs.map(s => ({
+            name: s.data().name,
+            startDate: s.data().startDate || null, endDate: s.data().endDate || null,
+            gcalEventIds: s.data().gcalEventIds || null,
+          })),
+        });
+      }
+      out.push({
+        jobId: jobDoc.id, name: j.name, status: j.status,
+        startDate: j.startDate || null, endDate: j.endDate || null,
+        crew: crewCheck, epics,
+      });
+    }
+  }
+  res.json({ count: out.length, matches: out });
+});
