@@ -16581,12 +16581,15 @@ function switchCalView(view, btn) {
   if (btn) btn.classList.add('active');
   document.getElementById('calMonthView').style.display = view === 'month' ? 'block' : 'none';
   document.getElementById('calWeekView').style.display = view === 'week' ? 'block' : 'none';
+  document.getElementById('calDayView').style.display = view === 'day' ? 'block' : 'none';
   renderCalendar();
 }
 
 function calNav(dir) {
   if (_calView === 'month') {
     _calDate = new Date(_calDate.getFullYear(), _calDate.getMonth() + dir, 1);
+  } else if (_calView === 'day') {
+    _calDate = new Date(_calDate.getTime() + dir * 86400000);
   } else {
     _calDate = new Date(_calDate.getTime() + dir * 7 * 86400000);
   }
@@ -16596,20 +16599,33 @@ function calNav(dir) {
 function calGoToday() {
   _calDate = new Date();
   renderCalendar();
-  // In week view, scroll to current time after render
-  if (_calView === 'week') {
+  // In week/day view, scroll to current time after render
+  if (_calView === 'week' || _calView === 'day') {
     setTimeout(() => {
-      const scrollTarget = document.querySelector('#calWeekView div[style*="overflow-y"]');
+      const scrollTarget = document.querySelector((_calView==='day'?'#calDayView':'#calWeekView') + ' div[style*="overflow-y"]');
       if (scrollTarget) scrollTarget.scrollTop = (new Date().getHours() - 6) * 48;
     }, 100);
   }
 }
+
+// Jumps straight to Day view for one specific date -- used when clicking
+// a day number in Month view, instead of that click always opening "add
+// new event" regardless of intent.
+function goToDayView(dateISO) {
+  _calDate = new Date(dateISO + 'T00:00:00');
+  const btn = document.getElementById('calDayBtn');
+  switchCalView('day', btn);
+}
+window.goToDayView = goToDayView;
 
 function renderCalendar() {
   const titleEl = document.getElementById('calTitle');
   if (_calView === 'month') {
     if (titleEl) titleEl.textContent = _calDate.toLocaleDateString(undefined,{month:'long',year:'numeric'});
     renderMonthView();
+  } else if (_calView === 'day') {
+    if (titleEl) titleEl.textContent = _calDate.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+    renderDayView(_calDate);
   } else {
     // Get start of week (Sunday)
     const dow = _calDate.getDay();
@@ -16646,8 +16662,8 @@ function renderMonthView() {
     const evHtml = events.slice(0,3).map(ev =>
       `<div class="cal-event" style="background:${ev.color}22;color:${ev.color};border-left:2px solid ${ev.color}">${ev.label}</div>`
     ).join('') + (events.length > 3 ? `<div style="font-size:.6rem;color:var(--muted)">+${events.length-3} more</div>` : '');
-    cells += `<div class="cal-day${isToday?' today':''}">
-      <div class="cal-day-num">${d}</div>
+    cells += `<div class="cal-day${isToday?' today':''}" onclick="goToDayView('${dateISO}')">
+      <div class="cal-day-num" onclick="event.stopPropagation();openCalEventModal(null,'${dateISO}')" title="Click the number to add an event here">${d}</div>
       ${evHtml}
     </div>`;
   }
@@ -16747,8 +16763,64 @@ function renderWeekView(weekStart) {
   }
 }
 
-// Expose time + calendar functions
-window.handleClockToggle = handleClockToggle;
+// renderDayView -- single-day version of the week grid: same hourly rows
+// and same event-filtering logic, just one column, which also means full
+// event labels fit without the truncation a 7-column week/month grid needs.
+function renderDayView(date) {
+  const grid = document.getElementById('calDayGrid');
+  if (!grid) return;
+  const today = new Date().toISOString().split('T')[0];
+  const iso = date.toISOString().split('T')[0];
+  const isToday = iso === today;
+
+  const allDay = window.getCalEvents(iso).filter(e => (e.type === 'todo') || (e.type === 'event' && !e.ev?.time));
+  const allDayRow = `<div style="display:flex;gap:6px;align-items:center;padding:6px 4px;border-bottom:1px solid rgba(110,145,210,.1);min-height:28px">
+    <span style="font-size:.65rem;color:var(--muted);flex-shrink:0">all-day</span>
+    ${allDay.map(e => `<span class="cal-event-pill" style="background:${e.color}20;color:${e.color};border-left-color:${e.color};font-size:.72rem;cursor:${e.type==='event'?'pointer':'default'}" onclick="${e.type==='event'?`openCalEventModal('${e.id}')`:''}" title="${e.label}">${e.label}</span>`).join('')}
+  </div>`;
+
+  let rows = '';
+  const now = new Date();
+  const currentHour = now.getHours();
+  const currentMin = now.getMinutes();
+
+  for (let h = 6; h <= 21; h++) {
+    const label = h < 12 ? `${h}am` : h === 12 ? '12pm' : `${h-12}pm`;
+    const timedEvents = window.getCalEvents(iso).filter(e => {
+      if (e.type === 'event' && e.ev?.time) return parseInt(e.ev.time.split(':')[0]) === h;
+      if (e.type === 'time') {
+        const entry = allTimeEntries.find(t => t.id === e.id);
+        if (entry?.clockInISO) return new Date(entry.clockInISO).getHours() === h;
+      }
+      if (e.type === 'phase') return h === 8;
+      return false;
+    });
+    const isCurrentHour = isToday && h === currentHour;
+    const timeBarPos = isCurrentHour ? Math.round((currentMin / 60) * 100) : -1;
+
+    rows += `<div style="display:flex;border-top:1px solid rgba(110,145,210,.06);min-height:52px;position:relative;background:${isToday?'rgba(217,119,6,.03)':'transparent'}">
+      <div style="width:56px;flex-shrink:0;font-size:.72rem;color:var(--muted);text-align:right;padding:6px 8px 0 0">${label}</div>
+      <div style="flex:1;padding:4px;position:relative">
+        ${timeBarPos >= 0 ? `<div style="position:absolute;left:0;right:0;top:${timeBarPos}%;height:2px;background:var(--amber);z-index:2;opacity:.7"></div>` : ''}
+        ${timedEvents.map(e => `<div class="cal-event-pill" style="display:block;background:${e.color}20;color:${e.color};border-left:3px solid ${e.color};font-size:.78rem;padding:4px 8px;margin-bottom:3px;cursor:pointer;border-radius:4px" onclick="${e.type==='event'?`openCalEventModal('${e.id}')`:e.type==='phase'?`openJobDetail('${e.jobId}');switchDetailTab('phases',null)`:''}" title="${e.type==='phase'?'8:00 AM - 4:30 PM · ':''}${e.label}">
+          ${e.label}
+          ${e.ev?.meetLink?`<a href="${e.ev.meetLink}" target="_blank" onclick="event.stopPropagation()" style="color:#fff;font-size:.65rem;background:#0d9488;border-radius:3px;padding:1px 5px;margin-left:6px;text-decoration:none">🎥 Join</a>`:''}
+        </div>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  grid.innerHTML = allDayRow + rows;
+
+  const scrollTarget = document.querySelector('#calDayView div[style*="overflow-y"]');
+  if (scrollTarget) {
+    const targetHour = isToday ? Math.max(6, currentHour - 1) : 8;
+    scrollTarget.scrollTop = (targetHour - 6) * 52;
+  }
+}
+window.renderDayView = renderDayView;
+
+
 window.forceClockOut = forceClockOut;
 window.deleteTimeEntry = deleteTimeEntry;
 window.renderTimeLog = renderTimeLog;
@@ -18095,7 +18167,7 @@ async function loadGlobalPhases() {
       id: job.id, jobId: job.id,
       jobName: job.name, jobNumber: job.jobNumber || job.name,
       startDate: job.startDate, endDate: job.endDate,
-      crewNames: (job.crew || []).map(c => c.name || c.email).filter(Boolean),
+      crew: job.crew || [], // kept as full {email,name} objects, not flattened -- getCalEvents needs the email to look up each person's real color
     }));
   const calPage = document.getElementById('ktPageCalendar');
   if (calPage?.classList.contains('active')) renderCalendar();
@@ -18105,22 +18177,28 @@ async function loadGlobalPhases() {
 function getCalEvents(dateISO) {
   const events = [];
 
-  // Jobs — show on every day between startDate and endDate, one entry per
-  // job (job number + assigned crew), not one per room.
+  // Jobs — one entry PER CREW MEMBER per job (job number + that
+  // person's name), each colored with that person's own established
+  // calendar color (_teamColors, the same palette used everywhere else
+  // on this page) -- not one combined line for the whole crew, which
+  // both truncated in a narrow cell and gave every job a single flat
+  // color regardless of who was actually on it.
   globalPhases.forEach(job => {
     if (!job.startDate) return;
     const start = job.startDate;
     const end = job.endDate || job.startDate;
-    if (dateISO >= start && dateISO <= end) {
-      const crewLabel = job.crewNames.length ? job.crewNames.join(', ') : 'Unassigned';
+    if (dateISO < start || dateISO > end) return;
+    const crew = job.crew.length ? job.crew : [{ email: null, name: 'Unassigned' }];
+    crew.forEach(member => {
+      const color = member.email ? (_teamColors[member.email] || '#0d9488') : '#0d9488';
       events.push({
         type: 'phase',
-        label: `${esc(job.jobNumber)} — ${esc(crewLabel)}`,
-        color: '#0d9488',
+        label: `${esc(job.jobNumber)} — ${esc(member.name || member.email || 'Unassigned')}`,
+        color,
         id: job.id,
         jobId: job.jobId
       });
-    }
+    });
   });
 
   // To-dos with due dates
@@ -19959,8 +20037,8 @@ window.renderMonthView = function() {
     const evHtml = events.slice(0,4).map(ev =>
       `<span class="cal-event-pill" style="background:${ev.color}20;color:${ev.color};border-left-color:${ev.color};cursor:${ev.type==='event'||ev.type==='phase'?'pointer':'default'}" onclick="event.stopPropagation();${ev.type==='event'?`openCalEventModal('${ev.id}')`:ev.type==='phase'?`openJobDetail('${ev.jobId}');switchDetailTab('phases',null)`:''}" title="${ev.label}">${ev.label}${ev.ev?.meetLink?` <a href="${ev.ev.meetLink}" target="_blank" onclick="event.stopPropagation()" style="color:#fff;font-size:.6rem;background:#0d9488;border-radius:3px;padding:0 3px;text-decoration:none">Join</a>`:''}</span>`
     ).join('') + (events.length > 4 ? `<span style="font-size:.6rem;color:var(--muted);padding:1px 4px">+${events.length-4} more</span>` : '');
-    cells += `<div class="cal-day${isToday?' today':''}" onclick="openCalEventModal(null,'${dateISO}')">
-      <div class="cal-day-num">${isToday?`<span class="cal-day-today-num">${d}</span>`:d}</div>
+    cells += `<div class="cal-day${isToday?' today':''}" onclick="goToDayView('${dateISO}')">
+      <div class="cal-day-num" onclick="event.stopPropagation();openCalEventModal(null,'${dateISO}')" title="Click the number to add an event here">${isToday?`<span class="cal-day-today-num">${d}</span>`:d}</div>
       ${evHtml}
     </div>`;
   }
