@@ -4669,6 +4669,17 @@ async function updateJobDate(field, value) {
       [field]: value,
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     });
+    // NEW 2026-09-28: once BOTH the job's start and end date exist, cascade
+    // them down across every room, split proportionally by each room's
+    // estimated labor hours -- per Travis, this is the one action meant to
+    // "schedule the job." Writes real dates onto the same Room-level docs
+    // pushPhaseToGCal already watches, so Google Calendar sync happens
+    // automatically with no separate code path. This OVERWRITES any dates
+    // already set on individual rooms -- the job-level fields are now the
+    // source of truth whenever both are present, not a passive summary.
+    if (job && job.startDate && job.endDate) {
+      await cascadeJobDatesToRooms(_ganttJobId);
+    }
     renderJobGantt(_ganttJobId);
   } catch(e) {
     console.error('updateJobDate failed:', e);
@@ -4676,6 +4687,75 @@ async function updateJobDate(field, value) {
   }
 }
 window.updateJobDate = updateJobDate;
+
+// cascadeJobDatesToRooms -- the actual "schedule the job" feature. Splits
+// the job's overall start/end range across every room (Feature), sized
+// proportionally to each room's own labor hours (Labor Billed / $300/hr,
+// same conversion used everywhere else in the app), laid out sequentially
+// in room order so nothing overlaps. A room with no labor items tracked
+// yet still gets a 1-day floor rather than vanishing to zero.
+async function cascadeJobDatesToRooms(jobId) {
+  const jobRef = coll('jobs').doc(jobId);
+  const jobDoc = await jobRef.get();
+  const job = jobDoc.data();
+  if (!job || !job.startDate || !job.endDate) return;
+
+  const epics = await loadEpicTree(jobId);
+
+  // Flatten every room across every epic/phase into one ordered list,
+  // preserving (epic.order, feature.order) -- the same sequence already
+  // shown in the Gantt.
+  const rooms = [];
+  epics
+    .slice()
+    .sort((a, b) => (a.order||0) - (b.order||0))
+    .forEach(epic => {
+      (epic.features||[])
+        .slice()
+        .sort((a, b) => (a.order||0) - (b.order||0))
+        .forEach(feature => rooms.push({ epicId: epic.id, feature }));
+    });
+  if (!rooms.length) return;
+
+  // Each room's labor hours: sum(qty x price) across its own Labor-costType
+  // tasks, converted at the same $300/hr billed rate used everywhere else
+  // (billedHours = laborBilled / 300). Floored at 1 hour so a room with no
+  // labor tracked yet still gets a real day, not zero.
+  rooms.forEach(r => {
+    const laborBilled = (r.feature.tasks || [])
+      .filter(t => t.costType === 'Labor')
+      .reduce((sum, t) => sum + (t.qty||0) * (t.price||0), 0);
+    r.hours = Math.max(1, laborBilled / 300);
+  });
+  const totalHours = rooms.reduce((s, r) => s + r.hours, 0);
+  const totalWorkDays = Math.max(rooms.length, (workDaysBetween(job.startDate, job.endDate)||0) + 1);
+
+  let cursor = job.startDate;
+  const updates = [];
+  rooms.forEach((r, i) => {
+    const isLast = i === rooms.length - 1;
+    const roomDays = isLast ? null : Math.max(1, Math.round(totalWorkDays * (r.hours/totalHours)));
+    const startDate = cursor;
+    // Last room always closes exactly on the job's own end date, so
+    // rounding across earlier rooms never leaves a gap or overrun.
+    const endDate = isLast ? job.endDate : addWorkDaysISO(cursor, roomDays);
+    updates.push({ epicId: r.epicId, featureId: r.feature.id, startDate, endDate });
+    if (!isLast) cursor = addWorkDaysISO(endDate, 2); // next work day after this room's end
+  });
+
+  const batch = conDb.batch();
+  updates.forEach(u => {
+    const ref = jobRef.collection('estimateGroups').doc(u.epicId)
+      .collection('subgroups').doc(u.featureId);
+    batch.update(ref, {
+      startDate: u.startDate,
+      endDate: u.endDate,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+  });
+  await batch.commit();
+}
+window.cascadeJobDatesToRooms = cascadeJobDatesToRooms;
 
 // Phase drag-and-drop reordering. Dragging updates order for every
 // phase in the job (not just the two that moved) since 'order' is a
