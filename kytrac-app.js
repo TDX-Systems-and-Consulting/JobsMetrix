@@ -4730,28 +4730,45 @@ async function cascadeJobDatesToRooms(jobId) {
 
   // Each room's labor hours: sum(qty x price) across its own Labor-costType
   // tasks, converted at the same $300/hr billed rate used everywhere else
-  // (billedHours = laborBilled / 300). Floored at 1 hour so a room with no
-  // labor tracked yet still gets a real day, not zero.
+  // (billedHours = laborBilled / 300). Small floor so an untracked room
+  // still gets some weight, not zero.
   rooms.forEach(r => {
     const laborBilled = (r.feature.tasks || [])
       .filter(t => t.costType === 'Labor')
       .reduce((sum, t) => sum + (t.qty||0) * (t.price||0), 0);
-    r.hours = Math.max(1, laborBilled / 300);
+    r.hours = Math.max(0.1, laborBilled / 300);
   });
   const totalHours = rooms.reduce((s, r) => s + r.hours, 0);
-  const totalWorkDays = Math.max(rooms.length, (workDaysBetween(job.startDate, job.endDate)||0) + 1);
+  const totalWorkDays = Math.max(1, (workDaysBetween(job.startDate, job.endDate)||0) + 1);
 
-  let cursor = job.startDate;
+  // Fixed 2026-09-28: the original version walked forward room by room,
+  // forcing each a minimum of 1 day, then forced the LAST room's end date
+  // back onto job.endDate as a safety net. On a real job (5 rooms, only 3
+  // real work days) that produced a genuinely broken result -- the cursor
+  // had already walked past job.endDate by the time it reached the last
+  // room, so forcing its end back onto job.endDate put that end BEFORE
+  // its own start date.
+  //
+  // Replaced with a fractional approach: each room's start/end is a share
+  // of the job's total day-span proportional to its cumulative hours, so
+  // the running total can mathematically never exceed totalWorkDays --
+  // the last room's end always lands exactly on job.endDate by
+  // construction, no override needed. The real tradeoff, stated plainly:
+  // when there are more rooms than available days (as here), rooms
+  // legitimately share days rather than each getting an exclusive one --
+  // that's the honest result of 5 rooms not fitting into 3 days, not a
+  // bug to paper over.
+  let cumulativeHours = 0;
   const updates = [];
-  rooms.forEach((r, i) => {
-    const isLast = i === rooms.length - 1;
-    const roomDays = isLast ? null : Math.max(1, Math.round(totalWorkDays * (r.hours/totalHours)));
-    const startDate = cursor;
-    // Last room always closes exactly on the job's own end date, so
-    // rounding across earlier rooms never leaves a gap or overrun.
-    const endDate = isLast ? job.endDate : addWorkDaysISO(cursor, roomDays);
+  rooms.forEach(r => {
+    const startFrac = cumulativeHours / totalHours;
+    cumulativeHours += r.hours;
+    const endFrac = cumulativeHours / totalHours;
+    const startDayIdx = Math.floor(startFrac * totalWorkDays);
+    const endDayIdx = Math.max(startDayIdx, Math.ceil(endFrac * totalWorkDays) - 1);
+    const startDate = addWorkDaysISO(job.startDate, startDayIdx + 1);
+    const endDate = addWorkDaysISO(job.startDate, endDayIdx + 1);
     updates.push({ epicId: r.epicId, featureId: r.feature.id, startDate, endDate });
-    if (!isLast) cursor = addWorkDaysISO(endDate, 2); // next work day after this room's end
   });
 
   const batch = conDb.batch();
