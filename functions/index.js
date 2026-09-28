@@ -1979,7 +1979,7 @@ async function sendPaymentConfirmationEmail(companyId, job, inv, amountPaidNow, 
   });
 }
 
-exports.sendMessageNotificationSms = functions.runWith({ secrets: ['PLIVO_AUTH_ID', 'PLIVO_AUTH_TOKEN', 'PLIVO_FROM'] }).firestore
+exports.sendMessageNotificationSms = functions.firestore
   .document('companies/{companyId}/jobs/{jobId}/messages/{messageId}')
   .onCreate(async (snap, context) => {
     const msg = snap.data();
