@@ -16930,6 +16930,58 @@ function renderVendors() {
 }
 
 // ── Vendor Detail Modal ──
+// Vendor Request -- reuses the existing sendJobspanEmail Gmail-sending
+// callable directly (it already takes generic to/subject/body params and
+// just wraps them in the branded template) rather than building a new
+// backend function. Built for: ad-hoc requests like "clean the house
+// before inspection" -- distinct from the Bid Request system, which is
+// for formal scope-of-work quotes, not quick task asks.
+function openVendorRequestModal() {
+  const v = allVendors.find(x => x.id === _currentVendorId);
+  if (!v) return;
+  if (!v.email) {
+    alert('This vendor has no email on file. Add one under Edit before sending a request.');
+    return;
+  }
+  document.getElementById('vrqVendorName').textContent = v.name;
+  document.getElementById('vrqVendorEmail').textContent = v.email;
+  const jobSelect = document.getElementById('vrqJobSelect');
+  jobSelect.innerHTML = '<option value="">— No specific job —</option>' +
+    conJobs.map(j => `<option value="${j.id}">${esc(j.jobNumber || j.name)} — ${esc(j.name)}</option>`).join('');
+  document.getElementById('vrqSubject').value = `Request from ${companyProfile?.companyName || 'JTXD Contracting'}`;
+  document.getElementById('vrqMessage').value = '';
+  kOpen('vendorRequestModal');
+}
+window.openVendorRequestModal = openVendorRequestModal;
+
+async function sendVendorRequestEmail() {
+  const v = allVendors.find(x => x.id === _currentVendorId);
+  if (!v || !v.email) return;
+  const subject = document.getElementById('vrqSubject').value.trim();
+  const message = document.getElementById('vrqMessage').value.trim();
+  if (!subject || !message) { alert('Please fill in both a subject and a message.'); return; }
+  const jobId = document.getElementById('vrqJobSelect').value;
+  const job = jobId ? conJobs.find(j => j.id === jobId) : null;
+
+  const bodyHtml = `<p>Hi ${esc(v.contact || v.name)},</p>` +
+    `<p>${esc(message).replace(/\n/g, '<br>')}</p>` +
+    (job ? `<p style="color:#888;font-size:.85rem">Regarding: ${esc(job.jobNumber||job.name)} — ${esc(job.name)}${job.address?' ('+esc(job.address)+')':''}</p>` : '');
+
+  const btn = document.getElementById('vrqSendBtn');
+  btn.disabled = true; btn.textContent = 'Sending...';
+  try {
+    const sendEmail = conFunctions.httpsCallable('sendJobspanEmail');
+    await sendEmail({ to: v.email, toName: v.name, subject, bodyHtml, bodyText: message });
+    kClose('vendorRequestModal');
+    alert('Request sent to ' + v.name + '.');
+  } catch (e) {
+    alert('Could not send request: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Send Request';
+  }
+}
+window.sendVendorRequestEmail = sendVendorRequestEmail;
+
 function openVendorDetail(id) {
   const v = allVendors.find(x => x.id === id);
   if (!v) return;

@@ -2944,6 +2944,7 @@
         </div>
       </div>
       <div style="display:flex;gap:8px">
+        <button class="btn" style="background:rgba(29,187,135,.15);color:#1dbb87;border-color:rgba(29,187,135,.35)" onclick="openVendorRequestModal()">📨 Send Request</button>
         <button class="btn" onclick="openVendorModal(document.getElementById('vendorDetailModal').dataset.vendorId)">✏️ Edit</button>
         <button class="btn" onclick="kClose('vendorDetailModal')">Close</button>
       </div>
@@ -2991,6 +2992,41 @@
           <div style="text-align:right">Paid</div><div>Due Date</div><div>Status</div>
         </div>
         <div id="vdBillList"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Vendor Request Modal -->
+<div id="vendorRequestModal" class="modal-overlay">
+  <div class="modal-box" style="max-width:520px">
+    <div class="modal-head">
+      <h3 style="margin:0">📨 Send Vendor Request</h3>
+      <button class="btn" onclick="kClose('vendorRequestModal')">Close</button>
+    </div>
+    <div class="modal-body" style="padding:20px 22px">
+      <div class="form-grid">
+        <div class="full">
+          <div class="small muted">To</div>
+          <div id="vrqVendorName" style="font-weight:700"></div>
+          <div id="vrqVendorEmail" class="small muted"></div>
+        </div>
+        <div class="full">
+          <label class="small muted">Related Job (optional)</label>
+          <select id="vrqJobSelect"><option value="">— No specific job —</option></select>
+        </div>
+        <div class="full">
+          <label class="small muted">Subject</label>
+          <input type="text" id="vrqSubject">
+        </div>
+        <div class="full">
+          <label class="small muted">Message</label>
+          <textarea id="vrqMessage" rows="6" placeholder="e.g. Please have the house cleaned and ready for inspection by Friday at 9am."></textarea>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+        <button class="btn" onclick="kClose('vendorRequestModal')">Cancel</button>
+        <button class="btn-amber" id="vrqSendBtn" onclick="sendVendorRequestEmail()">Send Request</button>
       </div>
     </div>
   </div>
@@ -5080,7 +5116,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202609280600"></script>
+<script src="kytrac-app.js?v=202609280630"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW
