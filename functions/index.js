@@ -3518,3 +3518,52 @@ exports.debugCheckSchedule2 = functions.https.onRequest(async (req, res) => {
   res.json({ count: out.length, matches: out });
 });
 
+
+// TEMPORARY DEBUG -- pull real Labor Billed + payment schedule for a set
+// of jobs by number, for a real month-by-month pay projection. Delete after use.
+exports.debugJobBreakdown = functions.https.onRequest(async (req, res) => {
+  const wanted = (req.query.q || '').split(',').map(s => s.trim()).filter(Boolean);
+  const db = admin.firestore();
+  const companiesSnap = await db.collection('companies').get();
+  const out = [];
+  for (const companyDoc of companiesSnap.docs) {
+    const jobsSnap = await companyDoc.ref.collection('jobs').get();
+    for (const jobDoc of jobsSnap.docs) {
+      const j = jobDoc.data();
+      const num = j.jobNumber || j.name || '';
+      if (wanted.length && !wanted.some(w => num.includes(w))) continue;
+
+      let materials = 0, laborAndOther = 0;
+      const addItem = data => {
+        const price = (data.unitPrice || 0) * (data.qty || 1);
+        if (data.costType === 'Materials') materials += price; else laborAndOther += price;
+      };
+      const groupsSnap = await jobDoc.ref.collection('estimateGroups').get();
+      await Promise.all(groupsSnap.docs.map(async gDoc => {
+        const [directItems, subsSnap] = await Promise.all([
+          gDoc.ref.collection('items').get(),
+          gDoc.ref.collection('subgroups').get(),
+        ]);
+        directItems.forEach(d => addItem(d.data()));
+        await Promise.all(subsSnap.docs.map(async sDoc => {
+          const [subItems, subsubSnap] = await Promise.all([
+            sDoc.ref.collection('items').get(),
+            sDoc.ref.collection('subgroups').get(),
+          ]);
+          subItems.forEach(d => addItem(d.data()));
+          await Promise.all(subsubSnap.docs.map(ssDoc =>
+            ssDoc.ref.collection('items').get().then(ssItems => ssItems.forEach(d => addItem(d.data())))
+          ));
+        }));
+      }));
+
+      out.push({
+        jobNumber: num, name: j.name, status: j.status,
+        startDate: j.startDate || null, endDate: j.endDate || null,
+        paymentSchedule: j.paymentSchedule || null,
+        materialsBilled: Math.round(materials), laborBilled: Math.round(laborAndOther),
+      });
+    }
+  }
+  res.json({ count: out.length, jobs: out });
+});
