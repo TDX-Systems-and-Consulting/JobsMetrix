@@ -22623,9 +22623,18 @@ function calcGroupTotals(items) {
 // this job contributes to profit. Only meaningful at the whole-job
 // level (these percentages are company-wide allocations, not per-room),
 // so this takes the full flat item list for a job, not a single group.
-function calcTrueMargin(allItems) {
+// preAggregated (optional): {materialsPrice, laborPrice} -- lets a caller
+// that already has these two totals (e.g. fetchEstimateCostSplitFresh's
+// {materials, laborAndOther}) skip re-iterating every item, without a
+// second copy of the waterfall math living anywhere else. Added
+// 2026-09-29 for printJobMarginCalculator.
+function calcTrueMargin(allItems, preAggregated) {
   let materialsCost = 0, materialsPrice = 0, laborCost = 0, laborPrice = 0;
-  allItems.forEach(item => {
+  if (preAggregated) {
+    materialsPrice = preAggregated.materialsPrice || 0;
+    laborPrice = preAggregated.laborPrice || 0;
+  } else {
+  (allItems||[]).forEach(item => {
     const qty = item.qty || 1;
     const uc = item.unitCost || 0;
     const up = item.unitPrice || uc * (1 + (item.markup || 0) / 100);
@@ -22640,6 +22649,7 @@ function calcTrueMargin(allItems) {
       materialsPrice += extPrice;
     }
   });
+  }
 
   const revenue = materialsPrice + laborPrice;
   const laborBilled = laborPrice;
@@ -22710,15 +22720,112 @@ function calcTrueMargin(allItems) {
 
   const trueMarginPct = revenue > 0 ? (retainedEarnings / revenue) * 100 : 0;
 
+  // Travis's Owner Draw -- locked 2026-09-29, 19% of Retained Earnings,
+  // same mechanism as Jason's pay (a straight percentage), replacing an
+  // earlier fixed $5,000/$8,333 monthly draw. Checked BEFORE this draw:
+  // the Go/No-Go 10%-of-revenue floor, since whether a job is worth
+  // doing at all comes before how the resulting profit gets split.
+  const travisDrawPct = 0.19;
+  const travisDraw = retainedEarnings * travisDrawPct;
+  const retainedEarningsAfterDraw = retainedEarnings - travisDraw;
+  const reOfRevenuePct = revenue > 0 ? retainedEarnings / revenue : 0;
+  const goNoGo = reOfRevenuePct >= 0.10 ? 'GO' : 'NO GO';
+
   return {
     materialsCost, materialsPrice, laborCost, laborPrice, revenue,
     realLaborCost, jasonCommission, superintendentPay, consultantPay,
     estimatedHours, billedHours, efficiencyHours,
     billedDays, efficiencyDays, jtxdActual,
     overhead, marketing, flex, taxes,
-    retainedEarnings, trueMarginPct
+    retainedEarnings, trueMarginPct,
+    travisDrawPct, travisDraw, retainedEarningsAfterDraw,
+    reOfRevenuePct, goNoGo
   };
 }
+
+// printJobMarginCalculator -- live, per-job version of the
+// JTXD_Job_Margin_Calculator spreadsheet, pulling REAL numbers straight
+// from this job's signed estimate rather than typed-in inputs. Built
+// 2026-09-29 per Travis: "each job has this exact sheet able to be
+// printed from JOBSMETRIX." Reuses fetchEstimateCostSplitFresh (the
+// already-fixed, parallelized real cost split) and calcTrueMargin's
+// preAggregated path -- one waterfall formula, not a second copy of it.
+// Uses the same in-app print modal (iframe + srcdoc) already fixed for
+// Punch List, View Proposal, and Print Internal earlier tonight -- never
+// window.open(), which strands a dead-end tab on mobile.
+async function printJobMarginCalculator(btn) {
+  const jobId = conCurrentJobId;
+  const job = conJobs.find(j => j.id === jobId);
+  if (!job) return;
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Loading real numbers...'; }
+  let tm;
+  try {
+    const { materials, laborAndOther } = await fetchEstimateCostSplitFresh(jobId);
+    if (!materials && !laborAndOther) {
+      alert('This job has no estimate line items yet -- add the signed proposal\'s scope under the Estimate tab first.');
+      return;
+    }
+    tm = calcTrueMargin(null, { materialsPrice: materials, laborPrice: laborAndOther });
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🖨 Print Job Margin Calculator'; }
+  }
+
+  const co = companyProfile;
+  const money = v => '$' + Math.round(v).toLocaleString();
+  const rows = [
+    ['Total Job Price (Materials + Labor Billed)', money(tm.revenue), 'Real numbers from this job\'s signed estimate.'],
+    ['Materials Billed', money(tm.materialsPrice), ''],
+    ['Labor Billed', money(tm.laborPrice), 'Total Job Price minus Materials Billed.'],
+    ['', '', ''],
+    ['Real Labor Cost', money(tm.realLaborCost), '60% of Labor Billed -- what actually gets paid out to the subs doing the work.'],
+    ['Jason Sales Commission', money(tm.jasonCommission), '4% of Labor Billed. Taken before the JTXD Pool is even formed.'],
+    ['JTXD Pool', money(tm.jtxdActual), 'Labor Billed, minus Real Labor Cost, minus Jason\'s Sales Commission.'],
+    ['Overhead', money(tm.overhead), '18% of the Pool. Covers rent, utilities, insurance, software, and Jason\'s Superintendent + Consultant pay below.'],
+    ['Marketing', money(tm.marketing), '6% of the Pool.'],
+    ['Jason Superintendent Pay', money(tm.superintendentPay), '2% of Labor Billed, paid out of Overhead above.'],
+    ['Jason Consultant Pay', money(tm.consultantPay), '2% of Labor Billed, also paid out of Overhead.'],
+    ['Overhead Room / Shortfall (this job only)', money(tm.overhead - tm.superintendentPay - tm.consultantPay), 'Overhead minus Jason\'s two per-job pieces only. The real ~$2,800/mo whole-business bill is a separate, whole-month check across every job that month -- not subtracted here.'],
+    ['Flex', money(tm.flex), '5% of what\'s left after Overhead and Marketing.'],
+    ['Taxes', money(tm.taxes), '27.5% of what\'s left after Flex.'],
+    ['Retained Earnings (before Owner Draw)', money(tm.retainedEarnings), 'Real company profit on this job, before Travis\'s own draw.'],
+    ['', '', ''],
+    ['Travis Owner Draw', money(tm.travisDraw), 'Retained Earnings times 19% -- same mechanism as Jason\'s pay, scales with volume the same way.'],
+    ['Retained Earnings (after Owner Draw)', money(tm.retainedEarningsAfterDraw), 'What actually stays in the business after Travis is paid on this job.'],
+    ['Go / No-Go (10% Retained Earnings floor)', `${tm.goNoGo} (${(tm.reOfRevenuePct*100).toFixed(1)}%)`, 'Retained Earnings divided by Total Job Price, checked BEFORE Travis\'s draw -- whether a job is worth doing comes before how the profit gets split.'],
+    ['', '', ''],
+    ['Jason Total Pay (Sales + Superintendent + Consultant)', money(tm.jasonCommission + tm.superintendentPay + tm.consultantPay), '4%+2%+2% = 8% of Labor Billed.'],
+  ];
+
+  const html = `<!DOCTYPE html><html><head><title>Job Margin Calculator — ${esc(job.name||'')}</title>
+  <style>
+    body{font-family:Arial,sans-serif;max-width:900px;margin:20px auto;padding:0 16px;color:#111}
+    table{width:100%;border-collapse:collapse;margin-top:16px}
+    td{padding:6px 8px;border-bottom:1px solid #e5e7eb;vertical-align:top}
+    td:nth-child(1){font-weight:700;width:34%}
+    td:nth-child(2){width:18%;text-align:right;font-variant-numeric:tabular-nums}
+    td:nth-child(3){color:#666;font-size:.82rem;width:48%}
+    .blank td{border-bottom:none;height:6px}
+    @media print{@page{margin:.5in}}
+  </style></head><body>
+  <h2 style="margin-bottom:2px">${esc(co.companyName||'JTXD Contracting')} — Job Margin Calculator</h2>
+  <div style="color:#666;margin-bottom:8px">${esc(job.jobNumber||job.name||'')} — ${esc(job.name||'')}${job.address?' · '+esc(job.address):''}</div>
+  <table>
+    ${rows.map(r => r[0]===''&&r[1]===''&&r[2]===''
+      ? '<tr class="blank"><td></td><td></td><td></td></tr>'
+      : `<tr><td>${esc(r[0])}</td><td>${r[1]}</td><td>${esc(r[2])}</td></tr>`
+    ).join('')}
+  </table>
+  <div style="margin-top:16px;text-align:center;color:#9ca3af;font-size:.75rem">
+    ${esc(co.companyName||'')} Job Margin Calculator · ${esc(job.name||'')} · Printed ${new Date().toLocaleString()}
+  </div></body></html>`;
+
+  const titleEl = document.getElementById('viewProposalModalTitle');
+  if (titleEl) titleEl.textContent = '🖨 Job Margin Calculator — ' + (job.name || '');
+  document.getElementById('viewProposalIframe').srcdoc = html;
+  kOpen('viewProposalModal');
+}
+window.printJobMarginCalculator = printJobMarginCalculator;
 
 // Every room (group) → category (subgroup) → sub-category (subsub) →
 // item, one row each, with the Materials/Labor split and a subtotal
