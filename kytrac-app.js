@@ -22773,6 +22773,13 @@ async function printJobMarginCalculator(btn) {
 
   const co = companyProfile;
   const money = v => '$' + Math.round(v).toLocaleString();
+  // Row shape: [label, value, explanation, styleTag?]. styleTag 'total'
+  // renders the label in italics instead of the default bold -- used
+  // only for Jason's combined total, so it reads as a subtotal rather
+  // than another primary line. Per Travis 2026-09-29: Jason's three
+  // pieces grouped consecutively (were spread across the waterfall
+  // before), his total right after in italics not bold, and Go/No-Go
+  // moved to the very last line of the sheet.
   const rows = [
     ['Total Job Price (Materials + Labor Billed)', money(tm.revenue), 'Real numbers from this job\'s signed estimate.'],
     ['Materials Billed', money(tm.materialsPrice), ''],
@@ -22780,11 +22787,13 @@ async function printJobMarginCalculator(btn) {
     ['', '', ''],
     ['Real Labor Cost', money(tm.realLaborCost), '60% of Labor Billed -- what actually gets paid out to the subs doing the work.'],
     ['Jason Sales Commission', money(tm.jasonCommission), '4% of Labor Billed. Taken before the JTXD Pool is even formed.'],
-    ['JTXD Pool', money(tm.jtxdActual), 'Labor Billed, minus Real Labor Cost, minus Jason\'s Sales Commission.'],
-    ['Overhead', money(tm.overhead), '18% of the Pool. Covers rent, utilities, insurance, software, and Jason\'s Superintendent + Consultant pay below.'],
-    ['Marketing', money(tm.marketing), '6% of the Pool.'],
-    ['Jason Superintendent Pay', money(tm.superintendentPay), '2% of Labor Billed, paid out of Overhead above.'],
+    ['Jason Superintendent Pay', money(tm.superintendentPay), '2% of Labor Billed, paid out of Overhead below.'],
     ['Jason Consultant Pay', money(tm.consultantPay), '2% of Labor Billed, also paid out of Overhead.'],
+    ['Jason Total Pay', money(tm.jasonCommission + tm.superintendentPay + tm.consultantPay), '4%+2%+2% = 8% of Labor Billed, all three pieces added together.', 'total'],
+    ['', '', ''],
+    ['JTXD Pool', money(tm.jtxdActual), 'Labor Billed, minus Real Labor Cost, minus Jason\'s Sales Commission.'],
+    ['Overhead', money(tm.overhead), '18% of the Pool. Covers rent, utilities, insurance, software, and Jason\'s Superintendent + Consultant pay above.'],
+    ['Marketing', money(tm.marketing), '6% of the Pool.'],
     ['Overhead Room / Shortfall (this job only)', money(tm.overhead - tm.superintendentPay - tm.consultantPay), 'Overhead minus Jason\'s two per-job pieces only. The real ~$2,800/mo whole-business bill is a separate, whole-month check across every job that month -- not subtracted here.'],
     ['Flex', money(tm.flex), '5% of what\'s left after Overhead and Marketing.'],
     ['Taxes', money(tm.taxes), '27.5% of what\'s left after Flex.'],
@@ -22792,9 +22801,8 @@ async function printJobMarginCalculator(btn) {
     ['', '', ''],
     ['Travis Owner Draw', money(tm.travisDraw), 'Retained Earnings times 19% -- same mechanism as Jason\'s pay, scales with volume the same way.'],
     ['Retained Earnings (after Owner Draw)', money(tm.retainedEarningsAfterDraw), 'What actually stays in the business after Travis is paid on this job.'],
-    ['Go / No-Go (10% Retained Earnings floor)', `${tm.goNoGo} (${(tm.reOfRevenuePct*100).toFixed(1)}%)`, 'Retained Earnings divided by Total Job Price, checked BEFORE Travis\'s draw -- whether a job is worth doing comes before how the profit gets split.'],
     ['', '', ''],
-    ['Jason Total Pay (Sales + Superintendent + Consultant)', money(tm.jasonCommission + tm.superintendentPay + tm.consultantPay), '4%+2%+2% = 8% of Labor Billed.'],
+    ['Go / No-Go (10% Retained Earnings floor)', `${tm.goNoGo} (${(tm.reOfRevenuePct*100).toFixed(1)}%)`, 'Retained Earnings divided by Total Job Price, checked BEFORE Travis\'s draw -- whether a job is worth doing comes before how the profit gets split.'],
   ];
 
   const html = `<!DOCTYPE html><html><head><title>Job Margin Calculator — ${esc(job.name||'')}</title>
@@ -22806,6 +22814,7 @@ async function printJobMarginCalculator(btn) {
     td:nth-child(2){width:18%;text-align:right;font-variant-numeric:tabular-nums}
     td:nth-child(3){color:#666;font-size:.82rem;width:48%}
     .blank td{border-bottom:none;height:6px}
+    .total td:nth-child(1){font-weight:400;font-style:italic}
     @media print{@page{margin:.5in}}
   </style></head><body>
   <h2 style="margin-bottom:2px">${esc(co.companyName||'JTXD Contracting')} — Job Margin Calculator</h2>
@@ -22813,7 +22822,7 @@ async function printJobMarginCalculator(btn) {
   <table>
     ${rows.map(r => r[0]===''&&r[1]===''&&r[2]===''
       ? '<tr class="blank"><td></td><td></td><td></td></tr>'
-      : `<tr><td>${esc(r[0])}</td><td>${r[1]}</td><td>${esc(r[2])}</td></tr>`
+      : `<tr${r[3]==='total'?' class="total"':''}><td>${esc(r[0])}</td><td>${r[1]}</td><td>${esc(r[2])}</td></tr>`
     ).join('')}
   </table>
   <div style="margin-top:16px;text-align:center;color:#9ca3af;font-size:.75rem">
