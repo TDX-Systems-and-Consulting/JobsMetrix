@@ -22785,7 +22785,7 @@ async function printJobMarginCalculator(btn) {
     ['Materials Billed', money(tm.materialsPrice), ''],
     ['Labor Billed', money(tm.laborPrice), 'Total Job Price minus Materials Billed.'],
     ['', '', ''],
-    ['Real Labor Cost', money(tm.realLaborCost), '60% of Labor Billed -- what actually gets paid out to the subs doing the work.'],
+    ['Real Labor Cost', money(tm.realLaborCost), '60% of Labor Billed. Not an arbitrary rate -- it\'s the real pay-to-bill ratio for a 3-person crew: $180/hr paid to subs ($60/hr x 3) divided by $300/hr billed to the customer ($100/hr x 3) = 60%.'],
     ['Jason Sales Commission', money(tm.jasonCommission), '4% of Labor Billed. Taken before the JTXD Pool is even formed.'],
     ['Jason Superintendent Pay', money(tm.superintendentPay), '2% of Labor Billed, paid out of Overhead below.'],
     ['Jason Consultant Pay', money(tm.consultantPay), '2% of Labor Billed, also paid out of Overhead.'],
