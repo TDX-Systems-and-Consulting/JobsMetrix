@@ -1058,6 +1058,19 @@
       .inv-print-area { display:block!important; }
       body { background:#fff!important;color:#000!important; }
       .inv-print-header { border-bottom:2px solid #d97706;padding-bottom:16px;margin-bottom:24px; }
+
+      /* Fixed 2026-09-30: #ktPortalView is position:fixed; inset:0 with
+         a dark full-viewport background -- fine on-screen, but with no
+         print override a fixed, full-viewport element doesn't paginate
+         normally. This is what a customer printing the portal from
+         their phone actually saw: one stuck, full-screen block with no
+         way to see the rest of the content. Switched to normal flow
+         and a white background for print specifically; the portal
+         header/logo and interactive status bar aren't printable
+         content, so they're hidden too, same as .kt-sidebar/.kt-topbar
+         above are for the internal app. */
+      #ktPortalView { position:static!important; background:#fff!important; z-index:auto!important; overflow:visible!important; }
+      .portal-header, .portal-status-track { display:none!important; }
     }
     .inv-print-area { display:none; }
 
