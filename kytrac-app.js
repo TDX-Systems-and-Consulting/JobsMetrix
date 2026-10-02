@@ -12815,10 +12815,9 @@ window.commitMarkPaid = commitMarkPaid;
 // ── Print Invoice ──
 function printInvoiceById(jobId, invId) {
   if (!conDb) return;
-  // Same mobile popup-blocker fix as viewInvoiceById -- open
-  // synchronously first, before the async fetch below.
-  const win = window.open('', '_blank');
-  if (win) win.document.write('<html><body style="font-family:sans-serif;padding:40px;text-align:center;color:#666">Loading invoice…</body></html>');
+  // Fixed 2026-09-30: no longer pre-opens a window at all -- the old
+  // popup-blocker workaround doesn't apply to the in-app modal
+  // printInvoiceData now uses.
   const jobRef = coll('jobs').doc(jobId);
   Promise.all([
     jobRef.collection('invoices').doc(invId).get(),
@@ -12829,7 +12828,7 @@ function printInvoiceById(jobId, invId) {
       const job = conJobs.find(j => j.id === jobId);
       const otherInvoices = [];
       allSnap.forEach(d => { if (d.id !== invId) otherInvoices.push(d.data()); });
-      printInvoiceData(inv, job, otherInvoices, win);
+      printInvoiceData(inv, job, otherInvoices);
     });
 }
 
@@ -14303,12 +14302,21 @@ function renderInvoiceDocumentHtml(inv, job, otherInvoices, forPrint) {
 // email preview iframe renders via renderInvoiceDocumentHtml() above
 // -- one source of truth for what an invoice document actually looks
 // like, whether it's being printed or previewed before emailing.
+// Fixed 2026-09-30: was window.open('', '_blank') + document.write --
+// same freeze/stranded-tab bug already fixed on View Proposal, Print
+// Internal, Punch List, Change Orders, and Print Proposal. preOpenedWin
+// no longer needed at all with the iframe modal approach; kept as an
+// accepted-but-unused 4th param so printInvoiceById's call site doesn't
+// need touching.
 function printInvoiceData(inv, job, otherInvoices, preOpenedWin) {
-  const win = preOpenedWin || window.open('', '_blank');
-  if (!win) { alert('Your browser blocked the popup — check your popup/pop-up blocker settings for this site and try again.'); return; }
-  win.document.open();
-  win.document.write(renderInvoiceDocumentHtml(inv, job, otherInvoices, true));
-  win.document.close();
+  const titleEl = document.getElementById('viewProposalModalTitle');
+  if (titleEl) titleEl.textContent = '🖨 Invoice ' + (inv?.number || '') + ' — ' + (job?.name || '');
+  // autoPrint explicitly false -- renderInvoiceDocumentHtml's true here
+  // used to auto-fire window.print() on load, which inside this modal
+  // would cover the screen the instant it opens. The modal's own Print
+  // button covers that deliberately now.
+  document.getElementById('viewProposalIframe').srcdoc = renderInvoiceDocumentHtml(inv, job, otherInvoices, false);
+  kOpen('viewProposalModal');
 }
 window.printInvoiceData = printInvoiceData;
 
@@ -25192,35 +25200,35 @@ function printProposal() {
   const co = companyProfile;
   const { itemized, showCategoryPricing } = getProposalPricingFlags();
 
-  // Same mobile popup-blocker fix as viewInvoiceById etc: open
-  // synchronously FIRST, before any async/delayed work — the fallback
-  // path below used to open the window inside a setTimeout(...,1500),
-  // which is exactly the kind of delayed-after-the-tap open mobile
-  // browsers silently block. Now the window opens immediately either
-  // way; only the CONTENT filling it in is ever delayed.
-  const win = window.open('', '_blank');
-  if (win) win.document.write('<html><body style="font-family:sans-serif;padding:40px;text-align:center;color:#666">Loading proposal…</body></html>');
+  // Fixed 2026-09-30: was window.open('', '_blank') + document.write,
+  // the same freeze/stranded-tab pattern already found and fixed on
+  // View Proposal, Print Internal, Punch List, and Change Orders --
+  // this one was flagged in that earlier pass as still needing the
+  // same fix and never got to it. On Travis's phone this wasn't just
+  // "no way back" -- it froze the entire app, requiring a full
+  // force-close to recover. Migrated to the same proven in-app modal
+  // (iframe + srcdoc); the popup-blocker workaround above is gone
+  // entirely since an iframe modal was never subject to that risk.
+  const render = () => {
+    const data = computeProposalData(job, itemized, showCategoryPricing);
+    saveProposalSnapshot(conCurrentJobId, data);
+    const titleEl = document.getElementById('viewProposalModalTitle');
+    if (titleEl) titleEl.textContent = '🖨 Proposal — ' + (job?.name || '');
+    // autoPrint explicitly false: renderProposalDocumentHtml auto-fires
+    // window.print() on load unless told not to, which inside this
+    // modal would immediately cover the screen the instant it opens --
+    // the modal's own Print button covers that now, deliberately.
+    document.getElementById('viewProposalIframe').srcdoc = renderProposalDocumentHtml(data, job, co, false);
+    kOpen('viewProposalModal');
+  };
 
   // Ensure estimate is loaded before computing proposal data
   if (!estGroups || !estGroups.length) {
     conLoadEstimate(conCurrentJobId);
-    setTimeout(() => {
-      const data = computeProposalData(job, itemized, showCategoryPricing);
-      saveProposalSnapshot(conCurrentJobId, data);
-      if (!win) { alert('Your browser blocked the popup — check your popup/pop-up blocker settings for this site and try again.'); return; }
-      win.document.open();
-      win.document.write(renderProposalDocumentHtml(data, job, co));
-      win.document.close();
-    }, 1500);
+    setTimeout(render, 1500);
     return;
   }
-
-  const data = computeProposalData(job, itemized, showCategoryPricing);
-  saveProposalSnapshot(conCurrentJobId, data);
-  if (!win) { alert('Your browser blocked the popup — check your popup/pop-up blocker settings for this site and try again.'); return; }
-  win.document.open();
-  win.document.write(renderProposalDocumentHtml(data, job, co));
-  win.document.close();
+  render();
 }
 window.printProposal = printProposal;
 
@@ -25580,21 +25588,22 @@ function renderChangeOrderDocumentHtml(co, job, comp, autoPrint) {
 }
 window.renderChangeOrderDocumentHtml = renderChangeOrderDocumentHtml;
 
-// Same mobile popup-blocker fix as printProposal: open the window
-// synchronously first, fill content in after.
+// Fixed 2026-09-30: was window.open('', '_blank') + document.write --
+// same freeze/stranded-tab bug already fixed on View Proposal, Print
+// Internal, Punch List, Print Proposal, and the invoice print path.
+// Now just reuses the same modal viewChangeOrder already uses, with
+// autoPrint false -- the modal's own Print button covers it instead
+// of auto-firing window.print() the instant this opens.
 function printChangeOrder(coId) {
   const job = conJobs.find(j => j.id === conCurrentJobId);
   const co = conCOs.find(c => c.id === coId);
   if (!co) { alert('Change order not found.'); return; }
 
-  const win = window.open('', '_blank');
-  if (win) win.document.write('<html><body style="font-family:sans-serif;padding:40px;text-align:center;color:#666">Loading change order…</body></html>');
-
-  const html = renderChangeOrderDocumentHtml(co, job, companyProfile, true);
-  if (!win) { alert('Your browser blocked the popup — check your popup/pop-up blocker settings for this site and try again.'); return; }
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
+  const html = renderChangeOrderDocumentHtml(co, job, companyProfile, false);
+  const titleEl = document.getElementById('viewProposalModalTitle');
+  if (titleEl) titleEl.textContent = '🖨 ' + (co.title || 'Change Order');
+  document.getElementById('viewProposalIframe').srcdoc = html;
+  kOpen('viewProposalModal');
 }
 window.printChangeOrder = printChangeOrder;
 
