@@ -25232,6 +25232,28 @@ function printProposal() {
 }
 window.printProposal = printProposal;
 
+// printViewProposalModal -- the shared viewProposalModal's Print button
+// used to call iframe.contentWindow.print() directly. That's a known,
+// deliberate browser limitation on mobile (Chrome's own team has called
+// it intended behavior, not a bug) -- many mobile browsers, and
+// virtually all in-app webviews, silently no-op an iframe's own print()
+// call. Fixed by having the TOP-LEVEL window print instead: opens a
+// real new tab with the iframe's current content and calls print()
+// there. Safe from popup blockers since this only ever fires on a
+// direct tap of the Print button itself, a genuine user gesture, not
+// an automatic background action.
+function printViewProposalModal() {
+  const html = document.getElementById('viewProposalIframe').srcdoc;
+  const win = window.open('', '_blank');
+  if (!win) { alert('Your browser blocked the popup — check your popup/pop-up blocker settings for this site and try again.'); return; }
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 300);
+}
+window.printViewProposalModal = printViewProposalModal;
+
 // Same document as printProposal, but without the auto-print trigger —
 // for actually looking at what you're about to send/print, not printing
 // it. Previously the ONLY way to see the proposal at all was to hit
