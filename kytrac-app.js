@@ -22445,14 +22445,14 @@ function getPaymentScheduleRows(paymentSchedule, grandTotal) {
   // middle three stages were printing as bare "Payment 2/3/4" with no
   // completion percentage at all. For exactly 3 middle "Payment N"
   // stages (his specific 35/20/20/15/10 pattern), use his own stated
-  // milestones directly -- 25%/50%/70%, NOT the halving formula above,
+  // milestones directly -- 25%/50%/75%, NOT the halving formula above,
   // since those numbers don't follow that pattern and were given
   // directly by Travis. A custom schedule with some OTHER stage count
   // falls back to the same halving approach already proven for
   // "Progress Payment" labels, rather than guessing new numbers.
   const customIdxs = stages.reduce((arr, s, i) => { if (/^Payment\s\d+$/.test(s.label)) arr.push(i); return arr; }, []);
   if (customIdxs.length === 3) {
-    [25, 50, 70].forEach((pct, n) => { stages[customIdxs[n]].label = `${stages[customIdxs[n]].label} due upon ${pct}% completion`; });
+    [25, 50, 75].forEach((pct, n) => { stages[customIdxs[n]].label = `${stages[customIdxs[n]].label} due upon ${pct}% completion`; });
   } else {
     customIdxs.forEach((idx, n) => {
       const completionPct = Math.round((100 - 100 / Math.pow(2, n + 1)) * 10) / 10;
