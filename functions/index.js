@@ -3519,3 +3519,60 @@ exports.debugCheckSchedule2 = functions.https.onRequest(async (req, res) => {
 });
 
 
+
+// TEMPORARY DEBUG -- real status, Labor/Materials Billed, and actual
+// collected $ per job, for the real bucket-totals-to-date request.
+// Delete after use.
+exports.debugRealCollected = functions.https.onRequest(async (req, res) => {
+  const db = admin.firestore();
+  const companiesSnap = await db.collection('companies').get();
+  const out = [];
+  for (const companyDoc of companiesSnap.docs) {
+    const jobsSnap = await companyDoc.ref.collection('jobs').get();
+    for (const jobDoc of jobsSnap.docs) {
+      const j = jobDoc.data();
+
+      let materials = 0, laborAndOther = 0;
+      const addItem = data => {
+        const price = (data.unitPrice || 0) * (data.qty || 1);
+        if (data.costType === 'Materials') materials += price; else laborAndOther += price;
+      };
+      const groupsSnap = await jobDoc.ref.collection('estimateGroups').get();
+      await Promise.all(groupsSnap.docs.map(async gDoc => {
+        const [directItems, subsSnap] = await Promise.all([
+          gDoc.ref.collection('items').get(),
+          gDoc.ref.collection('subgroups').get(),
+        ]);
+        directItems.forEach(d => addItem(d.data()));
+        await Promise.all(subsSnap.docs.map(async sDoc => {
+          const [subItems, subsubSnap] = await Promise.all([
+            sDoc.ref.collection('items').get(),
+            sDoc.ref.collection('subgroups').get(),
+          ]);
+          subItems.forEach(d => addItem(d.data()));
+          await Promise.all(subsubSnap.docs.map(ssDoc =>
+            ssDoc.ref.collection('items').get().then(ssItems => ssItems.forEach(d => addItem(d.data())))
+          ));
+        }));
+      }));
+
+      const invSnap = await jobDoc.ref.collection('invoices').get();
+      let totalInvoiced = 0, totalCollected = 0;
+      const invoices = [];
+      invSnap.forEach(d => {
+        const inv = d.data();
+        totalInvoiced += inv.total || 0;
+        totalCollected += inv.amtPaid || 0;
+        invoices.push({ number: inv.number, total: inv.total || 0, amtPaid: inv.amtPaid || 0, status: inv.status || null });
+      });
+
+      out.push({
+        jobNumber: j.jobNumber || j.name, status: j.status,
+        materialsBilled: Math.round(materials), laborBilled: Math.round(laborAndOther),
+        totalInvoiced: Math.round(totalInvoiced), totalCollected: Math.round(totalCollected),
+        invoiceCount: invoices.length, invoices,
+      });
+    }
+  }
+  res.json({ count: out.length, jobs: out });
+});
