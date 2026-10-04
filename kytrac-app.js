@@ -23985,6 +23985,209 @@ async function duplicateSubgroup(groupId, subId) {
 }
 window.duplicateSubgroup = duplicateSubgroup;
 
+// NEW 2026-10-04: Duplicate Job -- copies an entire job's estimate into a
+// brand new job so a second option can be priced and offered side by side
+// (first real use: JOB-2026-744, designer grade came in ~$30K over the
+// customer's budget, so a contractor-grade copy is needed as Option 2).
+//
+// Copies: customer/contact info, job type, PM/super/team lead, access
+// info, labor basis, payment schedule, and the FULL estimate tree --
+// every Room (estimateGroup), Area (subgroup), nested sub-subgroup and
+// line item, at every depth, with all their fields (bundleTier, phase,
+// costType, notes, visibility, etc).
+//
+// Deliberately does NOT copy: invoices, payments, proposals/signatures,
+// change orders, bills, expenses, logs, notes, photos, documents,
+// selections, schedule dates, crew, Google Calendar links, board/task
+// progress flags, or contract value. The copy starts as a clean,
+// unsigned estimate in Building Estimate status so nothing about money,
+// scheduling, or customer approval can be duplicated by accident.
+//
+// Reads the original fresh from Firestore (not the in-memory cache --
+// same stale-cache lesson as cascadeJobDatesToRooms / loadGlobalPhases).
+const DUP_JOB_FIELDS = [
+  'client', 'customerId', 'phone', 'email', 'clientEmail', 'address',
+  'geoLat', 'geoLon', 'type', 'pm', 'superintendent', 'teamLead',
+  'accessInfo', 'lockboxCode', 'alarmCode', 'laborBasis', 'paymentSchedule',
+  'estCost', 'estPrice'
+];
+// Progress / scheduling / sync fields that belong to the ORIGINAL job's
+// real-world execution, never to a fresh alternate estimate.
+const DUP_TREE_STRIP = [
+  'sprintEnabled', 'status', 'taskStatus', 'startDate', 'endDate',
+  'gcalEventId', 'gcalEventIds', 'completed', 'completedAt', 'done',
+  'actualHours', 'createdAt', 'updatedAt'
+];
+const DUP_TREE_CHILDREN = ['items', 'subgroups'];
+
+function dupUniqueJobNumber() {
+  const taken = new Set(conJobs.map(j => j.jobNumber).filter(Boolean));
+  for (let i = 0; i < 200; i++) {
+    const n = conGenJobNumber();
+    if (!taken.has(n)) return n;
+  }
+  // 3-digit space exhausted for the year -- fall back to 4 digits.
+  return 'JOB-' + new Date().getFullYear() + '-' + String(Math.floor(Math.random() * 9000) + 1000);
+}
+
+async function duplicateCurrentJob() {
+  const srcId = conCurrentJobId;
+  if (!srcId) return;
+  const srcSnap = await coll('jobs').doc(srcId).get();
+  if (!srcSnap.exists) { alert('Could not find this job.'); return; }
+  const src = srcSnap.data();
+  const srcNum = src.jobNumber || src.name || '';
+
+  const label = prompt(
+    'Duplicate ' + srcNum + ' as a new estimate option.\n\n' +
+    'Everything in the estimate is copied. Invoices, payments, proposals, ' +
+    'signatures, schedule, and crew are NOT.\n\n' +
+    'Name this option:',
+    'Contractor Grade Option'
+  );
+  if (label === null) return;
+  const optionLabel = label.trim() || 'Option 2';
+
+  const newNumber = dupUniqueJobNumber();
+  const baseName = (src.name && src.name !== src.jobNumber) ? src.name : newNumber;
+
+  const btn = document.getElementById('dupJobBtn');
+  const btnText = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⧉ Copying…'; }
+
+  try {
+    const now = firebase.firestore.FieldValue.serverTimestamp();
+    const who = conCurrentUser ? conCurrentUser.email : 'unknown';
+
+    const jobData = {};
+    DUP_JOB_FIELDS.forEach(f => { if (src[f] !== undefined) jobData[f] = src[f]; });
+    Object.assign(jobData, {
+      name: baseName + ' — ' + optionLabel,
+      jobNumber: newNumber,
+      status: 'Building Estimate',
+      statusDate: new Date().toISOString().split('T')[0],
+      contractValue: 0,
+      actualCost: 0,
+      startDate: '',
+      endDate: '',
+      crew: [],
+      notes: 'Alternate estimate option copied from ' + srcNum + ' (' + optionLabel + ').' +
+        (src.notes ? '\n\n' + src.notes : ''),
+      alternateOfJobId: srcId,
+      alternateOfJobNumber: srcNum,
+      optionLabel,
+      createdAt: now,
+      createdBy: who,
+      updatedAt: now,
+      updatedBy: who,
+    });
+
+    const newRef = coll('jobs').doc();
+    const idMap = {};          // old doc id -> new doc id, for remapping references
+    const depFixups = [];      // [newRef, oldDependsOnArray]
+    const writes = [];         // [ref, data]
+
+    writes.push([newRef, subDoc(jobData)]);
+
+    // Recursively walk items/subgroups at any depth.
+    async function copyLevel(srcParentRef, dstParentRef) {
+      for (const child of DUP_TREE_CHILDREN) {
+        const snap = await srcParentRef.collection(child).get();
+        for (const d of snap.docs) {
+          const data = { ...d.data() };
+          DUP_TREE_STRIP.forEach(f => delete data[f]);
+          data.createdAt = now;
+          const dstRef = dstParentRef.collection(child).doc();
+          idMap[d.id] = dstRef.id;
+          if (Array.isArray(data.dependsOn) && data.dependsOn.length) {
+            depFixups.push([dstRef, data.dependsOn]);
+            delete data.dependsOn;
+          }
+          writes.push([dstRef, data]);
+          if (child === 'subgroups') await copyLevel(d.ref, dstRef);
+        }
+      }
+    }
+
+    const groupsSnap = await coll('jobs').doc(srcId).collection('estimateGroups').get();
+    for (const g of groupsSnap.docs) {
+      const data = { ...g.data() };
+      DUP_TREE_STRIP.forEach(f => delete data[f]);
+      data.createdAt = now;
+      const dstRef = newRef.collection('estimateGroups').doc();
+      idMap[g.id] = dstRef.id;
+      if (Array.isArray(data.dependsOn) && data.dependsOn.length) {
+        depFixups.push([dstRef, data.dependsOn]);
+        delete data.dependsOn;
+      }
+      writes.push([dstRef, data]);
+      await copyLevel(g.ref, dstRef);
+    }
+
+    // A friends & family labor discount stores a backup keyed by the
+    // ORIGINAL item ids -- remap it so "Remove discount" still works on
+    // the copy instead of silently pointing at the other job's items.
+    if (src.laborDiscount && Array.isArray(src.laborDiscount.backup)) {
+      jobData.laborDiscount = {
+        ...src.laborDiscount,
+        backup: src.laborDiscount.backup
+          .filter(b => idMap[b.itemId])
+          .map(b => ({
+            ...b,
+            groupId: idMap[b.groupId] || b.groupId,
+            subgroupId: b.subgroupId ? (idMap[b.subgroupId] || b.subgroupId) : b.subgroupId,
+            subSubgroupId: b.subSubgroupId ? (idMap[b.subSubgroupId] || b.subSubgroupId) : b.subSubgroupId,
+            itemId: idMap[b.itemId],
+          })),
+      };
+      writes[0][1] = subDoc(jobData);
+    }
+
+    // Dependencies only make sense pointing at the copy's own rooms/tasks.
+    for (const [ref, deps] of depFixups) {
+      const mapped = deps.map(id => idMap[id]).filter(Boolean);
+      if (mapped.length) {
+        const w = writes.find(x => x[0].path === ref.path);
+        if (w) w[1].dependsOn = mapped;
+      }
+    }
+
+    // Commit in chunks (Firestore batch limit is 500 ops). Job doc goes
+    // in the first batch, so the copy never exists without its header.
+    for (let i = 0; i < writes.length; i += 400) {
+      const batch = conDb.batch();
+      writes.slice(i, i + 400).forEach(([ref, data]) => batch.set(ref, data));
+      await batch.commit();
+    }
+
+    if (typeof logStatusChangeActivity === 'function') {
+      try { logStatusChangeActivity(newRef.id, '', 'Building Estimate', 'Duplicated from ' + srcNum + ' (' + optionLabel + ')'); } catch (e) {}
+    }
+
+    const itemCount = writes.length - 1;
+    // Wait for the jobs listener to pick up the new doc, then open it.
+    const started = Date.now();
+    while (!conJobs.find(j => j.id === newRef.id) && Date.now() - started < 6000) {
+      await new Promise(r => setTimeout(r, 200));
+    }
+    alert('Created ' + newNumber + ' — ' + optionLabel + '\n\nCopied ' + itemCount +
+      ' rooms, areas, and line items from ' + srcNum + '. The original is untouched.');
+    if (conJobs.find(j => j.id === newRef.id)) {
+      openJobDetail(newRef.id);
+      setTimeout(() => {
+        document.querySelectorAll('#jobDetailModal .con-subtab').forEach(b => {
+          if (b.textContent.includes('Estimate')) b.click();
+        });
+      }, 400);
+    }
+  } catch (e) {
+    alert('Error duplicating job: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = btnText; }
+  }
+}
+window.duplicateCurrentJob = duplicateCurrentJob;
+
 async function deleteSubgroup(groupId, subId) {
   if (!confirm('Delete this subgroup and all its items?')) return;
   const ref = coll('jobs').doc(conCurrentJobId).collection('estimateGroups')

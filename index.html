@@ -4348,6 +4348,7 @@
         <button class="btn" onclick="switchDetailTab('jobnotes', null); openAddJobNote();" style="font-size:.78rem;padding:6px 12px">📋 Log Note</button>
         <button class="btn" onclick="openJobPhotos()" style="font-size:.78rem;padding:6px 12px">📷 Photos</button>
         <button class="btn" onclick="editCurrentJob()" style="font-size:.78rem;padding:6px 12px">✏️ Edit</button>
+        <button class="btn" id="dupJobBtn" onclick="duplicateCurrentJob()" title="Copy this entire estimate into a new job as a second option (e.g. contractor grade vs design grade). Invoices, payments, proposals, schedule and crew are not copied." style="font-size:.78rem;padding:6px 12px">⧉ Duplicate</button>
         <button class="btn btn-danger" onclick="openArchiveJobModal()" style="font-size:.78rem;padding:6px 12px">🗑️ Delete</button>
         <button class="btn" onclick="shareCustomerPortal()" style="background:linear-gradient(135deg,#0d9488,#0891b2);color:#fff;border:none;font-size:.78rem;padding:6px 12px">🔗 Portal</button>
         <button class="btn" onclick="kClose('jobDetailModal')" style="font-size:.78rem;padding:6px 12px">Close</button>
@@ -5133,7 +5134,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202609300230"></script>
+<script src="kytrac-app.js?v=202610041200"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW
