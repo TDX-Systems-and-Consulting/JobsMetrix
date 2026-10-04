@@ -6542,6 +6542,7 @@ function switchDetailTab(tab, btn) {
   const isEstimate = tab === 'estimate';
   if (headerBlock) headerBlock.style.display = isEstimate ? 'none' : '';
   if (finBar) finBar.style.display = isEstimate ? 'none' : 'grid';
+  if (finBar) finBar.classList.toggle('est-tab-hide', isEstimate);
   // Tab row too — with the compact header's own "← Dashboard" button
   // providing a way back, the full 15-tab row is just clutter while
   // heads-down building an estimate. One click on "← Dashboard" (or
