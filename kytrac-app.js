@@ -24090,8 +24090,14 @@ async function duplicateCurrentJob() {
     writes.push([newRef, subDoc(jobData)]);
 
     // Recursively walk items/subgroups at any depth.
-    async function copyLevel(srcParentRef, dstParentRef) {
-      for (const child of DUP_TREE_CHILDREN) {
+    // depth 1 = Area (subgroup), depth 2 = sub-subgroup. The app (and
+    // firestore.rules) only go Room > Area > Sub-area > items -- querying
+    // a 'subgroups' collection under a sub-area hits a path with no rule
+    // and Firestore denies the whole read (first real run on 744 failed
+    // with "Missing or insufficient permissions" for exactly this).
+    async function copyLevel(srcParentRef, dstParentRef, depth) {
+      const children = depth >= 2 ? ['items'] : DUP_TREE_CHILDREN;
+      for (const child of children) {
         const snap = await srcParentRef.collection(child).get();
         for (const d of snap.docs) {
           const data = { ...d.data() };
@@ -24104,7 +24110,7 @@ async function duplicateCurrentJob() {
             delete data.dependsOn;
           }
           writes.push([dstRef, data]);
-          if (child === 'subgroups') await copyLevel(d.ref, dstRef);
+          if (child === 'subgroups') await copyLevel(d.ref, dstRef, depth + 1);
         }
       }
     }
@@ -24121,7 +24127,7 @@ async function duplicateCurrentJob() {
         delete data.dependsOn;
       }
       writes.push([dstRef, data]);
-      await copyLevel(g.ref, dstRef);
+      await copyLevel(g.ref, dstRef, 0);
     }
 
     // A friends & family labor discount stores a backup keyed by the
