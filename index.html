@@ -4793,6 +4793,21 @@
               <button class="btn" onclick="printPunchList()" style="padding:6px 14px;font-size:.82rem;background:linear-gradient(135deg,rgba(29,187,135,.2),rgba(13,148,136,.15));color:#a3f2d2;border-color:rgba(29,187,135,.3)">📋 Punch List</button>
             </div>
           </div>
+          <!-- Suggested Crew: internal only, Travis + Jason (renderSuggestedCrew) -->
+          <div id="suggestedCrewBox" style="display:none;margin-bottom:14px;border:1px solid var(--amber-border);border-radius:10px;overflow:hidden">
+            <button onclick="const p=document.getElementById('suggestedCrewBody'); p.style.display = p.style.display==='none' ? 'block' : 'none';"
+              style="width:100%;text-align:left;padding:8px 12px;background:rgba(217,119,6,.08);border:none;color:var(--amber);font-size:.82rem;font-weight:700;cursor:pointer;display:flex;justify-content:space-between;gap:8px;align-items:center">
+              <span>👷 Suggested Crew <span class="small muted" style="font-weight:400">· only you &amp; Jason see this</span></span>
+              <span id="suggestedCrewSummary" class="small" style="font-weight:600;color:var(--text);text-align:right">None picked yet</span>
+            </button>
+            <div id="suggestedCrewBody" style="display:none;padding:10px 12px">
+              <div id="suggestedCrewList" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
+                <span class="small muted">Saves as you tap. Not on the customer proposal.</span>
+                <button class="btn" onclick="assignSuggestedCrewToJob()" style="padding:5px 12px;font-size:.78rem">Assign as job crew</button>
+              </div>
+            </div>
+          </div>
           <!-- Proposal History (Draft/Pending/Approved/Declined versions) -->
           <div style="margin-bottom:14px;border:1px solid var(--line);border-radius:10px;overflow:hidden">
             <button onclick="const p=document.getElementById('proposalHistoryList'); p.style.display = p.style.display==='none' ? 'block' : 'none';"
@@ -5144,7 +5159,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202610041840"></script>
+<script src="kytrac-app.js?v=202610041910"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW

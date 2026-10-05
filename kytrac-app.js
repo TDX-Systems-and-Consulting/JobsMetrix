@@ -6565,6 +6565,7 @@ function switchDetailTab(tab, btn) {
   }
   if (tab === 'estimate') {
     loadEstimate(conCurrentJobId);
+    renderSuggestedCrew();
     // Clicking into the Estimate tab means you're actually starting to
     // build one — auto-advance from New Lead/Appointment Set to
     // Building Estimate. Forward-only (never regresses a job already
@@ -24010,7 +24011,7 @@ const DUP_JOB_FIELDS = [
   'client', 'customerId', 'phone', 'email', 'clientEmail', 'address',
   'geoLat', 'geoLon', 'type', 'pm', 'superintendent', 'teamLead',
   'accessInfo', 'lockboxCode', 'alarmCode', 'laborBasis', 'paymentSchedule',
-  'estCost', 'estPrice'
+  'estCost', 'estPrice', 'suggestedCrew'
 ];
 // Progress / scheduling / sync fields that belong to the ORIGINAL job's
 // real-world execution, never to a fresh alternate estimate.
@@ -24194,6 +24195,92 @@ async function duplicateCurrentJob() {
   }
 }
 window.duplicateCurrentJob = duplicateCurrentJob;
+
+// NEW 2026-10-04: Suggested Crew -- internal-only box on the Estimate
+// tab (right above Proposal History) where Travis and Jason pick the
+// crew they think fits a job best while they're pricing/proposing it.
+// Visible ONLY to the same two logins as the Financials tab
+// (canViewFinancialsTab). Never printed on or shown in the customer
+// proposal, portal, or print-outs -- nothing in those renderers reads
+// job.suggestedCrew. Stored as [{email,name}] (same shape as job.crew)
+// so "Assign as job crew" can copy it straight over once the job sells.
+async function renderSuggestedCrew() {
+  const box = document.getElementById('suggestedCrewBox');
+  if (!box) return;
+  if (!canViewFinancialsTab() || !conCurrentJobId) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = 'block';
+  const jobId = conCurrentJobId;
+  const list = document.getElementById('suggestedCrewList');
+  if (list) list.innerHTML = '<div class="small muted">Loading team…</div>';
+  try {
+    const [jobSnap, teamSnap] = await Promise.all([
+      coll('jobs').doc(jobId).get(),
+      coll('settings').doc('team').get(),
+    ]);
+    if (jobId !== conCurrentJobId) return; // user switched jobs mid-load
+    const selected = new Set(((jobSnap.data() || {}).suggestedCrew || []).map(c => c.email));
+    const members = teamSnap.exists ? Object.values(extractTeamMembers(teamSnap.data()))
+      .sort((a, b) => (a.name || a.email || '').localeCompare(b.name || b.email || '')) : [];
+    if (!members.length) { list.innerHTML = '<div class="small muted">No team members found in Company Settings.</div>'; return; }
+    list.innerHTML = members.map(m => {
+      const on = selected.has(m.email);
+      return `<label style="display:flex;align-items:center;gap:7px;cursor:pointer;padding:6px 9px;border-radius:8px;border:1px solid ${on ? 'var(--amber-border)' : 'var(--line)'};background:${on ? 'rgba(217,119,6,.12)' : 'transparent'}">
+        <input type="checkbox" value="${esc(m.email)}" data-name="${esc(m.name || m.email)}" ${on ? 'checked' : ''} onchange="saveSuggestedCrew()" style="accent-color:var(--amber);width:16px;height:16px;flex-shrink:0" />
+        <span style="font-size:.82rem;font-weight:700;color:var(--text)">${esc(m.name || m.email)}</span>
+        <span style="font-size:.68rem;color:var(--muted)">${esc(m.role || '')}</span>
+      </label>`;
+    }).join('');
+    updateSuggestedCrewSummary();
+  } catch (e) {
+    if (list) list.innerHTML = '<div class="small muted">Could not load team: ' + esc(e.message) + '</div>';
+  }
+}
+
+function getSuggestedCrewSelection() {
+  return Array.from(document.querySelectorAll('#suggestedCrewList input[type="checkbox"]:checked'))
+    .map(cb => ({ email: cb.value, name: cb.dataset.name }));
+}
+
+function updateSuggestedCrewSummary() {
+  const sum = document.getElementById('suggestedCrewSummary');
+  const sel = getSuggestedCrewSelection();
+  if (sum) sum.textContent = sel.length ? sel.map(c => c.name).join(', ') : 'None picked yet';
+  document.querySelectorAll('#suggestedCrewList label').forEach(l => {
+    const on = l.querySelector('input').checked;
+    l.style.borderColor = on ? 'var(--amber-border)' : 'var(--line)';
+    l.style.background = on ? 'rgba(217,119,6,.12)' : 'transparent';
+  });
+}
+
+async function saveSuggestedCrew() {
+  if (!canViewFinancialsTab() || !conCurrentJobId) return;
+  const crew = getSuggestedCrewSelection();
+  updateSuggestedCrewSummary();
+  try {
+    await coll('jobs').doc(conCurrentJobId).update({
+      suggestedCrew: crew,
+      suggestedCrewUpdatedBy: conCurrentUser ? conCurrentUser.email : 'unknown',
+      suggestedCrewUpdatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (e) { alert('Could not save suggested crew: ' + e.message); }
+}
+
+async function assignSuggestedCrewToJob() {
+  if (!canViewFinancialsTab() || !conCurrentJobId) return;
+  const crew = getSuggestedCrewSelection();
+  if (!crew.length) { alert('Pick at least one person first.'); return; }
+  if (!confirm('Make this the job\'s Assigned Crew?\n\n' + crew.map(c => c.name).join(', ') +
+    '\n\nThis replaces whoever is currently assigned and shows on the schedule/calendar.')) return;
+  try {
+    await coll('jobs').doc(conCurrentJobId).update({ crew, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+    const job = conJobs.find(j => j.id === conCurrentJobId);
+    if (job) job.crew = crew;
+    alert('Assigned crew updated.');
+  } catch (e) { alert('Could not assign crew: ' + e.message); }
+}
+window.renderSuggestedCrew = renderSuggestedCrew;
+window.saveSuggestedCrew = saveSuggestedCrew;
+window.assignSuggestedCrewToJob = assignSuggestedCrewToJob;
 
 async function deleteSubgroup(groupId, subId) {
   if (!confirm('Delete this subgroup and all its items?')) return;
