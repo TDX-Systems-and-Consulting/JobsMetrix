@@ -4404,6 +4404,7 @@
         <button class="con-subtab active" onclick="switchDetailTab('dashboard',this)">🏠 Dashboard</button>
         <button class="con-subtab" onclick="switchDetailTab('estimate',this)">📋 Estimate</button>
         <button class="con-subtab" onclick="switchDetailTab('invoices',this)">🧾 Invoices</button>
+        <button class="con-subtab" onclick="switchDetailTab('receipts',this)">📸 Receipts</button>
         <button class="con-subtab" onclick="switchDetailTab('changeorders',this)">🔄 Change Orders</button>
         <button class="con-subtab" onclick="switchDetailTab('phases',this)">📅 Schedule</button>
         <button class="con-subtab" onclick="switchDetailTab('todos',this)">✅ To-Dos</button>
@@ -5045,6 +5046,33 @@
       </div>
 
       <!-- ══ TO-DOS TAB ══ -->
+      <!-- RECEIPTS TAB (loadJobReceipts) -->
+      <div id="detailReceipts" style="display:none">
+        <div style="border:1px solid var(--amber-border);border-radius:12px;padding:14px;margin-bottom:16px;display:flex;flex-direction:column;gap:10px;max-width:560px">
+          <div style="font-weight:800;font-size:1rem;color:var(--amber)">📸 Upload a receipt</div>
+          <label for="rcFile" class="btn" style="justify-content:center;padding:14px;font-size:.95rem;cursor:pointer;text-align:center"><span id="rcFileLabel">📷 Take / choose receipt photo</span></label>
+          <input id="rcFile" type="file" accept="image/*,application/pdf" onchange="onReceiptFileChosen(this)" style="display:none" />
+          <img id="rcPreview" alt="Receipt preview" style="display:none;max-height:220px;max-width:100%;object-fit:contain;border-radius:8px;border:1px solid var(--line)" />
+          <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px">
+            <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Total ($) *<input id="rcAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0.00" style="padding:8px" /></label>
+            <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Store / vendor<input id="rcVendor" type="text" placeholder="e.g. Home Depot" style="padding:8px" /></label>
+          </div>
+          <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Paid with
+            <select id="rcPaidWith" style="padding:8px">
+              <option>Company card</option>
+              <option>Personal card / cash</option>
+            </select>
+          </label>
+          <label class="small muted" style="display:flex;flex-direction:column;gap:3px">What was it for?<input id="rcNote" type="text" placeholder="e.g. drywall screws, mud, tape" style="padding:8px" /></label>
+          <button id="rcSubmitBtn" class="btn-amber" onclick="submitReceipt()" style="padding:12px;font-size:.95rem">Upload receipt</button>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+          <div style="font-weight:800">Receipts on this job</div>
+          <div id="rcSummary" class="small muted"></div>
+        </div>
+        <div id="rcList"></div>
+      </div>
+
       <div id="detailTodos" style="display:none">
         <div class="kt-card" style="padding:16px;margin-bottom:14px">
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -5159,7 +5187,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202610070900"></script>
+<script src="kytrac-app.js?v=202610071330"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW

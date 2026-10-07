@@ -6494,7 +6494,7 @@ function canViewCrewMap() {
 // Invoices, Change Orders, Specifications, Subs, Activity, Files,
 // Financials, Reports, Retrospective) is hidden, per Travis's explicit
 // list of what field-level work actually requires.
-const FIELD_TECH_ALLOWED_TABS = ['phases', 'todos', 'jobnotes', 'logs', 'selections', 'plans', 'messages', 'entryinfo'];
+const FIELD_TECH_ALLOWED_TABS = ['receipts', 'phases', 'todos', 'jobnotes', 'logs', 'selections', 'plans', 'messages', 'entryinfo'];
 function isFieldTechRestricted() {
   if (currentUserTeamData?.fullAccessOverride) return false;
   return currentUserRole === 'Field Technician';
@@ -6521,7 +6521,7 @@ function switchDetailTab(tab, btn) {
     tab = 'phases';
     btn = document.querySelector('#jobDetailModal .con-subtab[onclick*="\'phases\'"]') || document.querySelector('#jobDetailModal .con-subtab');
   }
-  const allTabs = ['dashboard','financials','estimate','changeorders','subs','phases','logs','invoices','documents','activity','retrospective','todos','selections','specifications','plans','messages','reports','jobnotes','entryinfo'];
+  const allTabs = ['dashboard','financials','estimate','receipts','changeorders','subs','phases','logs','invoices','documents','activity','retrospective','todos','selections','specifications','plans','messages','reports','jobnotes','entryinfo'];
   allTabs.forEach(t => {
     const key = 'detail' + t.charAt(0).toUpperCase() + t.slice(1);
     const el = document.getElementById(key);
@@ -6578,6 +6578,7 @@ function switchDetailTab(tab, btn) {
   if (tab === 'phases') { renderJobGantt(conCurrentJobId); }
   if (tab === 'logs') renderLogList();
   if (tab === 'invoices') loadJobInvoices(conCurrentJobId);
+  if (tab === 'receipts') loadJobReceipts(conCurrentJobId);
   if (tab === 'activity') loadJobActivity(conCurrentJobId, 'full');
   if (tab === 'jobnotes') loadJobNotes(conCurrentJobId);
   if (tab === 'retrospective') loadRetrospective(conCurrentJobId);
@@ -15126,6 +15127,7 @@ function loadTodos() {
       });
       renderTodos();
       updateTodoBadge();
+      try { rcCheckNewReceiptTodos(allTodos); } catch (e) {}
       populateTodoJobFilter();
       populateTodoAssigneeFilter();
     }, () => {});
@@ -24342,6 +24344,259 @@ async function assignSuggestedCrewToJob() {
 window.renderSuggestedCrew = renderSuggestedCrew;
 window.saveSuggestedCrew = saveSuggestedCrew;
 window.assignSuggestedCrewToJob = assignSuggestedCrewToJob;
+
+// ════════════════════════════════════════════════════
+// ── RECEIPTS (NEW 2026-10-07) ──
+// ════════════════════════════════════════════════════
+// Any team member (field techs included) snaps a receipt photo on a job's
+// Receipts tab. Each upload: (1) stores the photo in Firebase Storage
+// under the job's existing photos path (storage.rules already allow it --
+// no separate rules deploy), (2) saves a jobs/{jobId}/receipts doc, (3)
+// creates a high-priority To-Do for the Owner to reconcile/reimburse, and
+// (4) emails the Owner an alert with the photo link. The Owner then marks
+// it Logged (copied into Materials Purchases), Reimbursed, or Reconciled,
+// which also checks off the linked To-Do.
+const RECEIPT_ALERT_FALLBACK_EMAIL = 'travis@7pillarsgroup.org';
+let _rcPendingFile = null;
+let _rcReceipts = [];
+let _rcUnsub = null;
+
+function rcMoney(n) { return '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function rcCanManage() { return typeof canViewJobMoney === 'function' ? canViewJobMoney() : isOwnerOrAdmin(); }
+
+function loadJobReceipts(jobId) {
+  if (_rcUnsub) { _rcUnsub(); _rcUnsub = null; }
+  const list = document.getElementById('rcList');
+  if (list) list.innerHTML = '<div class="small muted">Loading receipts…</div>';
+  rcResetForm();
+  _rcUnsub = coll('jobs').doc(jobId).collection('receipts').orderBy('createdAt', 'desc')
+    .onSnapshot(snap => {
+      if (jobId !== conCurrentJobId) return;
+      _rcReceipts = [];
+      snap.forEach(d => _rcReceipts.push({ id: d.id, ...d.data() }));
+      renderJobReceipts();
+    }, e => { if (list) list.innerHTML = '<div class="small muted">Could not load receipts: ' + esc(e.message) + '</div>'; });
+}
+
+function rcResetForm() {
+  _rcPendingFile = null;
+  const ids = ['rcAmount', 'rcVendor', 'rcNote'];
+  ids.forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const f = document.getElementById('rcFile'); if (f) f.value = '';
+  const prev = document.getElementById('rcPreview'); if (prev) { prev.removeAttribute('src'); prev.style.display = 'none'; }
+  const lbl = document.getElementById('rcFileLabel'); if (lbl) lbl.textContent = '📷 Take / choose receipt photo';
+  const paid = document.getElementById('rcPaidWith'); if (paid) paid.value = 'Company card';
+}
+
+function onReceiptFileChosen(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  _rcPendingFile = file;
+  const lbl = document.getElementById('rcFileLabel'); if (lbl) lbl.textContent = '✓ ' + file.name + ' — tap to change';
+  const prev = document.getElementById('rcPreview');
+  if (prev && file.type.startsWith('image/')) {
+    const r = new FileReader();
+    r.onload = e => { prev.src = e.target.result; prev.style.display = 'block'; };
+    r.readAsDataURL(file);
+  } else if (prev) { prev.style.display = 'none'; }
+}
+
+async function submitReceipt() {
+  const jobId = conCurrentJobId;
+  if (!jobId) return;
+  if (!_rcPendingFile) { alert('Take or choose a photo of the receipt first.'); return; }
+  const amount = parseFloat(document.getElementById('rcAmount')?.value);
+  if (!amount || amount <= 0) { alert('Enter the receipt total.'); return; }
+  const vendor = (document.getElementById('rcVendor')?.value || '').trim();
+  const paidWith = document.getElementById('rcPaidWith')?.value || 'Company card';
+  const note = (document.getElementById('rcNote')?.value || '').trim();
+  const btn = document.getElementById('rcSubmitBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Uploading…'; }
+  try {
+    const file = _rcPendingFile;
+    let blob = file;
+    if (file.type.startsWith('image/')) {
+      const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = e => res(e.target.result); r.onerror = rej; r.readAsDataURL(file); });
+      const compressed = await compressImage(dataUrl, 1800, 0.85).catch(() => dataUrl);
+      blob = dataUrlToBlob(compressed);
+    }
+    const safeName = (file.name || 'receipt').replace(/[^a-z0-9.\-_]/gi, '_');
+    const path = `companies/${currentCompanyId}/jobs/${jobId}/photos/receipt-${uid('rc')}-${safeName}`;
+    const photoUrl = await uploadToStorage(path, blob);
+
+    const job = conJobs.find(j => j.id === jobId);
+    const who = conCurrentUser?.displayName || conCurrentUser?.email || 'Unknown';
+    const needsReimburse = paidWith === 'Personal card / cash';
+    const receipt = {
+      amount, vendor, paidWith, note, photoUrl, photoPath: path,
+      isPdf: !(file.type || '').startsWith('image/'),
+      needsReimbursement: needsReimburse,
+      status: 'New',
+      uploadedBy: conCurrentUser?.email || '', uploadedByName: who,
+      jobNumber: job?.jobNumber || '', jobName: job?.name || '',
+      companyId: currentCompanyId,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    };
+    const rcRef = await coll('jobs').doc(jobId).collection('receipts').add(receipt);
+
+    // Owner To-Do + email alert. Failures here never lose the receipt itself.
+    let owner = null;
+    try {
+      const team = await fetchTeamMembersFlat(conDb, currentCompanyId);
+      owner = team.find(m => m.role === 'Owner') || null;
+    } catch (e) {}
+    const ownerEmail = owner?.email || RECEIPT_ALERT_FALLBACK_EMAIL;
+    const action = needsReimburse ? 'REIMBURSE' : 'Reconcile';
+    const todoText = `${action} receipt: ${rcMoney(amount)}${vendor ? ' at ' + vendor : ''} — ${who} (${paidWith}) on ${job?.jobNumber || job?.name || 'job'}`;
+    try {
+      const todoRef = await coll('todos').add({
+        text: todoText, priority: 'high', category: 'Receipt',
+        jobId, jobName: job?.name || '', receiptId: rcRef.id, receiptUrl: photoUrl,
+        assignee: ownerEmail, assigneeName: owner?.name || '',
+        done: false,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        createdBy: conCurrentUser?.email || '', createdByName: who,
+      });
+      await rcRef.update({ todoId: todoRef.id });
+    } catch (e) { console.warn('Receipt to-do failed', e); }
+    try {
+      const sendEmail = conFunctions.httpsCallable('sendJobspanEmail');
+      const lines = [
+        `<p><strong>${esc(who)}</strong> uploaded a receipt on <strong>${esc(job?.jobNumber || '')} ${esc(job?.name && job.name !== job.jobNumber ? '— ' + job.name : '')}</strong>.</p>`,
+        `<p style="font-size:20px;margin:12px 0"><strong>${rcMoney(amount)}</strong>${vendor ? ' at ' + esc(vendor) : ''}</p>`,
+        `<p>Paid with: <strong>${esc(paidWith)}</strong>${needsReimburse ? ' — <strong style="color:#b45309">needs reimbursement</strong>' : ''}</p>`,
+        note ? `<p>Note: ${esc(note)}</p>` : '',
+        `<p><a href="${photoUrl}">View the receipt photo</a></p>`,
+        `<p style="color:#666">A To-Do was added for you in JOBSMETRIX.</p>`,
+      ].join('');
+      await sendEmail({
+        to: ownerEmail, toName: owner?.name || '',
+        subject: `Receipt ${needsReimburse ? 'to REIMBURSE' : 'to reconcile'}: ${rcMoney(amount)}${vendor ? ' — ' + vendor : ''} (${job?.jobNumber || 'job'})`,
+        bodyHtml: lines,
+        bodyText: `${who} uploaded a receipt: ${rcMoney(amount)}${vendor ? ' at ' + vendor : ''}, paid with ${paidWith}. ${photoUrl}`,
+        docType: 'receipt', jobId,
+      });
+    } catch (e) { console.warn('Receipt email alert failed', e); }
+
+    rcResetForm();
+    alert('Receipt uploaded. Travis has been notified.');
+  } catch (e) {
+    alert('Could not upload receipt: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Upload receipt'; }
+  }
+}
+
+function renderJobReceipts() {
+  const list = document.getElementById('rcList');
+  const sum = document.getElementById('rcSummary');
+  if (!list) return;
+  const open = _rcReceipts.filter(r => r.status === 'New');
+  if (sum) sum.textContent = _rcReceipts.length
+    ? `${_rcReceipts.length} receipt${_rcReceipts.length === 1 ? '' : 's'} · ${rcMoney(_rcReceipts.reduce((s, r) => s + (r.amount || 0), 0))} total · ${open.length} waiting on review`
+    : '';
+  if (!_rcReceipts.length) { list.innerHTML = '<div class="small muted">No receipts uploaded for this job yet.</div>'; return; }
+  const manage = rcCanManage();
+  const badge = s => {
+    const c = { New: '#f59e0b', Logged: '#3b82f6', Reimbursed: '#1dbb87', Reconciled: '#1dbb87' }[s] || '#8ea3c8';
+    return `<span style="font-size:.7rem;font-weight:700;padding:2px 8px;border-radius:999px;border:1px solid ${c};color:${c}">${esc(s || 'New')}</span>`;
+  };
+  list.innerHTML = _rcReceipts.map(r => {
+    const when = r.createdAt?.toDate ? r.createdAt.toDate().toLocaleDateString() : '';
+    const thumb = r.isPdf
+      ? `<a href="${r.photoUrl}" target="_blank" rel="noopener" style="width:64px;height:64px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:8px;font-size:.75rem">PDF</a>`
+      : `<a href="${r.photoUrl}" target="_blank" rel="noopener" style="flex-shrink:0"><img src="${r.photoUrl}" alt="Receipt photo" style="width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block"></a>`;
+    const actions = manage && r.status === 'New' ? `
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+        ${r.loggedAsMaterials ? '<span class="small muted" style="align-self:center">✓ in materials</span>' : `<button class="btn" onclick="rcLogAsMaterials('${r.id}')" style="padding:4px 10px;font-size:.74rem">Log as materials</button>`}
+        ${r.needsReimbursement ? `<button class="btn" onclick="rcSetStatus('${r.id}','Reimbursed')" style="padding:4px 10px;font-size:.74rem">Mark reimbursed</button>` : ''}
+        <button class="btn" onclick="rcSetStatus('${r.id}','Reconciled')" style="padding:4px 10px;font-size:.74rem">Mark reconciled</button>
+      </div>` : '';
+    return `<div style="display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--line)">
+      ${thumb}
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap">
+          <strong>${rcMoney(r.amount)}${r.vendor ? ' · ' + esc(r.vendor) : ''}</strong>${badge(r.status)}
+        </div>
+        <div class="small muted">${esc(r.uploadedByName || '')} · ${esc(r.paidWith || '')}${r.needsReimbursement ? ' · <span style="color:#f59e0b;font-weight:700">needs reimbursement</span>' : ''}${when ? ' · ' + when : ''}</div>
+        ${r.note ? `<div class="small" style="margin-top:2px">${esc(r.note)}</div>` : ''}
+        ${actions}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function rcSetStatus(receiptId, status, extra) {
+  const jobId = conCurrentJobId;
+  const r = _rcReceipts.find(x => x.id === receiptId);
+  if (!r || !rcCanManage()) return;
+  try {
+    await coll('jobs').doc(jobId).collection('receipts').doc(receiptId).update({
+      status, ...(extra || {}),
+      resolvedBy: conCurrentUser?.email || '', resolvedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    if (r.todoId) await coll('todos').doc(r.todoId).update({ done: true, completedAt: firebase.firestore.FieldValue.serverTimestamp() }).catch(() => {});
+  } catch (e) { alert('Could not update receipt: ' + e.message); }
+}
+
+// Copies the receipt into this job's Materials Purchases (Financials),
+// so it lands in job costing, then marks the receipt Logged.
+async function rcLogAsMaterials(receiptId) {
+  const jobId = conCurrentJobId;
+  const r = _rcReceipts.find(x => x.id === receiptId);
+  if (!r || !rcCanManage()) return;
+  const desc = prompt('Description for the materials purchase:', r.note || 'Materials');
+  if (desc === null) return;
+  try {
+    const job = conJobs.find(j => j.id === jobId);
+    const expRef = await coll('jobs').doc(jobId).collection('expenses').add({
+      purchasedFrom: r.vendor || 'Receipt', desc: desc.trim() || 'Materials', amount: r.amount,
+      date: (r.createdAt?.toDate ? r.createdAt.toDate() : new Date()).toISOString().split('T')[0],
+      paidBy: r.needsReimbursement ? 'Personal (reimburse)' : 'Debit Card',
+      purchasedBy: r.uploadedByName || '',
+      notes: [job?.address, job?.jobNumber].filter(Boolean).join(' ') + ' · receipt ' + r.photoUrl,
+      receiptId, companyId: currentCompanyId,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(), updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    // A personal-card receipt still needs paying back, so it stays open
+    // until Mark reimbursed; a company-card one is done (status Logged).
+    if (r.needsReimbursement) {
+      await coll('jobs').doc(jobId).collection('receipts').doc(receiptId).update({ status: 'New', expenseId: expRef.id, loggedAsMaterials: true });
+      alert('Logged as a materials purchase. Tap "Mark reimbursed" once you pay ' + (r.uploadedByName || 'them') + ' back.');
+    } else {
+      await rcSetStatus(receiptId, 'Logged', { expenseId: expRef.id, loggedAsMaterials: true });
+    }
+  } catch (e) { alert('Could not log materials purchase: ' + e.message); }
+}
+
+window.loadJobReceipts = loadJobReceipts;
+window.onReceiptFileChosen = onReceiptFileChosen;
+window.submitReceipt = submitReceipt;
+window.rcSetStatus = rcSetStatus;
+window.rcLogAsMaterials = rcLogAsMaterials;
+
+// In-app alert: while JOBSMETRIX is open, a new Receipt To-Do assigned to
+// the signed-in user pops a banner (the email covers when it's closed).
+let _rcTodoBaseline = null;
+function rcCheckNewReceiptTodos(todos) {
+  const me = (conCurrentUser?.email || '').toLowerCase();
+  const mine = todos.filter(t => t.category === 'Receipt' && !t.done && (t.assignee || '').toLowerCase() === me);
+  if (_rcTodoBaseline === null) { _rcTodoBaseline = new Set(mine.map(t => t.id)); return; }
+  const fresh = mine.filter(t => !_rcTodoBaseline.has(t.id));
+  fresh.forEach(t => _rcTodoBaseline.add(t.id));
+  if (!fresh.length) return;
+  document.getElementById('rcAlertToast')?.remove();
+  const t = fresh[0];
+  const toast = document.createElement('div');
+  toast.id = 'rcAlertToast';
+  toast.setAttribute('role', 'alert');
+  toast.style.cssText = 'position:fixed;top:calc(env(safe-area-inset-top) + 14px);left:50%;transform:translateX(-50%);z-index:99999;background:#0d1f35;border:2px solid #f59e0b;border-radius:12px;padding:12px 14px;display:flex;gap:10px;align-items:center;max-width:92vw;box-shadow:0 8px 24px rgba(0,0,0,.4)';
+  toast.innerHTML = `<span style="color:#eaf0fb;font-size:.88rem"><strong style="color:#f59e0b">🧾 New receipt</strong> ${esc(t.text)}${fresh.length > 1 ? ` <em>(+${fresh.length - 1} more)</em>` : ''}</span>
+    ${t.jobId ? `<button onclick="document.getElementById('rcAlertToast')?.remove();openJobDetail('${t.jobId}');setTimeout(()=>{const b=document.querySelector('#jobDetailModal .con-subtab[onclick*=&quot;receipts&quot;]');if(b)b.click();},400)" style="background:#f59e0b;border:none;color:#111;font-weight:800;padding:6px 12px;border-radius:8px;cursor:pointer;white-space:nowrap">Open</button>` : ''}
+    <button onclick="document.getElementById('rcAlertToast')?.remove()" aria-label="Dismiss" style="background:none;border:none;color:#9aa6bd;cursor:pointer;font-size:1.1rem">✕</button>`;
+  document.body.appendChild(toast);
+}
+window.rcCheckNewReceiptTodos = rcCheckNewReceiptTodos;
 
 async function deleteSubgroup(groupId, subId) {
   if (!confirm('Delete this subgroup and all its items?')) return;
