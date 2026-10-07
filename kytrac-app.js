@@ -24763,7 +24763,11 @@ function renderRangeEstimate() {
     <label class="small muted" style="display:flex;flex-direction:column;gap:3px;margin-bottom:12px">Assumptions &amp; disclaimer (printed on the proposal)
       <textarea rows="3" oninput="reTopField('assumptions',this.value)" style="${inp};resize:vertical">${esc(_reData.assumptions || '')}</textarea>
     </label>
-    <button class="btn-amber" onclick="printRangeProposal()" style="padding:9px 16px;font-size:.9rem">📄 Range Proposal (Investor)</button>`;
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="btn-amber" onclick="printRangeProposal()" style="padding:9px 16px;font-size:.9rem">📄 Range Proposal (Investor)</button>
+      <button class="btn" onclick="emailRangeProposal()" style="padding:9px 16px;font-size:.9rem">✉️ Email Range Proposal</button>
+    </div>
+    ${_reData.lastSentTo ? `<div class="small muted" style="margin-top:6px">Last emailed to ${esc(_reData.lastSentTo)}${_reData.lastSentAt ? ' on ' + new Date(_reData.lastSentAt).toLocaleDateString() : ''}</div>` : ''}`;
 }
 
 function printRangeProposal() {
@@ -24840,6 +24844,70 @@ window.reField = reField; window.reTopField = reTopField;
 window.reAddRoom = reAddRoom; window.reAddItem = reAddItem;
 window.reDelItem = reDelItem; window.reDelRoom = reDelRoom; window.reMoveRoom = reMoveRoom;
 window.printRangeProposal = printRangeProposal;
+
+// Emails the Range Proposal. Email clients strip <style> blocks and
+// flex layout, so this builds an email-safe version (tables + inline
+// styles) of the same content the printable proposal shows; the
+// branded header/footer come from sendJobspanEmail's own wrapper.
+async function emailRangeProposal() {
+  const job = conJobs.find(j => j.id === conCurrentJobId);
+  if (!job || !_reData) return;
+  if (!conFunctions) { alert("Email sending isn't set up on this device."); return; }
+  const rooms = _reData.rooms.filter(r => r.items.some(it => it.scope || it.low || it.high));
+  if (!rooms.length) { alert('Add at least one room with a range first.'); return; }
+  const to = (prompt('Send the Range Proposal to (email):', _reData.lastSentTo || job.email || '') || '').trim();
+  if (!to) return;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) { alert('That doesn\'t look like a valid email address.'); return; }
+  const toName = (prompt('Their name (for the greeting):', to === job.email ? (job.client || '') : (_reData.lastSentToName || '')) || '').trim();
+  const g = reRoundedGrand(rooms);
+  const co = companyProfile?.companyName || 'JTXD Contracting';
+  const where = job.address ? ` for ${esc(job.address)}` : '';
+  if (!confirm(`Email the Range Proposal${job.address ? ' for ' + job.address : ''} to ${to}?\n\nTotal range: ${reMoney(g.low)} – ${reMoney(g.high)}`)) return;
+
+  const td = 'padding:10px 14px;border-bottom:1px solid #e5e7eb;vertical-align:top';
+  const rows = rooms.map(r => {
+    const t = reRoomTotals(r);
+    const scopes = r.items.filter(it => (it.scope || '').trim()).map(it => esc(it.scope)).join(' &middot; ');
+    return `<tr>
+      <td style="${td}"><div style="font-weight:700;color:#111827">${esc(r.name || '')}</div>${scopes ? `<div style="font-size:13px;color:#6b7280;margin-top:3px">${scopes}</div>` : ''}</td>
+      <td style="${td};text-align:right;white-space:nowrap;font-weight:700;color:#111827">${reMoney(reLo(t.low))} &ndash; ${reMoney(reHi(t.high))}</td>
+    </tr>`;
+  }).join('');
+  const bodyHtml = `
+    <p>Hi ${esc(toName || 'there')},</p>
+    <p>Here is the budget range proposal from ${esc(co)}${where}${job.jobNumber ? ' (' + esc(job.jobNumber) + ')' : ''}.</p>
+    ${_reData.intro ? `<p style="color:#4b5563;white-space:pre-line">${esc(_reData.intro)}</p>` : ''}
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #e5e7eb;margin:18px 0;font-size:15px">
+      <tr><th align="left" style="background:#1f2937;color:#fff;padding:10px 14px;font-size:13px;letter-spacing:.04em">AREA &amp; SCOPE</th><th align="right" style="background:#1f2937;color:#fff;padding:10px 14px;font-size:13px;letter-spacing:.04em">RANGE</th></tr>
+      ${rows}
+      <tr><td style="padding:14px;background:#111827;color:#fff;font-weight:800">ESTIMATED PROJECT RANGE</td><td style="padding:14px;background:#111827;color:#fbbf24;font-weight:800;font-size:18px;text-align:right;white-space:nowrap">${reMoney(g.low)} &ndash; ${reMoney(g.high)}</td></tr>
+    </table>
+    ${_reData.assumptions ? `<p style="padding:12px 14px;border:1px solid #fde68a;background:#fffbeb;border-radius:6px;color:#78350f;font-size:13px;white-space:pre-line">${esc(_reData.assumptions)}</p>` : ''}
+    <p style="font-size:13px;color:#6b7280">Ranges rounded to the nearest $500.</p>
+    <p>Please reach out with any questions.</p>
+    <p>${esc(conCurrentUser?.displayName || co)}<br>${esc(co)}${companyProfile?.phone ? '<br>' + esc(companyProfile.phone) : ''}</p>`;
+  const bodyText = `Budget range proposal from ${co}${job.address ? ' for ' + job.address : ''}\n\n` +
+    rooms.map(r => { const t = reRoomTotals(r); return `${r.name}: ${reMoney(reLo(t.low))} – ${reMoney(reHi(t.high))}`; }).join('\n') +
+    `\n\nEstimated project range: ${reMoney(g.low)} – ${reMoney(g.high)}\n\n${_reData.assumptions || ''}`;
+
+  try {
+    const sendEmail = conFunctions.httpsCallable('sendJobspanEmail');
+    await sendEmail({
+      to, toName,
+      subject: `Budget Range Proposal${job.address ? ' — ' + job.address : ''} (${reMoney(g.low)} – ${reMoney(g.high)})`,
+      bodyHtml, bodyText,
+      replyTo: conCurrentUser?.email || undefined,
+      docType: 'range-proposal', jobId: conCurrentJobId,
+    });
+    _reData.lastSentTo = to; _reData.lastSentToName = toName; _reData.lastSentAt = new Date().toISOString();
+    reQueueSave();
+    try { if (typeof logInvoiceActivity === 'function') logInvoiceActivity(conCurrentJobId, 'range_proposal_sent', `Range Proposal emailed to ${to} (${reMoney(g.low)} – ${reMoney(g.high)})`); } catch (e) {}
+    alert('Range Proposal sent to ' + to + '.');
+  } catch (e) {
+    alert('Could not send the email: ' + e.message);
+  }
+}
+window.emailRangeProposal = emailRangeProposal;
 
 async function deleteSubgroup(groupId, subId) {
   if (!confirm('Delete this subgroup and all its items?')) return;
