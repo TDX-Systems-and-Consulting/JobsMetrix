@@ -23485,14 +23485,75 @@ async function removeLaborDiscount() {
 }
 window.removeLaborDiscount = removeLaborDiscount;
 
+// NEW 2026-10-07: change the F&F % in place (e.g. 4% -> 3%) without
+// Remove-then-Reapply. Always recalculates from the ORIGINAL pre-discount
+// prices stored in the backup, so percentages never stack (3% means 3%
+// off the original, not 3% off the already-4%-off price). Labor lines
+// added after the first discount (not in the backup) are at full price,
+// so they get the new % too and join the backup -- that keeps "Remove
+// Discount" restoring every line correctly afterward.
+async function updateLaborDiscount() {
+  const job = conJobs.find(j => j.id === conCurrentJobId);
+  const current = job?.laborDiscount;
+  const input = document.getElementById('ffDiscountPctEdit');
+  const pct = parseFloat(input?.value);
+  if (!current) return applyLaborDiscount();
+  if (!pct || pct <= 0 || pct >= 100) { alert('Enter a discount percentage between 1 and 99.'); return; }
+  if (pct === current.pct) return;
+
+  const backup = Array.isArray(current.backup) ? current.backup.slice() : [];
+  const inBackup = new Set(backup.map(b => b.itemId));
+  // Live labor lines that aren't in the backup yet are at full price.
+  walkEstimateLaborItems().forEach(li => {
+    if (!inBackup.has(li.item.id)) {
+      backup.push({ groupId: li.groupId, subgroupId: li.subgroupId, subSubgroupId: li.subSubgroupId, itemId: li.item.id,
+        unitCost: li.item.unitCost, markup: li.item.markup, unitPrice: li.item.unitPrice });
+    }
+  });
+  const liveIds = new Set(walkEstimateLaborItems().map(li => li.item.id));
+  const live = backup.filter(b => liveIds.has(b.itemId)); // skip lines deleted since
+  if (!live.length) { alert('No labor line items found on this estimate.'); return; }
+
+  const qtyById = {};
+  walkEstimateLaborItems().forEach(li => { qtyById[li.item.id] = li.item.qty || 1; });
+  const origTotal = live.reduce((s, b) => s + (b.unitPrice || 0) * (qtyById[b.itemId] || 1), 0);
+  if (!confirm(`Change the friends & family discount from ${current.pct}% to ${pct}%?\n\n` +
+    `Labor: $${Math.round(origTotal).toLocaleString()} original → $${Math.round(origTotal * (1 - pct/100)).toLocaleString()}`)) return;
+
+  try {
+    let batch = conDb.batch(), n = 0;
+    for (const b of live) {
+      const orig = b.unitPrice || 0, unitCost = b.unitCost || 0;
+      const newPrice = Math.round(orig * (1 - pct / 100) * 100) / 100;
+      const newMarkup = unitCost > 0 ? Math.round((newPrice / unitCost - 1) * 100) : b.markup;
+      batch.update(laborItemRef(conCurrentJobId, b.groupId, b.subgroupId, b.subSubgroupId, b.itemId),
+        { unitPrice: newPrice, markup: newMarkup });
+      if (++n % 400 === 0) { await batch.commit(); batch = conDb.batch(); }
+    }
+    await batch.commit();
+    const ld = { pct, appliedAt: new Date().toISOString(), backup: live };
+    await coll('jobs').doc(conCurrentJobId).update({ laborDiscount: ld });
+    if (job) job.laborDiscount = ld;
+    if (typeof loadEstimate === 'function') loadEstimate(conCurrentJobId);
+  } catch (e) {
+    alert('Error updating discount: ' + e.message);
+  }
+}
+window.updateLaborDiscount = updateLaborDiscount;
+
 function renderFFDiscountControl(jobId) {
   const wrap = document.getElementById('ffDiscountWrap');
   if (!wrap) return;
   const job = conJobs.find(j => j.id === (jobId || conCurrentJobId));
   const discount = job?.laborDiscount;
   if (discount) {
-    wrap.innerHTML = `<span class="small" style="color:#a3f2d2;font-weight:700">🎁 ${discount.pct}% F&amp;F discount applied</span>
-      <button class="btn" onclick="removeLaborDiscount()" style="padding:6px 10px;font-size:.78rem">Remove Discount</button>`;
+    wrap.innerHTML = `<span class="small" style="color:#a3f2d2;font-weight:700">🎁 F&amp;F</span>
+      <input id="ffDiscountPctEdit" type="number" min="1" max="99" step="0.5" value="${discount.pct}"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();updateLaborDiscount();}"
+        style="width:56px;padding:3px 6px;font-size:.8rem" title="Change the % and tap Update -- recalculates from the original prices" />
+      <span class="small" style="color:#a3f2d2;font-weight:700">% applied</span>
+      <button class="btn" onclick="updateLaborDiscount()" style="padding:6px 10px;font-size:.78rem">Update</button>
+      <button class="btn" onclick="removeLaborDiscount()" style="padding:6px 10px;font-size:.78rem">Remove</button>`;
   } else {
     wrap.innerHTML = `<span class="small muted">🎁 F&amp;F Discount</span>
       <input id="ffDiscountPct" type="number" min="1" max="99" placeholder="%" style="width:56px;padding:3px 6px;font-size:.8rem" />
