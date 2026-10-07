@@ -6521,7 +6521,7 @@ function switchDetailTab(tab, btn) {
     tab = 'phases';
     btn = document.querySelector('#jobDetailModal .con-subtab[onclick*="\'phases\'"]') || document.querySelector('#jobDetailModal .con-subtab');
   }
-  const allTabs = ['dashboard','financials','estimate','receipts','changeorders','subs','phases','logs','invoices','documents','activity','retrospective','todos','selections','specifications','plans','messages','reports','jobnotes','entryinfo'];
+  const allTabs = ['dashboard','financials','estimate','receipts','range','changeorders','subs','phases','logs','invoices','documents','activity','retrospective','todos','selections','specifications','plans','messages','reports','jobnotes','entryinfo'];
   allTabs.forEach(t => {
     const key = 'detail' + t.charAt(0).toUpperCase() + t.slice(1);
     const el = document.getElementById(key);
@@ -6579,6 +6579,7 @@ function switchDetailTab(tab, btn) {
   if (tab === 'logs') renderLogList();
   if (tab === 'invoices') loadJobInvoices(conCurrentJobId);
   if (tab === 'receipts') loadJobReceipts(conCurrentJobId);
+  if (tab === 'range') loadRangeEstimate(conCurrentJobId);
   if (tab === 'activity') loadJobActivity(conCurrentJobId, 'full');
   if (tab === 'jobnotes') loadJobNotes(conCurrentJobId);
   if (tab === 'retrospective') loadRetrospective(conCurrentJobId);
@@ -24074,7 +24075,7 @@ const DUP_JOB_FIELDS = [
   'client', 'customerId', 'phone', 'email', 'clientEmail', 'address',
   'geoLat', 'geoLon', 'type', 'pm', 'superintendent', 'teamLead',
   'accessInfo', 'lockboxCode', 'alarmCode', 'laborBasis', 'paymentSchedule',
-  'estCost', 'estPrice', 'suggestedCrew'
+  'estCost', 'estPrice', 'suggestedCrew', 'rangeEstimate'
 ];
 // Progress / scheduling / sync fields that belong to the ORIGINAL job's
 // real-world execution, never to a fresh alternate estimate.
@@ -24597,6 +24598,248 @@ function rcCheckNewReceiptTodos(todos) {
   document.body.appendChild(toast);
 }
 window.rcCheckNewReceiptTodos = rcCheckNewReceiptTodos;
+
+// ════════════════════════════════════════════════════
+// ── RANGE ESTIMATE (NEW 2026-10-07) ──
+// ════════════════════════════════════════════════════
+// A budgetary, room-by-room LOW–HIGH estimate for investors/lenders,
+// kept on the job (job.rangeEstimate) separately from the detailed
+// estimate, which stays untouched. The proposal shows each room's
+// range with its scope items listed (no per-item $), plus a total
+// range, rounded to the nearest $500. Never feeds job financials,
+// Jason's pay, or the detailed proposal.
+let _reData = null;
+let _reJobId = null;
+let _reSaveTimer = null;
+
+function reNewId(p) { return (p || 'x') + Math.random().toString(36).slice(2, 9); }
+// Lows round DOWN and highs round UP to $500, so a rounded range never
+// claims less room than the real one. Grand total = sum of rounded rooms,
+// so the proposal's numbers always add up.
+function reLo(n) { return Math.floor((Number(n) || 0) / 500) * 500; }
+function reHi(n) { return Math.ceil((Number(n) || 0) / 500) * 500; }
+function reRoundedGrand(rooms) {
+  return rooms.reduce((g, r) => { const t = reRoomTotals(r); return { low: g.low + reLo(t.low), high: g.high + reHi(t.high) }; }, { low: 0, high: 0 });
+}
+function reMoney(n) { return '$' + Math.round(Number(n) || 0).toLocaleString(); }
+function reRoomTotals(room) {
+  return (room.items || []).reduce((t, it) => ({ low: t.low + (Number(it.low) || 0), high: t.high + (Number(it.high) || 0) }), { low: 0, high: 0 });
+}
+function reGrandTotals() {
+  return (_reData?.rooms || []).reduce((t, r) => { const x = reRoomTotals(r); return { low: t.low + x.low, high: t.high + x.high }; }, { low: 0, high: 0 });
+}
+
+async function loadRangeEstimate(jobId) {
+  _reJobId = jobId;
+  const body = document.getElementById('reBody');
+  if (body) body.innerHTML = '<div class="small muted">Loading…</div>';
+  try {
+    const snap = await coll('jobs').doc(jobId).get();
+    if (jobId !== conCurrentJobId) return;
+    const saved = snap.data()?.rangeEstimate;
+    _reData = saved && Array.isArray(saved.rooms) ? saved : {
+      rooms: [{ id: reNewId('r'), name: 'Exterior', items: [{ id: reNewId('i'), scope: '', low: '', high: '' }] }],
+      intro: '', assumptions: 'Budgetary range for planning and financing purposes only — not a contract price. Final pricing follows a detailed estimate after a full walkthrough and material selections.',
+    };
+    renderRangeEstimate();
+  } catch (e) {
+    if (body) body.innerHTML = '<div class="small muted">Could not load: ' + esc(e.message) + '</div>';
+  }
+}
+
+function reQueueSave() {
+  const st = document.getElementById('reSaveStatus');
+  if (st) st.textContent = 'Saving…';
+  clearTimeout(_reSaveTimer);
+  const jobId = _reJobId, data = JSON.parse(JSON.stringify(_reData));
+  _reSaveTimer = setTimeout(async () => {
+    try {
+      data.updatedAt = new Date().toISOString();
+      data.updatedBy = conCurrentUser?.email || '';
+      await coll('jobs').doc(jobId).update({ rangeEstimate: data });
+      const s = document.getElementById('reSaveStatus'); if (s && jobId === conCurrentJobId) s.textContent = 'Saved';
+    } catch (e) {
+      const s = document.getElementById('reSaveStatus'); if (s) s.textContent = 'Save failed — ' + e.message;
+    }
+  }, 700);
+}
+
+function reUpdateTotalsOnly() {
+  (_reData.rooms || []).forEach(r => {
+    const el = document.getElementById('reRoomTot-' + r.id);
+    if (el) { const t = reRoomTotals(r); el.textContent = reMoney(t.low) + ' – ' + reMoney(t.high); }
+  });
+  const g = reRoundedGrand(_reData.rooms);
+  const gt = document.getElementById('reGrandTot');
+  if (gt) gt.textContent = reMoney(g.low) + ' – ' + reMoney(g.high);
+}
+
+function reField(roomId, itemId, field, value) {
+  const room = _reData.rooms.find(r => r.id === roomId);
+  if (!room) return;
+  if (itemId) {
+    const it = room.items.find(i => i.id === itemId);
+    if (!it) return;
+    it[field] = (field === 'low' || field === 'high') ? (value === '' ? '' : Number(value)) : value;
+  } else {
+    room[field] = value;
+  }
+  reUpdateTotalsOnly();
+  reQueueSave();
+}
+function reTopField(field, value) { _reData[field] = value; reQueueSave(); }
+
+function reAddRoom() {
+  const name = prompt('Room or area name (e.g. Kitchen, Exterior, Basement):');
+  if (!name || !name.trim()) return;
+  _reData.rooms.push({ id: reNewId('r'), name: name.trim(), items: [{ id: reNewId('i'), scope: '', low: '', high: '' }] });
+  renderRangeEstimate(); reQueueSave();
+}
+function reAddItem(roomId) {
+  const room = _reData.rooms.find(r => r.id === roomId); if (!room) return;
+  room.items.push({ id: reNewId('i'), scope: '', low: '', high: '' });
+  renderRangeEstimate(); reQueueSave();
+  setTimeout(() => { const el = document.getElementById('reScope-' + room.items[room.items.length - 1].id); if (el) el.focus(); }, 50);
+}
+function reDelItem(roomId, itemId) {
+  const room = _reData.rooms.find(r => r.id === roomId); if (!room) return;
+  room.items = room.items.filter(i => i.id !== itemId);
+  renderRangeEstimate(); reQueueSave();
+}
+function reDelRoom(roomId) {
+  const room = _reData.rooms.find(r => r.id === roomId); if (!room) return;
+  if (!confirm('Remove "' + (room.name || 'this room') + '" and its items?')) return;
+  _reData.rooms = _reData.rooms.filter(r => r.id !== roomId);
+  renderRangeEstimate(); reQueueSave();
+}
+function reMoveRoom(roomId, dir) {
+  const i = _reData.rooms.findIndex(r => r.id === roomId), j = i + dir;
+  if (i < 0 || j < 0 || j >= _reData.rooms.length) return;
+  [_reData.rooms[i], _reData.rooms[j]] = [_reData.rooms[j], _reData.rooms[i]];
+  renderRangeEstimate(); reQueueSave();
+}
+
+function renderRangeEstimate() {
+  const body = document.getElementById('reBody');
+  if (!body || !_reData) return;
+  const inp = 'padding:7px 8px;font-size:.85rem;min-width:0;box-sizing:border-box';
+  const rooms = _reData.rooms.map((r, ri) => {
+    const t = reRoomTotals(r);
+    const items = r.items.map(it => `
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) 92px 92px 36px;gap:6px;align-items:center;margin-top:6px">
+        <input id="reScope-${it.id}" aria-label="Scope item" value="${esc(it.scope || '')}" placeholder="e.g. Exterior painting" oninput="reField('${r.id}','${it.id}','scope',this.value)" style="${inp}" />
+        <input aria-label="Low $" type="number" inputmode="numeric" min="0" step="100" value="${it.low === '' || it.low == null ? '' : it.low}" placeholder="Low" oninput="reField('${r.id}','${it.id}','low',this.value)" style="${inp}" />
+        <input aria-label="High $" type="number" inputmode="numeric" min="0" step="100" value="${it.high === '' || it.high == null ? '' : it.high}" placeholder="High" oninput="reField('${r.id}','${it.id}','high',this.value)" style="${inp}" />
+        <button class="btn" aria-label="Remove item" onclick="reDelItem('${r.id}','${it.id}')" style="padding:6px 0;font-size:.8rem;justify-content:center">✕</button>
+      </div>`).join('');
+    return `<div style="border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:12px">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <input aria-label="Room name" value="${esc(r.name || '')}" oninput="reField('${r.id}',null,'name',this.value)" style="${inp};flex:1 1 160px;font-weight:700;font-size:.95rem" />
+        <span id="reRoomTot-${r.id}" style="font-weight:800;color:var(--amber);white-space:nowrap">${reMoney(t.low)} – ${reMoney(t.high)}</span>
+        <button class="btn" aria-label="Move room up" onclick="reMoveRoom('${r.id}',-1)" ${ri === 0 ? 'disabled' : ''} style="padding:4px 9px;font-size:.78rem">↑</button>
+        <button class="btn" aria-label="Move room down" onclick="reMoveRoom('${r.id}',1)" ${ri === _reData.rooms.length - 1 ? 'disabled' : ''} style="padding:4px 9px;font-size:.78rem">↓</button>
+        <button class="btn btn-danger" aria-label="Remove room" onclick="reDelRoom('${r.id}')" style="padding:4px 9px;font-size:.78rem">Remove</button>
+      </div>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) 92px 92px 36px;gap:6px;margin-top:8px" class="small muted"><span>Scope</span><span>Low $</span><span>High $</span><span></span></div>
+      ${items}
+      <button class="btn" onclick="reAddItem('${r.id}')" style="margin-top:8px;padding:5px 12px;font-size:.8rem">+ Item</button>
+    </div>`;
+  }).join('');
+  const g = reRoundedGrand(_reData.rooms);
+  body.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <div><div style="font-weight:800;font-size:1rem">Range Estimate</div><div class="small muted">Budget ranges for investors &amp; lenders. Separate from the detailed estimate.</div></div>
+      <span id="reSaveStatus" class="small muted"></span>
+    </div>
+    <label class="small muted" style="display:flex;flex-direction:column;gap:3px;margin-bottom:12px">Project summary (top of the proposal, optional)
+      <textarea rows="2" oninput="reTopField('intro',this.value)" style="${inp};resize:vertical" placeholder="e.g. Full rehab of a 3 bed / 2 bath single-family home">${esc(_reData.intro || '')}</textarea>
+    </label>
+    ${rooms}
+    <button class="btn-amber" onclick="reAddRoom()" style="padding:7px 14px;font-size:.85rem;margin-bottom:14px">+ Room / Area</button>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--amber-border);border-radius:10px;padding:12px 14px;margin-bottom:12px">
+      <span style="font-weight:800">Total range <span class="small muted" style="font-weight:400">(rounded out to $500)</span></span>
+      <span id="reGrandTot" style="font-weight:900;font-size:1.25rem;color:var(--amber)">${reMoney(g.low)} – ${reMoney(g.high)}</span>
+    </div>
+    <label class="small muted" style="display:flex;flex-direction:column;gap:3px;margin-bottom:12px">Assumptions &amp; disclaimer (printed on the proposal)
+      <textarea rows="3" oninput="reTopField('assumptions',this.value)" style="${inp};resize:vertical">${esc(_reData.assumptions || '')}</textarea>
+    </label>
+    <button class="btn-amber" onclick="printRangeProposal()" style="padding:9px 16px;font-size:.9rem">📄 Range Proposal (Investor)</button>`;
+}
+
+function printRangeProposal() {
+  const job = conJobs.find(j => j.id === conCurrentJobId);
+  const co = companyProfile || {};
+  if (!_reData) return;
+  const bad = [];
+  _reData.rooms.forEach(r => r.items.forEach(it => {
+    if (it.low !== '' && it.high !== '' && Number(it.high) < Number(it.low)) bad.push((r.name || 'Room') + ': ' + (it.scope || 'item'));
+  }));
+  if (bad.length && !confirm('These items have a High lower than the Low:\n\n' + bad.join('\n') + '\n\nPrint anyway?')) return;
+  const rooms = _reData.rooms.filter(r => r.items.some(it => it.scope || it.low || it.high));
+  const g = reRoundedGrand(rooms);
+  const roomHtml = rooms.map(r => {
+    const t = reRoomTotals(r);
+    const scopes = r.items.filter(it => (it.scope || '').trim()).map(it => `<li>${esc(it.scope)}</li>`).join('');
+    return `<div class="room">
+      <div class="room-head"><span>${esc(r.name || '')}</span><span class="rng">${reMoney(reLo(t.low))} – ${reMoney(reHi(t.high))}</span></div>
+      ${scopes ? `<ul>${scopes}</ul>` : ''}
+    </div>`;
+  }).join('');
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Range Proposal — ${esc(job?.name || '')}</title>
+  <style>
+    *{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;max-width:820px;margin:0 auto;padding:48px 40px;color:#1f2937;line-height:1.5}
+    .header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding-bottom:24px;margin-bottom:8px;border-bottom:4px solid #d97706}
+    .co-name{font-size:1.25rem;font-weight:800;color:#111827}.co-contact{color:#6b7280;font-size:.82rem;margin-top:2px}
+    .doc-title{font-size:1.5rem;font-weight:800;color:#d97706;letter-spacing:.03em;text-align:right}.doc-meta{text-align:right;font-size:.85rem;color:#6b7280;margin-top:4px}
+    .prepared{margin:28px 0;padding:16px 20px;background:#f9fafb;border-radius:10px;border:1px solid #e5e7eb}
+    .prepared .label{font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:#9ca3af;font-weight:700;margin-bottom:4px}.prepared .name{font-size:1.05rem;font-weight:700;color:#111827}
+    .intro{color:#4b5563;font-size:.92rem;margin-bottom:24px;white-space:pre-line}
+    .room{border:1px solid #e5e7eb;border-radius:8px;margin-bottom:14px;break-inside:avoid;page-break-inside:avoid;overflow:hidden}
+    .room-head{display:flex;justify-content:space-between;gap:12px;background:#1f2937;color:#fff;padding:10px 16px;font-weight:800;font-size:1.02rem}
+    .room-head .rng{color:#fbbf24;white-space:nowrap}
+    ul{margin:10px 0 12px;padding-left:34px;color:#374151;font-size:.9rem}li{padding:1px 0}
+    .total{margin-top:28px;padding:20px 24px;background:#1f2937;color:#fff;border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;break-inside:avoid}
+    .total .label{font-weight:700;letter-spacing:.04em}.total .amt{font-size:1.6rem;font-weight:800;color:#fbbf24}
+    .assume{margin-top:24px;padding:14px 18px;border:1px solid #fde68a;background:#fffbeb;border-radius:8px;font-size:.84rem;color:#78350f;white-space:pre-line;break-inside:avoid}
+    .footer{margin-top:40px;padding-top:16px;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:.72rem;text-align:center}
+    @media print{body{padding:20px 30px}}
+  </style></head><body>
+  <div class="header">
+    <div>
+      ${co.logo ? `<img src="${co.logo}" style="height:52px;object-fit:contain;margin-bottom:8px"><br>` : ''}
+      <div class="co-name">${esc(co.companyName || '')}</div>
+      <div class="co-contact">${esc(co.phone || '')}${co.email ? ' · ' + esc(co.email) : ''}${co.address ? ' · ' + esc(co.address) : ''}</div>
+      ${co.license ? `<div class="co-contact">License #${esc(co.license)}</div>` : ''}
+    </div>
+    <div>
+      <div class="doc-title">BUDGET RANGE PROPOSAL</div>
+      <div class="doc-meta">${esc(job?.jobNumber || '')}</div>
+      <div class="doc-meta">${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</div>
+    </div>
+  </div>
+  <div class="prepared">
+    <div class="label">Prepared For</div>
+    <div class="name">${esc(job?.client || '')}</div>
+    <div class="co-contact">${esc(job?.address || '')}</div>
+  </div>
+  ${_reData.intro ? `<div class="intro">${esc(_reData.intro)}</div>` : ''}
+  ${roomHtml}
+  <div class="total"><div class="label">ESTIMATED PROJECT RANGE</div><div class="amt">${reMoney(g.low)} – ${reMoney(g.high)}</div></div>
+  ${_reData.assumptions ? `<div class="assume">${esc(_reData.assumptions)}</div>` : ''}
+  <div class="footer">${esc(co.companyName || '')} · Ranges rounded to the nearest $500</div>
+  </body></html>`;
+  const titleEl = document.getElementById('viewProposalModalTitle');
+  if (titleEl) titleEl.textContent = '📄 Range Proposal — ' + (job?.name || '');
+  document.getElementById('viewProposalIframe').srcdoc = html;
+  kOpen('viewProposalModal');
+}
+
+window.loadRangeEstimate = loadRangeEstimate;
+window.reField = reField; window.reTopField = reTopField;
+window.reAddRoom = reAddRoom; window.reAddItem = reAddItem;
+window.reDelItem = reDelItem; window.reDelRoom = reDelRoom; window.reMoveRoom = reMoveRoom;
+window.printRangeProposal = printRangeProposal;
 
 async function deleteSubgroup(groupId, subId) {
   if (!confirm('Delete this subgroup and all its items?')) return;
