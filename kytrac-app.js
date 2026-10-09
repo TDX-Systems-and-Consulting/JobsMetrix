@@ -226,6 +226,7 @@ const KT_PAGES = {
   customers:          { el:'ktPageCustomers',          title:'👥 Customers' },
   vendors:            { el:'ktPageVendors',            title:'🏭 Vendors' },
   contractors:        { el:'ktPageContractors',        title:'👷 Contractors' },
+  companyreceipts:    { el:'ktPageCompanyReceipts',    title:'🧾 Company Receipts' },
   settings:           { el:'ktPageSettings',           title:'⚙️ Company Settings' },
 };
 
@@ -538,6 +539,7 @@ function ktNav(key, btn) {
   // just hiding the nav button. Silently redirects to Dashboard instead of
   // revealing the page exists. Same pattern as switchDetailTab's financials/
   // subs block.
+  if (key === 'companyreceipts' && !canViewFinancialsTab()) { key = 'dashboard'; btn = document.querySelector('.kt-nav-item'); }
   if (key === 'crewmap' && !canViewCrewMap()) {
     key = 'dashboard';
     btn = document.querySelector('.kt-nav-item');
@@ -608,6 +610,7 @@ function ktNav(key, btn) {
   if(key==='vendors') { loadVendors(); renderVendors(); }
   if(key==='contractors') { loadContractors(); renderContractors(); }
   if(key==='reports') { renderActiveReport(); }
+  if(key==='companyreceipts') { renderCompanyReceiptsPage(); }
   if(key==='purchaseorders') { loadPOs(); populatePOFilters(); renderPOs(); }
   if(key==='documents') { loadDocuments(); populateDocJobFilter(); renderDocuments(); }
   if(key==='invoicing') {
@@ -15089,6 +15092,7 @@ function applyRolePermissions() {
     'catalog': canSeeCatalog,
     'settings': canSeeSettings,
     'crewmap': canViewCrewMap(),
+    'companyreceipts': canViewFinancialsTab(), // Travis + Jason only
   };
 
   // Field Technician sidebar allowlist -- confirmed with Travis directly
@@ -24811,6 +24815,7 @@ function renderJobReceipts() {
         ${r.loggedAsMaterials ? '<span class="small muted" style="align-self:center">✓ in materials</span>' : `<button class="btn" onclick="rcLogAsMaterials('${r.id}')" style="padding:4px 10px;font-size:.74rem">Log as materials</button>`}
         ${r.needsReimbursement ? `<button class="btn" onclick="rcSetStatus('${r.id}','Reimbursed')" style="padding:4px 10px;font-size:.74rem">Mark reimbursed</button>` : ''}
         <button class="btn" onclick="rcSetStatus('${r.id}','Reconciled')" style="padding:4px 10px;font-size:.74rem">Mark reconciled</button>
+        ${canViewFinancialsTab() ? `<button class="btn" onclick="rcMoveToCompany('${r.id}')" style="padding:4px 10px;font-size:.74rem">Not for this job → company expense</button>` : ''}
       </div>` : '';
     return `<div style="display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--line)">
       ${thumb}
@@ -24874,6 +24879,233 @@ window.onReceiptFileChosen = onReceiptFileChosen;
 window.submitReceipt = submitReceipt;
 window.rcSetStatus = rcSetStatus;
 window.rcLogAsMaterials = rcLogAsMaterials;
+
+// ════════════════════════════════════════════════════
+// ── COMPANY RECEIPTS (NEW 2026-10-09, COMPANY_RECEIPTS_V1) ──
+// ════════════════════════════════════════════════════
+// Business expenses that aren't for any one job (truck gas, a stapler,
+// software, a client lunch). Only Travis and Jason make business
+// purchases, so the page is limited to the same two logins as the
+// Financials tab (canViewFinancialsTab) -- Team Leads never see it.
+// Stored under jobs/_company/receipts (a virtual job id that never has a
+// job doc, so it never shows in any job list) so the existing per-job
+// Firestore and Storage rules already cover it -- no rules deploy needed.
+// Each category maps to the bucket account it's paid from, so the Friday
+// Owner Report can subtract real company spending from job profit.
+const COMPANY_EXPENSE_JOB_ID = '_company';
+const COMPANY_EXPENSE_CATEGORIES = [
+  { name: 'Fuel & vehicle',       bucket: 'Overhead' },
+  { name: 'Office supplies',      bucket: 'Overhead' },
+  { name: 'Meals — crew/team',    bucket: 'Overhead' },
+  { name: 'Meals — client',       bucket: 'Marketing' },
+  { name: 'Tools & equipment',    bucket: 'Overhead' },
+  { name: 'Software & phone',     bucket: 'Overhead' },
+  { name: 'Insurance',            bucket: 'Overhead' },
+  { name: 'Rent & utilities',     bucket: 'Overhead' },
+  { name: 'Marketing & ads',      bucket: 'Marketing' },
+  { name: 'Licenses & fees',      bucket: 'Overhead' },
+  { name: 'Other / one-off',      bucket: 'Checking' },
+];
+function crBucketFor(cat) { return (COMPANY_EXPENSE_CATEGORIES.find(c => c.name === cat) || { bucket: 'Overhead' }).bucket; }
+function crColl() { return coll('jobs').doc(COMPANY_EXPENSE_JOB_ID).collection('receipts'); }
+
+let _crPendingFile = null, _crReceipts = [], _crUnsub = null, _crMonth = null;
+
+function renderCompanyReceiptsPage() {
+  const page = document.getElementById('ktPageCompanyReceipts');
+  if (!page) return;
+  if (!canViewFinancialsTab()) { page.innerHTML = '<div class="small muted" style="padding:20px">Not available.</div>'; return; }
+  if (!_crMonth) _crMonth = new Date().toISOString().slice(0, 7);
+  const sel = document.getElementById('crCategory');
+  if (sel && !sel.options.length) sel.innerHTML = COMPANY_EXPENSE_CATEGORIES.map(c => `<option>${esc(c.name)}</option>`).join('');
+  const m = document.getElementById('crMonth'); if (m && !m.value) m.value = _crMonth;
+  const d = document.getElementById('crDate'); if (d && !d.value) d.value = new Date().toISOString().split('T')[0];
+  if (_crUnsub) return renderCompanyReceiptsList();
+  _crUnsub = crColl().orderBy('date', 'desc').onSnapshot(snap => {
+    _crReceipts = [];
+    snap.forEach(x => _crReceipts.push({ id: x.id, ...x.data() }));
+    renderCompanyReceiptsList();
+  }, e => { const l = document.getElementById('crList'); if (l) l.innerHTML = '<div class="small muted">Could not load: ' + esc(e.message) + '</div>'; });
+}
+
+function onCompanyReceiptFileChosen(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  _crPendingFile = file;
+  const lbl = document.getElementById('crFileLabel'); if (lbl) lbl.textContent = '✓ ' + file.name + ' — tap to change';
+  const prev = document.getElementById('crPreview');
+  if (prev && file.type.startsWith('image/')) {
+    const r = new FileReader(); r.onload = e => { prev.src = e.target.result; prev.style.display = 'block'; }; r.readAsDataURL(file);
+  } else if (prev) prev.style.display = 'none';
+}
+
+function crResetForm() {
+  _crPendingFile = null;
+  ['crAmount', 'crVendor', 'crNote'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const f = document.getElementById('crFile'); if (f) f.value = '';
+  const p = document.getElementById('crPreview'); if (p) { p.removeAttribute('src'); p.style.display = 'none'; }
+  const l = document.getElementById('crFileLabel'); if (l) l.textContent = '📷 Take / choose receipt photo';
+  const d = document.getElementById('crDate'); if (d) d.value = new Date().toISOString().split('T')[0];
+}
+
+async function crUploadFile(file) {
+  let blob = file;
+  if (file.type.startsWith('image/')) {
+    const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = e => res(e.target.result); r.onerror = rej; r.readAsDataURL(file); });
+    const compressed = await compressImage(dataUrl, 1800, 0.85).catch(() => dataUrl);
+    blob = dataUrlToBlob(compressed);
+  }
+  const safeName = (file.name || 'receipt').replace(/[^a-z0-9.\-_]/gi, '_');
+  const path = `companies/${currentCompanyId}/jobs/${COMPANY_EXPENSE_JOB_ID}/photos/receipt-${uid('cr')}-${safeName}`;
+  return { photoUrl: await uploadToStorage(path, blob), photoPath: path, isPdf: !(file.type || '').startsWith('image/') };
+}
+
+async function submitCompanyReceipt() {
+  if (!canViewFinancialsTab()) return;
+  const amount = parseFloat(document.getElementById('crAmount')?.value);
+  if (!amount || amount <= 0) { alert('Enter the receipt total.'); return; }
+  if (!_crPendingFile && !confirm('No photo attached. Save this expense without a receipt photo?')) return;
+  const category = document.getElementById('crCategory')?.value || 'Other / one-off';
+  const btn = document.getElementById('crSubmitBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    const photo = _crPendingFile ? await crUploadFile(_crPendingFile) : { photoUrl: '', photoPath: '', isPdf: false };
+    const paidWith = document.getElementById('crPaidWith')?.value || 'Company card';
+    await crColl().add({
+      amount, category, bucket: crBucketFor(category),
+      vendor: (document.getElementById('crVendor')?.value || '').trim(),
+      note: (document.getElementById('crNote')?.value || '').trim(),
+      date: document.getElementById('crDate')?.value || new Date().toISOString().split('T')[0],
+      paidWith, needsReimbursement: paidWith === 'Personal card / cash',
+      status: paidWith === 'Personal card / cash' ? 'Reimburse' : 'Logged',
+      ...photo,
+      uploadedBy: conCurrentUser?.email || '', uploadedByName: conCurrentUser?.displayName || conCurrentUser?.email || '',
+      companyId: currentCompanyId, scope: 'company',
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    crResetForm();
+  } catch (e) { alert('Could not save: ' + e.message); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = 'Save company expense'; } }
+}
+
+function crSetMonth(v) { _crMonth = v || new Date().toISOString().slice(0, 7); renderCompanyReceiptsList(); }
+
+function renderCompanyReceiptsList() {
+  const list = document.getElementById('crList'), sumEl = document.getElementById('crSummary');
+  if (!list) return;
+  const rows = _crReceipts.filter(r => (r.date || '').startsWith(_crMonth));
+  const total = rows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const byCat = {}, byBucket = {};
+  rows.forEach(r => { byCat[r.category] = (byCat[r.category] || 0) + (Number(r.amount) || 0); byBucket[r.bucket || crBucketFor(r.category)] = (byBucket[r.bucket || crBucketFor(r.category)] || 0) + (Number(r.amount) || 0); });
+  if (sumEl) sumEl.innerHTML = rows.length ? `
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+      <div style="flex:1 1 140px;padding:10px 12px;border:1px solid var(--line);border-radius:10px"><div class="small muted">TOTAL THIS MONTH</div><div style="font-size:1.3rem;font-weight:900">${rcMoney(total)}</div></div>
+      ${Object.entries(byBucket).map(([b, v]) => `<div style="flex:1 1 140px;padding:10px 12px;border:1px solid var(--line);border-radius:10px"><div class="small muted">FROM ${esc(b.toUpperCase())}</div><div style="font-size:1.3rem;font-weight:900">${rcMoney(v)}</div></div>`).join('')}
+    </div>
+    <div class="small muted" style="margin-bottom:6px">${Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([c, v]) => `${esc(c)} ${rcMoney(v)}`).join(' · ')}</div>` : '';
+  if (!rows.length) { list.innerHTML = '<div class="small muted">No company expenses this month.</div>'; return; }
+  const badge = s => { const c = { Reimburse: '#f59e0b', Logged: '#3b82f6', Reimbursed: '#1dbb87', Reconciled: '#1dbb87' }[s] || '#8ea3c8';
+    return `<span style="font-size:.7rem;font-weight:700;padding:2px 8px;border-radius:999px;border:1px solid ${c};color:${c}">${esc(s === 'Reimburse' ? 'Needs reimbursement' : s || 'Logged')}</span>`; };
+  list.innerHTML = rows.map(r => {
+    const thumb = !r.photoUrl ? `<div style="width:56px;height:56px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px dashed var(--line);border-radius:8px" class="small muted">no photo</div>`
+      : r.isPdf ? `<a href="${r.photoUrl}" target="_blank" rel="noopener" style="width:56px;height:56px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:8px;font-size:.75rem;text-decoration:none">PDF</a>`
+      : `<a href="${r.photoUrl}" target="_blank" rel="noopener" style="flex-shrink:0"><img src="${r.photoUrl}" alt="Receipt" style="width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid var(--line)"></a>`;
+    const b = (lbl, fn) => `<button class="btn" onclick="${fn}" style="padding:4px 10px;font-size:.74rem">${lbl}</button>`;
+    return `<div style="display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--line)">
+      ${thumb}
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><strong>${rcMoney(r.amount)}${r.vendor ? ' · ' + esc(r.vendor) : ''}</strong>${badge(r.status)}</div>
+        <div class="small muted">${esc(r.date || '')} · ${esc(r.category || '')} → ${esc(r.bucket || crBucketFor(r.category))} · ${esc(r.uploadedByName || '')} · ${esc(r.paidWith || '')}</div>
+        ${r.note ? `<div class="small" style="margin-top:2px">${esc(r.note)}</div>` : ''}
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+          ${r.status === 'Reimburse' ? b('Mark reimbursed', `crSetStatus('${r.id}','Reimbursed')`) : ''}
+          ${r.status !== 'Reconciled' && r.status !== 'Reimburse' ? b('Mark reconciled', `crSetStatus('${r.id}','Reconciled')`) : ''}
+          ${b('Move to a job', `crMoveToJob('${r.id}')`)}
+          ${b('Delete', `crDelete('${r.id}')`)}
+        </div>
+      </div></div>`;
+  }).join('');
+}
+
+async function crSetStatus(id, status) {
+  if (!canViewFinancialsTab()) return;
+  try { await crColl().doc(id).update({ status, resolvedBy: conCurrentUser?.email || '', resolvedAt: firebase.firestore.FieldValue.serverTimestamp() }); }
+  catch (e) { alert('Could not update: ' + e.message); }
+}
+
+async function crDelete(id) {
+  if (!canViewFinancialsTab()) return;
+  if (!confirm('Delete this company expense?')) return;
+  try { await crColl().doc(id).delete(); } catch (e) { alert('Could not delete: ' + e.message); }
+}
+
+// Company expense that turned out to be for a job: becomes a materials
+// purchase on that job (job costing) and leaves the company list.
+async function crMoveToJob(id) {
+  if (!canViewFinancialsTab()) return;
+  const r = _crReceipts.find(x => x.id === id); if (!r) return;
+  const q = prompt('Move to which job? Enter the job number (e.g. JOB-2026-561):', '');
+  if (!q) return;
+  const needle = q.trim().toLowerCase();
+  const job = conJobs.find(j => (j.jobNumber || '').toLowerCase() === needle) || conJobs.find(j => (j.jobNumber || '').toLowerCase().endsWith(needle) || (j.name || '').toLowerCase().includes(needle));
+  if (!job) { alert('No job found matching "' + q + '".'); return; }
+  if (!confirm(`Move ${rcMoney(r.amount)}${r.vendor ? ' (' + r.vendor + ')' : ''} to ${job.jobNumber || ''} ${job.name || ''} as a materials purchase?`)) return;
+  try {
+    await coll('jobs').doc(job.id).collection('expenses').add({
+      purchasedFrom: r.vendor || 'Receipt', desc: r.note || r.category || 'Materials', amount: r.amount, date: r.date,
+      paidBy: r.needsReimbursement ? 'Personal (reimburse)' : 'Debit Card', purchasedBy: r.uploadedByName || '',
+      notes: 'Moved from Company Receipts' + (r.photoUrl ? ' · receipt ' + r.photoUrl : ''), companyId: currentCompanyId,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(), updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    await crColl().doc(id).delete();
+    alert('Moved to ' + (job.jobNumber || job.name) + '.');
+  } catch (e) { alert('Could not move: ' + e.message); }
+}
+
+// From a job's Receipts tab: "this wasn't for the job" -> company expense.
+async function rcMoveToCompany(receiptId) {
+  if (!canViewFinancialsTab()) return;
+  const jobId = conCurrentJobId;
+  const r = _rcReceipts.find(x => x.id === receiptId); if (!r) return;
+  const names = COMPANY_EXPENSE_CATEGORIES.map((c, i) => `${i + 1}. ${c.name}`).join('\n');
+  const pick = prompt('Move to Company Receipts. Category number:\n' + names, '1');
+  if (pick === null) return;
+  const cat = COMPANY_EXPENSE_CATEGORIES[(parseInt(pick, 10) || 0) - 1];
+  if (!cat) { alert('Pick a number from the list.'); return; }
+  try {
+    await crColl().add({
+      amount: r.amount, category: cat.name, bucket: cat.bucket, vendor: r.vendor || '', note: r.note || '',
+      date: (r.createdAt?.toDate ? r.createdAt.toDate() : new Date()).toISOString().split('T')[0],
+      paidWith: r.paidWith || 'Company card', needsReimbursement: !!r.needsReimbursement,
+      status: r.needsReimbursement ? 'Reimburse' : 'Logged',
+      photoUrl: r.photoUrl || '', photoPath: r.photoPath || '', isPdf: !!r.isPdf,
+      uploadedBy: r.uploadedBy || '', uploadedByName: r.uploadedByName || '',
+      movedFromJobId: jobId, companyId: currentCompanyId, scope: 'company',
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    if (r.expenseId) await coll('jobs').doc(jobId).collection('expenses').doc(r.expenseId).delete().catch(() => {});
+    if (r.todoId) await coll('todos').doc(r.todoId).update({ done: true, completedAt: firebase.firestore.FieldValue.serverTimestamp() }).catch(() => {});
+    await coll('jobs').doc(jobId).collection('receipts').doc(receiptId).delete();
+    alert('Moved to Company Receipts (' + cat.name + ').');
+  } catch (e) { alert('Could not move: ' + e.message); }
+}
+
+// For the Friday Owner Report: company expenses between two ISO dates (inclusive).
+async function getCompanyExpenses(fromIso, toIso) {
+  const snap = await crColl().where('date', '>=', fromIso).where('date', '<=', toIso).get();
+  const out = []; snap.forEach(d => out.push({ id: d.id, ...d.data() }));
+  return out;
+}
+
+window.renderCompanyReceiptsPage = renderCompanyReceiptsPage;
+window.onCompanyReceiptFileChosen = onCompanyReceiptFileChosen;
+window.submitCompanyReceipt = submitCompanyReceipt;
+window.crSetMonth = crSetMonth;
+window.crSetStatus = crSetStatus;
+window.crDelete = crDelete;
+window.crMoveToJob = crMoveToJob;
+window.rcMoveToCompany = rcMoveToCompany;
+window.getCompanyExpenses = getCompanyExpenses;
 
 // In-app alert: while JOBSMETRIX is open, a new Receipt To-Do assigned to
 // the signed-in user pops a banner (the email covers when it's closed).
