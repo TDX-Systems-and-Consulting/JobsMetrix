@@ -26,9 +26,15 @@ const JTXD_LOCKED_RATES = {
   flex: 0.05,       // of the remainder after Overhead + Marketing
   taxes: 0.275,     // of the remainder after Flex
   realLaborCostPct: 0.60, // $180/$300 real subcontractor pay ratio, applied to LABOR BILLED ONLY (never Revenue/materials) -- corrected 2026-09-19 per Travis: subs are paid on billed-equivalent hours (Labor Billed / $300/hr) regardless of actual hours worked; the 0.77 efficiency factor exists ONLY to set the customer-facing days estimate and never touches what a sub is paid or what the company nets. See calcTrueMargin.
-  jasonCommissionPct: 0.04, // Locked 2026-09-25, SUPERSEDES the earlier 5% same-day lock: Jason's pay is now split three ways -- Sales commission (this rate, 4% of Labor Billed, same tier as realLaborCostPct, subtracted before the JTXD Pool), plus Superintendent and Consultant pay (both below), which come out of the Overhead allocation instead, since that role is ongoing field/advisory work across every job, not a per-sale event. Checked against real jobs before locking: at today's real 3-crew volume (~$135K/mo Labor Billed), 4/2/2 nets Jason $10,800/mo total, with the Overhead bucket still covering the real ~$2,800/mo overhead bill plus both new pieces with ~$548/mo to spare. Honest caveat: at only 2 crews running, Overhead runs about $568/mo short of covering everything -- this structure isn't fully self-sufficient in a slow month, same as every version tried tonight.
+  jasonCommissionPct: 0.06, // Raised 4% -> 6% on 2026-10-09 per Travis (MARGIN_CALC_V2). Original note: // Locked 2026-09-25, SUPERSEDES the earlier 5% same-day lock: Jason's pay is now split three ways -- Sales commission (this rate, 4% of Labor Billed, same tier as realLaborCostPct, subtracted before the JTXD Pool), plus Superintendent and Consultant pay (both below), which come out of the Overhead allocation instead, since that role is ongoing field/advisory work across every job, not a per-sale event. Checked against real jobs before locking: at today's real 3-crew volume (~$135K/mo Labor Billed), 4/2/2 nets Jason $10,800/mo total, with the Overhead bucket still covering the real ~$2,800/mo overhead bill plus both new pieces with ~$548/mo to spare. Honest caveat: at only 2 crews running, Overhead runs about $568/mo short of covering everything -- this structure isn't fully self-sufficient in a slow month, same as every version tried tonight.
   superintendentPct: 0.02, // Locked 2026-09-25: Jason's ongoing acting-superintendent role, 2% of Labor Billed, paid OUT OF the Overhead allocation (see calcTrueMargin) -- not an additional cut from Labor Billed before the Pool.
   consultantPct: 0.02, // Locked 2026-09-25: Jason's owner-consultant/mentorship role, 2% of Labor Billed, also paid OUT OF Overhead alongside superintendentPct above.
+  // Added 2026-10-09 per Travis (MARGIN_CALC_V2):
+  laborEfficiency: 0.72,      // was 0.77 -- customer-facing timeline only; never touches sub pay or the Pool
+  ownerPayPct: 0.20,          // Travis's pay = 20% of Retained Earnings (was 19%), checked AFTER Go/No-Go
+  ownerW2Share: 0.50,         // accountant: 50% of owner pay as W-2 salary, 50% as owner draw
+  employerPayrollTaxPct: 0.0765, // company's FICA match on the W-2 half, paid from Retained Earnings
+  materialsMarkupPct: 0.15,   // fallback only when real materials cost is unknown; markup + Flex = operating Checking
 };
 
 const esc = s => ((s==null?'':s)).toString().replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -6654,6 +6660,9 @@ function renderFinancialsHub(jobId) {
 
   // Subcontractor payments (1099 flat-rate job pay)
   fhLoadJobSubPayments(jobId, () => { fhRenderSubPayments(); fhRenderTotals(job); });
+
+  // MARGIN_CALC_V2: full Job Margin Calculator inline
+  renderJobMarginPanel(jobId);
 
   // Owner-only COO budget breakdown
   renderCOOBudgetBreakdown();
@@ -22733,6 +22742,7 @@ function calcTrueMargin(allItems, preAggregated) {
   if (preAggregated) {
     materialsPrice = preAggregated.materialsPrice || 0;
     laborPrice = preAggregated.laborPrice || 0;
+    materialsCost = preAggregated.materialsCost || 0;
   } else {
   (allItems||[]).forEach(item => {
     const qty = item.qty || 1;
@@ -22783,7 +22793,7 @@ function calcTrueMargin(allItems, preAggregated) {
   // hrs/day, the same workday length already used for crew burden calcs
   // elsewhere in the app (see getBurdenRate/crew size × days × 8 hrs).
   const billedHours = laborBilled / 300;
-  const efficiencyHours = billedHours / 0.77;
+  const efficiencyHours = billedHours / JTXD_LOCKED_RATES.laborEfficiency;
   const billedDays = billedHours / 8;
   const efficiencyDays = efficiencyHours / 8;
   const estimatedHours = efficiencyHours; // kept for back-compat; equals efficiencyHours
@@ -22825,9 +22835,25 @@ function calcTrueMargin(allItems, preAggregated) {
   // earlier fixed $5,000/$8,333 monthly draw. Checked BEFORE this draw:
   // the Go/No-Go 10%-of-revenue floor, since whether a job is worth
   // doing at all comes before how the resulting profit gets split.
-  const travisDrawPct = 0.19;
+  const travisDrawPct = JTXD_LOCKED_RATES.ownerPayPct;
   const travisDraw = retainedEarnings * travisDrawPct;
   const retainedEarningsAfterDraw = retainedEarnings - travisDraw;
+  // MARGIN_CALC_V2 (2026-10-09): owner pay split W-2/draw, employer tax,
+  // and where every dollar lands. Materials markup = real price minus real
+  // cost when the cost is known, else backed out at 15%. Markup + Flex are
+  // the overrun float in operating Checking; what's left of Retained
+  // Earnings after Travis's pay and the employer tax goes to Savings.
+  const ownerW2 = travisDraw * JTXD_LOCKED_RATES.ownerW2Share;
+  const ownerDraw = travisDraw - ownerW2;
+  const employerPayrollTax = ownerW2 * JTXD_LOCKED_RATES.employerPayrollTaxPct;
+  const savings = retainedEarnings - travisDraw - employerPayrollTax;
+  const materialsCostReal = (materialsCost > 0 && materialsCost <= materialsPrice)
+    ? materialsCost : materialsPrice / (1 + JTXD_LOCKED_RATES.materialsMarkupPct);
+  const materialsMarkup = materialsPrice - materialsCostReal;
+  const checking = materialsMarkup + flex;
+  const overheadNet = overhead - superintendentPay - consultantPay;
+  const jasonTotal = jasonCommission + superintendentPay + consultantPay;
+  const laborShare = revenue > 0 ? laborBilled / revenue : 0;
   const reOfRevenuePct = revenue > 0 ? retainedEarnings / revenue : 0;
   const goNoGo = reOfRevenuePct >= 0.10 ? 'GO' : 'NO GO';
 
@@ -22839,7 +22865,9 @@ function calcTrueMargin(allItems, preAggregated) {
     overhead, marketing, flex, taxes,
     retainedEarnings, trueMarginPct,
     travisDrawPct, travisDraw, retainedEarningsAfterDraw,
-    reOfRevenuePct, goNoGo
+    reOfRevenuePct, goNoGo,
+    ownerW2, ownerDraw, employerPayrollTax, savings, materialsCostReal, materialsMarkup,
+    checking, overheadNet, jasonTotal, laborShare
   };
 }
 
@@ -22853,82 +22881,154 @@ function calcTrueMargin(allItems, preAggregated) {
 // Uses the same in-app print modal (iframe + srcdoc) already fixed for
 // Punch List, View Proposal, and Print Internal earlier tonight -- never
 // window.open(), which strands a dead-end tab on mobile.
+// MARGIN_CALC_V2 (2026-10-09): one builder for the per-job Job Margin
+// Calculator, matching Travis's standalone calculator line for line.
+// Used inline on every job's Financials tab AND by the print button.
+async function getJobMarginTm(jobId) {
+  const [price, cost] = await Promise.all([
+    fetchEstimateCostSplitFresh(jobId),
+    fetchEstimateTrueCostSplit(jobId).catch(() => ({ materials: 0 })),
+  ]);
+  if (!price.materials && !price.laborAndOther) return null;
+  return calcTrueMargin(null, {
+    materialsPrice: price.materials, laborPrice: price.laborAndOther,
+    materialsCost: cost.materials || 0,
+  });
+}
+
+function buildJobMarginRows(tm) {
+  const R = JTXD_LOCKED_RATES;
+  const p = v => Math.round(v * 1000) / 10 + '%';
+  const pct = v => (Math.round(v * 10000) / 100).toString().replace(/\.0+$/, '') + '%';
+  // [label, value, note, style]  style: sec | minus | indent | total | hl
+  return [
+    ['The job', null, '', 'sec'],
+    ['Total job price (what the customer pays)', tm.revenue, 'Materials billed + labor billed, from this job\'s estimate', 'total'],
+    ['Materials billed', tm.materialsPrice, '', ''],
+    ['Materials cost (paid to suppliers)', tm.materialsCostReal, tm.materialsCost > 0 ? 'Real cost from the estimate line items' : 'Backed out at ' + pct(R.materialsMarkupPct) + ' markup', 'minus indent'],
+    ['Materials markup', tm.materialsMarkup, 'Overrun float, goes to operating Checking', 'indent'],
+    ['Labor billed', tm.laborPrice, 'Labor is ' + p(tm.laborShare) + ' of the price', ''],
+
+    ['Off the top of labor billed', null, '', 'sec'],
+    ['Real labor cost (subs)', tm.realLaborCost, pct(R.realLaborCostPct) + ' of labor billed ($180 ÷ $300)', 'minus'],
+    ['Jason, sales', tm.jasonCommission, pct(R.jasonCommissionPct) + ' of labor billed, before the Pool', 'minus'],
+    ['JTXD Pool', tm.jtxdActual, 'Labor billed − real labor − Jason sales', 'total'],
+
+    ['The Pool waterfall', null, '', 'sec'],
+    ['Overhead', tm.overhead, pct(R.overhead) + ' of the Pool', 'minus'],
+    ['Jason, superintendent', tm.superintendentPay, pct(R.superintendentPct) + ' of labor billed, paid from Overhead', 'indent'],
+    ['Jason, consultant', tm.consultantPay, pct(R.consultantPct) + ' of labor billed, paid from Overhead', 'indent'],
+    ['Overhead left for bills', tm.overheadNet, 'Toward the ~$2,800/mo rent, insurance, software', 'indent'],
+    ['Marketing', tm.marketing, pct(R.marketing) + ' of the Pool', 'minus'],
+    ['Flex → Checking', tm.flex, pct(R.flex) + ' of what\'s left; overrun money in operating Checking', 'minus'],
+    ['Taxes', tm.taxes, pct(R.taxes) + ' of what\'s left after Flex', 'minus'],
+    ['Retained Earnings', tm.retainedEarnings, p(tm.reOfRevenuePct) + ' of the total price — the Go/No-Go number (floor 10%)', 'total hl'],
+
+    ['Your pay and savings', null, '', 'sec'],
+    ['Travis pay (' + pct(R.ownerPayPct) + ' of Retained Earnings)', tm.travisDraw, 'Checked after Go/No-Go', 'minus'],
+    ['W-2 salary (' + pct(R.ownerW2Share) + ')', tm.ownerW2, 'Through payroll; withholding comes out of this', 'indent'],
+    ['Owner draw (' + pct(1 - R.ownerW2Share) + ')', tm.ownerDraw, '', 'indent'],
+    ['Employer payroll tax on the W-2', tm.employerPayrollTax, pct(R.employerPayrollTaxPct) + ' of W-2, paid by the company', 'minus'],
+    ['Stays in Savings', tm.savings, 'Retained Earnings after Travis\'s pay and employer tax', 'total hl'],
+
+    ['Jason, all three pieces', null, '', 'sec'],
+    ['Sales + superintendent + consultant', tm.jasonTotal, p(tm.laborPrice ? tm.jasonTotal / tm.laborPrice : 0) + ' of labor billed', ''],
+
+    ['Timeline', null, '', 'sec'],
+    ['Billed days (8-hr days)', 'D:' + tm.billedDays.toFixed(1), 'Labor billed ÷ $300/hr, full pace', ''],
+    ['Realistic days', 'D:' + tm.efficiencyDays.toFixed(1), 'At ' + pct(R.laborEfficiency) + ' efficiency, the real timeline', ''],
+  ];
+}
+
+function buildJobMarginBuckets(tm) {
+  return [
+    ['Materials suppliers', 'Paid out', tm.materialsCostReal, '#8b93a7'],
+    ['Subcontractors', 'Paid out', tm.realLaborCost, '#4f6db8'],
+    ['Jason', 'Sales + superintendent + consultant', tm.jasonTotal, '#7a5ab8'],
+    ['Overhead account', 'Rent, utilities, insurance, software', tm.overheadNet, '#2f8f9d'],
+    ['Marketing account', '', tm.marketing, '#d0498a'],
+    ['Taxes account', '', tm.taxes, '#6b7280'],
+    ['Travis W-2 salary', 'Payroll', tm.ownerW2, '#e07a1f'],
+    ['Employer tax on W-2', 'Payroll', tm.employerPayrollTax, '#f2b36b'],
+    ['Travis owner draw', '', tm.ownerDraw, '#c2410c'],
+    ['Operating Checking', 'Materials markup ' + fhMoney(tm.materialsMarkup) + ' + Flex ' + fhMoney(tm.flex), tm.checking, '#1dbb87'],
+    ['Savings', 'Retained Earnings after Travis\'s pay', tm.savings, '#0f766e'],
+  ];
+}
+
+function buildJobMarginHtml(job, tm, forPrint) {
+  const money = v => (v < 0 ? '−$' : '$') + Math.abs(Math.round(v)).toLocaleString();
+  const go = tm.goNoGo === 'GO';
+  const goC = go ? '#1dbb87' : '#ef5350';
+  const line = forPrint ? '#e5e7eb' : 'rgba(128,128,128,.22)';
+  const muted = forPrint ? '#666' : 'var(--muted, #8b93a7)';
+  const rows = buildJobMarginRows(tm).map(([label, v, note, st]) => {
+    if (st === 'sec') return `<tr><td colspan="3" style="padding:14px 8px 4px;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;font-weight:800;color:${muted};border-bottom:1px solid ${line}">${esc(label)}</td></tr>`;
+    const s = st.split(' ');
+    const val = typeof v === 'string' && v.startsWith('D:') ? v.slice(2) + ' d' : (s.includes('minus') ? '−' : '') + money(v);
+    const bg = s.includes('hl') ? (forPrint ? '#f1f5f9' : 'rgba(29,187,135,.08)') : 'transparent';
+    return `<tr style="background:${bg}">
+      <td style="padding:6px 8px;border-bottom:1px solid ${line};${s.includes('indent') ? 'padding-left:24px;' : ''}${s.includes('total') ? 'font-weight:800' : ''}">${esc(label)}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid ${line};text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;${s.includes('total') ? 'font-weight:800' : ''}">${val}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid ${line};color:${muted};font-size:.8rem">${esc(note)}</td></tr>`;
+  }).join('');
+  const buckets = buildJobMarginBuckets(tm);
+  const sum = buckets.reduce((a, b) => a + b[2], 0);
+  const ok = Math.abs(sum - tm.revenue) < 1;
+  const bar = buckets.filter(b => b[2] > 0).map(b => `<div title="${esc(b[0])}" style="flex:${b[2]} 0 0;background:${b[3]}"></div>`).join('');
+  const legend = buckets.map(b => `<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 0;border-bottom:1px solid ${line}">
+      <span style="width:10px;height:10px;border-radius:2px;background:${b[3]};margin-top:4px;flex-shrink:0"></span>
+      <span style="flex:1;min-width:0">${esc(b[0])}${b[1] ? `<div style="color:${muted};font-size:.75rem">${esc(b[1])}</div>` : ''}</span>
+      <b style="font-variant-numeric:tabular-nums">${money(b[2])}</b>
+      <span style="width:46px;text-align:right;color:${muted};font-size:.78rem">${tm.revenue ? Math.round(b[2] / tm.revenue * 1000) / 10 + '%' : ''}</span></div>`).join('');
+  return `
+  <div style="display:flex;flex-wrap:wrap;gap:10px;margin:8px 0 12px">
+    <div style="flex:1 1 140px;padding:10px 12px;border-radius:10px;border:2px solid ${goC}"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:${muted}">Go / No-Go</div><div style="font-size:1.3rem;font-weight:900;color:${goC}">${tm.goNoGo} · ${(tm.reOfRevenuePct * 100).toFixed(1)}%</div></div>
+    <div style="flex:1 1 140px;padding:10px 12px;border-radius:10px;border:1px solid ${line}"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:${muted}">Travis pay</div><div style="font-size:1.3rem;font-weight:900">${money(tm.travisDraw)}</div><div style="font-size:.75rem;color:${muted}">${money(tm.ownerW2)} W-2 + ${money(tm.ownerDraw)} draw</div></div>
+    <div style="flex:1 1 140px;padding:10px 12px;border-radius:10px;border:1px solid ${line}"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:${muted}">Checking</div><div style="font-size:1.3rem;font-weight:900">${money(tm.checking)}</div></div>
+    <div style="flex:1 1 140px;padding:10px 12px;border-radius:10px;border:1px solid ${line}"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:${muted}">Savings</div><div style="font-size:1.3rem;font-weight:900">${money(tm.savings)}</div></div>
+  </div>
+  <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.86rem">${rows}</table></div>
+  <div style="margin-top:18px;font-weight:800">Where every dollar lands</div>
+  <div style="display:flex;height:16px;border-radius:6px;overflow:hidden;margin:8px 0">${bar}</div>
+  <div style="font-size:.84rem">${legend}</div>
+  <div style="margin-top:8px;font-size:.78rem;color:${ok ? '#1dbb87' : '#ef5350'}">${ok ? '✓' : '⚠'} Buckets add up to ${money(sum)} vs. price ${money(tm.revenue)}</div>`;
+}
+
+async function renderJobMarginPanel(jobId) {
+  const el = document.getElementById('fhMarginCalc');
+  if (!el) return;
+  el.innerHTML = '<div class="small muted" style="padding:12px">Loading real numbers…</div>';
+  try {
+    const tm = await getJobMarginTm(jobId);
+    if (conCurrentJobId !== jobId) return;
+    const job = conJobs.find(j => j.id === jobId);
+    el.innerHTML = tm ? buildJobMarginHtml(job, tm, false)
+      : '<div class="small muted" style="padding:12px">No estimate line items yet — add the scope on the Estimate tab.</div>';
+  } catch (e) {
+    console.error('renderJobMarginPanel', e);
+    el.innerHTML = '<div class="small muted" style="padding:12px">Could not load the margin calculator.</div>';
+  }
+}
+window.renderJobMarginPanel = renderJobMarginPanel;
+
 async function printJobMarginCalculator(btn) {
   const jobId = conCurrentJobId;
   const job = conJobs.find(j => j.id === jobId);
   if (!job) return;
-
   if (btn) { btn.disabled = true; btn.textContent = 'Loading real numbers...'; }
   let tm;
-  try {
-    const { materials, laborAndOther } = await fetchEstimateCostSplitFresh(jobId);
-    if (!materials && !laborAndOther) {
-      alert('This job has no estimate line items yet -- add the signed proposal\'s scope under the Estimate tab first.');
-      return;
-    }
-    tm = calcTrueMargin(null, { materialsPrice: materials, laborPrice: laborAndOther });
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '🖨 Print Job Margin Calculator'; }
-  }
-
+  try { tm = await getJobMarginTm(jobId); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '🖨 Print Job Margin Calculator'; } }
+  if (!tm) { alert('This job has no estimate line items yet -- add the signed proposal\'s scope under the Estimate tab first.'); return; }
   const co = companyProfile;
-  const money = v => '$' + Math.round(v).toLocaleString();
-  // Row shape: [label, value, explanation, styleTag?]. styleTag 'total'
-  // renders the label in italics instead of the default bold -- used
-  // only for Jason's combined total, so it reads as a subtotal rather
-  // than another primary line. Per Travis 2026-09-29: Jason's three
-  // pieces grouped consecutively (were spread across the waterfall
-  // before), his total right after in italics not bold, and Go/No-Go
-  // moved to the very last line of the sheet.
-  const rows = [
-    ['Total Job Price (Materials + Labor Billed)', money(tm.revenue), 'Real numbers from this job\'s signed estimate.'],
-    ['Materials Billed', money(tm.materialsPrice), ''],
-    ['Labor Billed', money(tm.laborPrice), 'Total Job Price minus Materials Billed.'],
-    ['', '', ''],
-    ['Real Labor Cost', money(tm.realLaborCost), '60% of Labor Billed. Not an arbitrary rate -- it\'s the real pay-to-bill ratio for a 3-person crew: $180/hr paid to subs ($60/hr x 3) divided by $300/hr billed to the customer ($100/hr x 3) = 60%.'],
-    ['Jason Sales Commission', money(tm.jasonCommission), '4% of Labor Billed. Taken before the JTXD Pool is even formed.'],
-    ['Jason Superintendent Pay', money(tm.superintendentPay), '2% of Labor Billed, paid out of Overhead below.'],
-    ['Jason Consultant Pay', money(tm.consultantPay), '2% of Labor Billed, also paid out of Overhead.'],
-    ['Jason Total Pay', money(tm.jasonCommission + tm.superintendentPay + tm.consultantPay), '4%+2%+2% = 8% of Labor Billed, all three pieces added together.', 'total'],
-    ['', '', ''],
-    ['JTXD Pool', money(tm.jtxdActual), 'Labor Billed, minus Real Labor Cost, minus Jason\'s Sales Commission.'],
-    ['Overhead', money(tm.overhead), '18% of the Pool. Covers rent, utilities, insurance, software, and Jason\'s Superintendent + Consultant pay above.'],
-    ['Marketing', money(tm.marketing), '6% of the Pool.'],
-    ['Overhead Room / Shortfall (this job only)', money(tm.overhead - tm.superintendentPay - tm.consultantPay), 'Overhead minus Jason\'s two per-job pieces only. The real ~$2,800/mo whole-business bill is a separate, whole-month check across every job that month -- not subtracted here.'],
-    ['Flex', money(tm.flex), '5% of what\'s left after Overhead and Marketing.'],
-    ['Taxes', money(tm.taxes), '27.5% of what\'s left after Flex.'],
-    ['Retained Earnings (before Owner Draw)', money(tm.retainedEarnings), 'Real company profit on this job, before Travis\'s own draw.'],
-    ['', '', ''],
-    ['Travis Owner Draw', money(tm.travisDraw), 'Retained Earnings times 19% -- same mechanism as Jason\'s pay, scales with volume the same way.'],
-    ['Retained Earnings (after Owner Draw)', money(tm.retainedEarningsAfterDraw), 'What actually stays in the business after Travis is paid on this job.'],
-    ['', '', ''],
-    ['Go / No-Go (10% Retained Earnings floor)', `${tm.goNoGo} (${(tm.reOfRevenuePct*100).toFixed(1)}%)`, 'Retained Earnings divided by Total Job Price, checked BEFORE Travis\'s draw -- whether a job is worth doing comes before how the profit gets split.'],
-  ];
-
   const html = `<!DOCTYPE html><html><head><title>Job Margin Calculator — ${esc(job.name||'')}</title>
-  <style>
-    body{font-family:Arial,sans-serif;max-width:900px;margin:20px auto;padding:0 16px;color:#111}
-    table{width:100%;border-collapse:collapse;margin-top:16px}
-    td{padding:6px 8px;border-bottom:1px solid #e5e7eb;vertical-align:top}
-    td:nth-child(1){font-weight:700;width:34%}
-    td:nth-child(2){width:18%;text-align:right;font-variant-numeric:tabular-nums}
-    td:nth-child(3){color:#666;font-size:.82rem;width:48%}
-    .blank td{border-bottom:none;height:6px}
-    .total td:nth-child(1){font-weight:400;font-style:italic}
-    @media print{@page{margin:.5in}}
-  </style></head><body>
+  <style>body{font-family:Arial,sans-serif;max-width:900px;margin:20px auto;padding:0 16px;color:#111}@media print{@page{margin:.5in}}</style></head><body>
   <h2 style="margin-bottom:2px">${esc(co.companyName||'JTXD Contracting')} — Job Margin Calculator</h2>
   <div style="color:#666;margin-bottom:8px">${esc(job.jobNumber||job.name||'')} — ${esc(job.name||'')}${job.address?' · '+esc(job.address):''}</div>
-  <table>
-    ${rows.map(r => r[0]===''&&r[1]===''&&r[2]===''
-      ? '<tr class="blank"><td></td><td></td><td></td></tr>'
-      : `<tr${r[3]==='total'?' class="total"':''}><td>${esc(r[0])}</td><td>${r[1]}</td><td>${esc(r[2])}</td></tr>`
-    ).join('')}
-  </table>
-  <div style="margin-top:16px;text-align:center;color:#9ca3af;font-size:.75rem">
-    ${esc(co.companyName||'')} Job Margin Calculator · ${esc(job.name||'')} · Printed ${new Date().toLocaleString()}
-  </div></body></html>`;
-
+  ${buildJobMarginHtml(job, tm, true)}
+  <div style="margin-top:16px;text-align:center;color:#9ca3af;font-size:.75rem">${esc(co.companyName||'')} Job Margin Calculator · ${esc(job.name||'')} · Printed ${new Date().toLocaleString()}</div>
+  </body></html>`;
   const titleEl = document.getElementById('viewProposalModalTitle');
   if (titleEl) titleEl.textContent = '🖨 Job Margin Calculator — ' + (job.name || '');
   document.getElementById('viewProposalIframe').srcdoc = html;
@@ -23661,7 +23761,7 @@ function updateEstimateSummary() {
   setEl('estKpiJtxdActual', '$'+Math.round(tm.jtxdActual).toLocaleString());
 
   // Days to Complete -- two numbers per Travis: Billed (Labor Billed /
-  // $300/hr, ÷8 hrs/day) is what subs are paid on; Efficiency (÷0.77 on
+  // $300/hr, ÷8 hrs/day) is what subs are paid on; Efficiency (÷0.72 on
   // top of that) is the real, longer customer-facing timeline. Shown
   // together in the same tile since they're two views of one KPI slot.
   setEl('estKpiDaysToComplete',
