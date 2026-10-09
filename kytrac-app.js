@@ -8747,6 +8747,7 @@ function renderSubList() {
       <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0">
         <button class="btn" style="padding:4px 10px;font-size:.76rem" onclick="openEditSub('${s.id}')">Edit</button>
         <button class="btn-amber" style="padding:4px 10px;font-size:.76rem" onclick="sendSubAgreement('${conCurrentJobId}','${s.id}')">\u270d\ufe0f Agreement</button>
+        <button class="btn" style="padding:4px 10px;font-size:.76rem" onclick="printSubAgreement('${conCurrentJobId}','${s.id}')">🖨 Print</button>
         ${s.phone ? `<a href="tel:${esc(s.phone)}" class="btn" style="padding:4px 10px;font-size:.76rem;text-decoration:none;text-align:center">📞 Call</a>` : ''}
       </div>
     </div>`;
@@ -13569,6 +13570,71 @@ async function sendSubAgreement(jobId, subId) {
   kOpen('emailPreviewModal');
 }
 window.sendSubAgreement = sendSubAgreement;
+
+// NEW 2026-10-08: printable/paper version of the Subcontractor Agreement
+// (same text as the emailed e-sign version, via buildSubAgreementText),
+// with wet-signature lines for both parties. Works without an email on
+// file. Opens in the shared in-app viewProposalModal, whose Print button
+// prints it or saves it as a PDF.
+async function printSubAgreement(jobId, subId) {
+  if (!conDb || !jobId || !subId) return;
+  const job = conJobs.find(j => j.id === jobId);
+  if (!job) { alert('Job not found.'); return; }
+  let sub = null;
+  try {
+    const snap = await coll('jobs').doc(jobId).collection('subs').doc(subId).get();
+    if (snap.exists) sub = { id: snap.id, ...snap.data() };
+  } catch (e) {}
+  if (!sub) { alert('Subcontractor record not found.'); return; }
+  const co = companyProfile || {};
+  const companyName = co.companyName || co.legalName || 'TDX Holdings LLC dba JTXD Contracting';
+  const text = buildSubAgreementText(sub, job, co).replace(/electronic signature/gi, 'signature');
+  const paras = text.split('\n').slice(1) // first line is the title, shown as a heading below
+    .map(l => l.trim() === '' ? '<div style="height:10px"></div>'
+      : /^\d+\.\s/.test(l) ? `<p class="clause">${esc(l).replace(/^(\d+\.\s[A-Z &]+\.)/, '<strong>$1</strong>')}</p>`
+      : /^\s*•/.test(l) ? `<p class="bullet">${esc(l.trim())}</p>`
+      : /^[A-Za-z ]+:\s/.test(l) && l.length < 120 ? `<p class="meta">${esc(l).replace(/^([A-Za-z ]+:)/, '<strong>$1</strong>')}</p>`
+      : `<p>${esc(l)}</p>`).join('');
+  const sigBlock = (who, name) => `<div class="sig">
+      <div class="sig-role">${who}</div>
+      <div class="line"></div><div class="lbl">Signature</div>
+      <div class="line"></div><div class="lbl">Printed name${name ? ' — ' + esc(name) : ''}</div>
+      <div class="line short"></div><div class="lbl">Date</div>
+    </div>`;
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Subcontractor Agreement — ${esc(sub.name || '')}</title>
+  <style>
+    *{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;max-width:800px;margin:0 auto;padding:40px 40px;color:#1f2937;line-height:1.55;font-size:13.5px}
+    .header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding-bottom:16px;margin-bottom:18px;border-bottom:3px solid #d97706}
+    .co-name{font-size:1.15rem;font-weight:800;color:#111827}.co-contact{color:#6b7280;font-size:.8rem;margin-top:2px}
+    h1{font-size:1.35rem;margin:0;color:#d97706;letter-spacing:.03em;text-align:right}
+    p{margin:0 0 4px}.meta{margin:0}.clause{margin-top:2px}.bullet{padding-left:22px;margin:0}
+    .sigs{display:flex;gap:36px;margin-top:40px;break-inside:avoid;page-break-inside:avoid}
+    .sig{flex:1}.sig-role{font-weight:800;margin-bottom:28px}
+    .line{border-bottom:1.5px solid #6b7280;height:30px}.line.short{width:55%}
+    .lbl{font-size:.75rem;color:#6b7280;margin:3px 0 14px}
+    @media print{body{padding:16px 24px}}
+  </style></head><body>
+    <div class="header">
+      <div>
+        ${co.logo ? `<img src="${co.logo}" style="height:46px;object-fit:contain;margin-bottom:6px"><br>` : ''}
+        <div class="co-name">${esc(companyName)}</div>
+        <div class="co-contact">${esc(co.phone || '')}${co.email ? ' · ' + esc(co.email) : ''}${co.address ? ' · ' + esc(co.address) : ''}</div>
+      </div>
+      <div><h1>SUBCONTRACTOR AGREEMENT</h1><div class="co-contact" style="text-align:right">${esc(job.jobNumber || '')}</div></div>
+    </div>
+    ${paras}
+    <div class="sigs">
+      ${sigBlock('COMPANY', companyName)}
+      ${sigBlock('SUBCONTRACTOR', sub.name || '')}
+    </div>
+  </body></html>`;
+  const titleEl = document.getElementById('viewProposalModalTitle');
+  if (titleEl) titleEl.textContent = '🖨 Sub Agreement — ' + (sub.name || '');
+  document.getElementById('viewProposalIframe').srcdoc = html;
+  kOpen('viewProposalModal');
+}
+window.printSubAgreement = printSubAgreement;
 
 function buildSubAgreementPreviewHtml(agreementText, subName, jobName) {
   return '<html><body style="font-family:Arial;padding:24px;max-width:720px;margin:auto;color:#222">' +
