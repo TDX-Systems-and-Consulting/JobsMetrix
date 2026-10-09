@@ -22983,7 +22983,7 @@ function buildJobMarginHtml(job, tm, forPrint) {
       <span style="width:46px;text-align:right;color:${muted};font-size:.78rem">${tm.revenue ? Math.round(b[2] / tm.revenue * 1000) / 10 + '%' : ''}</span></div>`).join('');
   // MARGIN_TILES_V2 (2026-10-09, per Travis): header = Go/No-Go, Jason pay,
   // Travis pay, Subcontractor pay, Materials. Checking/Savings stay in the list below.
-  const tile = (label, v, sub) => `<div style="flex:1 1 150px;padding:10px 12px;border-radius:10px;border:1px solid ${line}"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:${muted}">${esc(label)}</div><div style="font-size:1.3rem;font-weight:900">${money(v)}</div><div style="font-size:.75rem;color:${muted}">${esc(sub)}</div></div>`;
+  const tile = (label, v, sub) => `<div style="flex:1 1 150px;padding:10px 12px;border-radius:10px;border:1px solid ${line}"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:${muted}">${esc(label)}</div><div style="font-size:1.3rem;font-weight:900">${money(v)}</div></div>`; // descriptions removed from header per Travis
   return `
   <div style="display:flex;flex-wrap:wrap;gap:10px;margin:8px 0 12px">
     <div style="flex:1 1 150px;padding:10px 12px;border-radius:10px;border:2px solid ${goC}"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:${muted}">Go / No-Go</div><div style="font-size:1.3rem;font-weight:900;color:${goC}">${tm.goNoGo} · ${(tm.reOfRevenuePct * 100).toFixed(1)}%</div></div>
