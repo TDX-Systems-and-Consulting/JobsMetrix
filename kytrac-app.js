@@ -6627,14 +6627,14 @@ function fhMoney(n) { return '$' + Math.round(n||0).toLocaleString(); }
 
 // Load bills tagged to this job across all vendors (bills live under vendors/{id}/bills with a jobId field)
 function fhLoadJobBills(jobId, cb) {
-  if (!conDb || !Array.isArray(allVendors) || !allVendors.length) { _fhBills = []; cb && cb(); return; }
+  if (!conDb || !Array.isArray(allVendors) || !allVendors.length) { _fhBills = []; window._fhBillsFor = jobId; cb && cb(); return; }
   const bills = [];
   let pending = allVendors.length;
   allVendors.forEach(v => {
     coll('vendors').doc(v.id).collection('bills').where('jobId','==',jobId).get()
       .then(snap => { snap.forEach(d => bills.push({ id:d.id, vendorId:v.id, vendorName:v.name, ...d.data() })); })
       .catch(() => {})
-      .finally(() => { if (--pending === 0) { _fhBills = bills; cb && cb(); } });
+      .finally(() => { if (--pending === 0) { _fhBills = bills; window._fhBillsFor = jobId; cb && cb(); } });
   });
 }
 
@@ -7505,6 +7505,10 @@ function fhRenderTotals(job) {
       set('fhEstMaterials', split.materials);
       set('fhEstLabor', split.labor);
 
+      // LIVE_PL_V1: the profit box is now filled by renderJobMarginPanel
+      // (Actual column), so there is one profit number on this tab.
+      renderJobMarginPanel(conCurrentJobId);
+      if (true) return;
       const profit = split.retainedEarnings;
       const margin = split.revenue > 0 ? (profit / split.revenue * 100) : 0;
       const profitEl = document.getElementById('fhProfitVal');
@@ -22773,7 +22777,9 @@ function calcTrueMargin(allItems, preAggregated) {
   // number. Corrected 2026-09-19 per Travis (previously wrongly based on
   // Revenue as of the 2026-09-14 correction). Still overridable with a
   // real negotiated subcontractor amount once one exists for this job.
-  const realLaborCost = laborBilled * JTXD_LOCKED_RATES.realLaborCostPct;
+  // LIVE_PL_V1: a caller can pass the real committed sub cost (Actual column).
+  const realLaborCost = (preAggregated && preAggregated.realLaborCost != null)
+    ? preAggregated.realLaborCost : laborBilled * JTXD_LOCKED_RATES.realLaborCostPct;
 
   // Jason's SALES commission -- locked 2026-09-25 (this specific piece was
   // 5% earlier the same day, corrected down to 4% once Superintendent and
@@ -22847,7 +22853,7 @@ function calcTrueMargin(allItems, preAggregated) {
   const ownerDraw = travisDraw - ownerW2;
   const employerPayrollTax = ownerW2 * JTXD_LOCKED_RATES.employerPayrollTaxPct;
   const savings = retainedEarnings - travisDraw - employerPayrollTax;
-  const materialsCostReal = (materialsCost > 0 && materialsCost <= materialsPrice)
+  const materialsCostReal = (materialsCost > 0) // LIVE_PL_V1: real cost may exceed price (overrun eats Checking)
     ? materialsCost : materialsPrice / (1 + JTXD_LOCKED_RATES.materialsMarkupPct);
   const materialsMarkup = materialsPrice - materialsCostReal;
   const checking = materialsMarkup + flex;
@@ -22881,55 +22887,151 @@ function calcTrueMargin(allItems, preAggregated) {
 // Uses the same in-app print modal (iframe + srcdoc) already fixed for
 // Punch List, View Proposal, and Print Internal earlier tonight -- never
 // window.open(), which strands a dead-end tab on mobile.
-// MARGIN_CALC_V2 (2026-10-09): one builder for the per-job Job Margin
-// Calculator, matching Travis's standalone calculator line for line.
+// MARGIN_CALC_V2 + LIVE_PL_V1 (2026-10-09): per-job Job Margin Calculator
+// with two columns -- Estimate (the signed estimate) and Actual (live).
+// Actual = the same locked waterfall run on real numbers:
+//   Revenue   estimate + approved change orders not yet folded into it
+//   Materials what's really been bought (job expenses/receipts + vendor
+//             bills). Until the job is Complete, the greater of spent or
+//             budget, so an unfinished job never looks better than planned.
+//   Subs      the agreed sub amounts (Subs tab / contractor job total /
+//             payments entered, whichever is largest); falls back to the
+//             60% estimate, flagged, when nothing has been entered yet.
 // Used inline on every job's Financials tab AND by the print button.
-async function getJobMarginTm(jobId) {
+const _jmEstCache = {};
+async function getJobEstimateSplit(jobId, fresh) {
+  const c = _jmEstCache[jobId];
+  if (!fresh && c && Date.now() - c.t < 60000) return c.v;
   const [price, cost] = await Promise.all([
     fetchEstimateCostSplitFresh(jobId),
     fetchEstimateTrueCostSplit(jobId).catch(() => ({ materials: 0 })),
   ]);
-  if (!price.materials && !price.laborAndOther) return null;
-  return calcTrueMargin(null, {
-    materialsPrice: price.materials, laborPrice: price.laborAndOther,
-    materialsCost: cost.materials || 0,
-  });
+  const v = { matPrice: price.materials || 0, labPrice: price.laborAndOther || 0, matCost: cost.materials || 0 };
+  _jmEstCache[jobId] = { t: Date.now(), v };
+  return v;
 }
+
+async function getJobActualInputs(job, est) {
+  const jobId = job.id;
+  const jobRef = coll('jobs').doc(jobId);
+  const [expSnap, payDocs, subsSnap] = await Promise.all([
+    jobRef.collection('expenses').get().catch(() => null),
+    jobRef.collection('subcontractorPayments').get().catch(() => null),
+    jobRef.collection('subs').get().catch(() => null),
+  ]);
+  const num = v => Number(v) || 0;
+  const info = { notes: [] };
+
+  // Approved change orders that haven't been folded into the estimate yet
+  // (they get added as an estimate group once their invoice is paid).
+  let coMatPrice = 0, coLabPrice = 0, coMatCost = 0, coCount = 0;
+  (Array.isArray(conCOs) ? conCOs : []).forEach(co => {
+    if (co.status !== 'Approved' || co.appliedToEstimate) return;
+    coCount++;
+    const items = Array.isArray(co.lineItems) ? co.lineItems : [];
+    if (!items.length) { coLabPrice += num(co.amount); return; }
+    items.forEach(li => {
+      const q = num(li.qty) || 1;
+      if ((li.costType || 'Materials') === 'Materials') { coMatPrice += q * num(li.unitPrice); coMatCost += q * num(li.unitCost); }
+      else coLabPrice += q * num(li.unitPrice);
+    });
+  });
+  info.coTotal = coMatPrice + coLabPrice;
+  if (coCount) info.notes.push(`${coCount} approved change order${coCount > 1 ? 's' : ''} (${fhMoney(info.coTotal)}) not in the estimate yet — included in Actual`);
+
+  const matPrice = est.matPrice + coMatPrice;
+  const labPrice = est.labPrice + coLabPrice;
+
+  // Materials / job costs actually spent
+  let expenses = 0;
+  if (expSnap) expSnap.forEach(d => { expenses += num(d.data().amount); });
+  const billsReady = window._fhBillsFor === jobId;
+  const bills = billsReady ? (_fhBills || []).reduce((s, b) => s + num(b.amount), 0) : 0;
+  const matSpent = expenses + bills;
+  const estMatCost = est.matCost > 0 ? est.matCost : est.matPrice / (1 + JTXD_LOCKED_RATES.materialsMarkupPct);
+  const matBudget = estMatCost + coMatCost;
+  const complete = /^(complete|completed|closed completed)$/i.test(job.status || '');
+  const matActual = complete ? matSpent : Math.max(matSpent, matBudget);
+  Object.assign(info, { matSpent, matBudget, complete, billsReady });
+  if (!billsReady) info.notes.push('Vendor bills still loading…');
+  if (complete) info.notes.push(`Materials: job is Complete — Actual uses the ${fhMoney(matSpent)} really spent`);
+  else if (matSpent > matBudget) info.notes.push(`Materials: ${fhMoney(matSpent)} spent — ${fhMoney(matSpent - matBudget)} OVER the ${fhMoney(matBudget)} budget`);
+  else info.notes.push(`Materials: ${fhMoney(matSpent)} spent of ${fhMoney(matBudget)} budget (${matBudget ? Math.round(matSpent / matBudget * 100) : 0}%) — Actual holds the budget until spending passes it or the job is marked Complete`);
+
+  // Subs: agreed amounts
+  let subsTab = 0;
+  if (subsSnap) subsSnap.forEach(d => { const s = d.data(); if (!/declin|cancel/i.test(s.status || '')) subsTab += num(s.amount); });
+  const byKey = {}; let subPaid = 0;
+  if (payDocs) payDocs.forEach(d => {
+    const p = d.data(); if (/cancel|void/i.test(p.status || '')) return;
+    const k = p.subKey || ('name:' + (p.subName || '?'));
+    byKey[k] = (byKey[k] || 0) + num(p.amount);
+    if (p.status === 'Paid') subPaid += num(p.amount);
+  });
+  (Array.isArray(allContractors) ? allContractors : []).forEach(c => {
+    const t = num(c.contractorJobTotals && c.contractorJobTotals[jobId]);
+    if (t) byKey[c.id] = Math.max(byKey[c.id] || 0, t);
+  });
+  const subsPay = Object.values(byKey).reduce((a, b) => a + b, 0);
+  const subCommitted = Math.max(subsTab, subsPay);
+  const subEstimate = labPrice * JTXD_LOCKED_RATES.realLaborCostPct;
+  Object.assign(info, { subCommitted, subPaid, subEstimate, subFromEstimate: !subCommitted });
+  if (subCommitted) info.notes.push(`Subs: ${fhMoney(subCommitted)} agreed (${fhMoney(subPaid)} paid so far)${subCommitted > subEstimate + 1 ? ' — ' + fhMoney(subCommitted - subEstimate) + ' OVER the 60% budget' : ''}`);
+  else info.notes.push('Subs: no agreed amount entered yet — Actual uses the 60% estimate');
+
+  return { matPrice, labPrice, matCost: matActual, realLaborCost: subCommitted || subEstimate, info };
+}
+
+async function getJobMarginBoth(jobId, fresh) {
+  const job = conJobs.find(j => j.id === jobId);
+  if (!job) return null;
+  const est = await getJobEstimateSplit(jobId, fresh);
+  if (!est.matPrice && !est.labPrice) return null;
+  const tmE = calcTrueMargin(null, { materialsPrice: est.matPrice, laborPrice: est.labPrice, materialsCost: est.matCost });
+  const a = await getJobActualInputs(job, est);
+  const tmA = calcTrueMargin(null, { materialsPrice: a.matPrice, laborPrice: a.labPrice, materialsCost: a.matCost, realLaborCost: a.realLaborCost });
+  return { job, tmE, tmA, info: a.info };
+}
+// back-compat: Estimate-only
+async function getJobMarginTm(jobId) { const b = await getJobMarginBoth(jobId); return b ? b.tmE : null; }
 
 function buildJobMarginRows(tm) {
   const R = JTXD_LOCKED_RATES;
   const p = v => Math.round(v * 1000) / 10 + '%';
   const pct = v => (Math.round(v * 10000) / 100).toString().replace(/\.0+$/, '') + '%';
-  // [label, value, note, style]  style: sec | minus | indent | total | hl
+  // [label, value, note, style, better]  style: sec | minus | indent | total | hl
+  // better: 'up' = higher is better, 'down' = lower is better (colors the Actual cell)
   return [
     ['The job', null, '', 'sec'],
-    ['Total job price (what the customer pays)', tm.revenue, 'Materials billed + labor billed, from this job\'s estimate', 'total'],
+    ['Total job price (what the customer pays)', tm.revenue, 'Materials billed + labor billed (+ approved change orders in Actual)', 'total', 'up'],
     ['Materials billed', tm.materialsPrice, '', ''],
-    ['Materials cost (paid to suppliers)', tm.materialsCostReal, tm.materialsCost > 0 ? 'Real cost from the estimate line items' : 'Backed out at ' + pct(R.materialsMarkupPct) + ' markup', 'minus indent'],
-    ['Materials markup', tm.materialsMarkup, 'Overrun float, goes to operating Checking', 'indent'],
+    ['Materials cost (paid to suppliers)', tm.materialsCostReal, 'Estimate: from the line items · Actual: receipts + vendor bills', 'minus indent', 'down'],
+    ['Materials markup', tm.materialsMarkup, 'Overrun float, goes to operating Checking', 'indent', 'up'],
     ['Labor billed', tm.laborPrice, 'Labor is ' + p(tm.laborShare) + ' of the price', ''],
 
     ['Off the top of labor billed', null, '', 'sec'],
-    ['Real labor cost (subs)', tm.realLaborCost, pct(R.realLaborCostPct) + ' of labor billed ($180 ÷ $300)', 'minus'],
+    ['Real labor cost (subs)', tm.realLaborCost, 'Estimate: ' + pct(R.realLaborCostPct) + ' of labor billed · Actual: agreed sub amounts', 'minus', 'down'],
     ['Jason, sales', tm.jasonCommission, pct(R.jasonCommissionPct) + ' of labor billed, before the Pool', 'minus'],
-    ['JTXD Pool', tm.jtxdActual, 'Labor billed − real labor − Jason sales', 'total'],
+    ['JTXD Pool', tm.jtxdActual, 'Labor billed − real labor − Jason sales', 'total', 'up'],
 
     ['The Pool waterfall', null, '', 'sec'],
     ['Overhead', tm.overhead, pct(R.overhead) + ' of the Pool', 'minus'],
     ['Jason, superintendent', tm.superintendentPay, pct(R.superintendentPct) + ' of labor billed, paid from Overhead', 'indent'],
     ['Jason, consultant', tm.consultantPay, pct(R.consultantPct) + ' of labor billed, paid from Overhead', 'indent'],
-    ['Overhead left for bills', tm.overheadNet, 'Toward the ~$2,800/mo rent, insurance, software', 'indent'],
+    ['Overhead left for bills', tm.overheadNet, 'Toward the ~$2,800/mo rent, insurance, software', 'indent', 'up'],
     ['Marketing', tm.marketing, pct(R.marketing) + ' of the Pool', 'minus'],
     ['Flex → Checking', tm.flex, pct(R.flex) + ' of what\'s left; overrun money in operating Checking', 'minus'],
     ['Taxes', tm.taxes, pct(R.taxes) + ' of what\'s left after Flex', 'minus'],
-    ['Retained Earnings', tm.retainedEarnings, p(tm.reOfRevenuePct) + ' of the total price — the Go/No-Go number (floor 10%)', 'total hl'],
+    ['Retained Earnings', tm.retainedEarnings, 'Go/No-Go = Retained Earnings ÷ total price (floor 10%)', 'total hl', 'up'],
+    ['Go / No-Go', 'T:' + tm.goNoGo + ' · ' + p(tm.reOfRevenuePct), '', 'indent', 'up'],
 
     ['Your pay and savings', null, '', 'sec'],
-    ['Travis pay (' + pct(R.ownerPayPct) + ' of Retained Earnings)', tm.travisDraw, 'Checked after Go/No-Go', 'minus'],
+    ['Travis pay (' + pct(R.ownerPayPct) + ' of Retained Earnings)', tm.travisDraw, 'Checked after Go/No-Go', 'minus', 'up'],
     ['W-2 salary (' + pct(R.ownerW2Share) + ')', tm.ownerW2, 'Through payroll; withholding comes out of this', 'indent'],
     ['Owner draw (' + pct(1 - R.ownerW2Share) + ')', tm.ownerDraw, '', 'indent'],
     ['Employer payroll tax on the W-2', tm.employerPayrollTax, pct(R.employerPayrollTaxPct) + ' of W-2, paid by the company', 'minus'],
-    ['Stays in Savings', tm.savings, 'Retained Earnings after Travis\'s pay and employer tax', 'total hl'],
+    ['Stays in Savings', tm.savings, 'Retained Earnings after Travis\'s pay and employer tax', 'total hl', 'up'],
+    ['Operating Checking', tm.checking, 'Materials markup + Flex', 'total', 'up'],
 
     ['Jason, all three pieces', null, '', 'sec'],
     ['Sales + superintendent + consultant', tm.jasonTotal, p(tm.laborPrice ? tm.jasonTotal / tm.laborPrice : 0) + ' of labor billed', ''],
@@ -22956,59 +23058,86 @@ function buildJobMarginBuckets(tm) {
   ];
 }
 
-function buildJobMarginHtml(job, tm, forPrint) {
+function buildJobMarginHtml(job, tmE, forPrint, tmA, info) {
+  tmA = tmA || tmE;
   const money = v => (v < 0 ? '−$' : '$') + Math.abs(Math.round(v)).toLocaleString();
-  const go = tm.goNoGo === 'GO';
+  const go = tmA.goNoGo === 'GO';
   const goC = go ? '#1dbb87' : '#ef5350';
   const line = forPrint ? '#e5e7eb' : 'rgba(128,128,128,.22)';
   const muted = forPrint ? '#666' : 'var(--muted, #8b93a7)';
-  const rows = buildJobMarginRows(tm).map(([label, v, note, st]) => {
-    if (st === 'sec') return `<tr><td colspan="3" style="padding:14px 8px 4px;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;font-weight:800;color:${muted};border-bottom:1px solid ${line}">${esc(label)}</td></tr>`;
+  const good = '#1dbb87', bad = '#ef5350';
+  const fmt = (v, s) => typeof v === 'string' && v.startsWith('D:') ? v.slice(2) + ' d'
+    : typeof v === 'string' && v.startsWith('T:') ? v.slice(2)
+    : (s.includes('minus') ? '−' : '') + money(v);
+  const rowsE = buildJobMarginRows(tmE), rowsA = buildJobMarginRows(tmA);
+  const td = `padding:6px 8px;border-bottom:1px solid ${line}`;
+  const rows = rowsE.map(([label, vE, note, st, better], i) => {
+    if (st === 'sec') return `<tr><td colspan="4" style="padding:14px 8px 4px;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;font-weight:800;color:${muted};border-bottom:1px solid ${line}">${esc(label)}</td></tr>`;
+    const vA = rowsA[i][1];
     const s = st.split(' ');
-    const val = typeof v === 'string' && v.startsWith('D:') ? v.slice(2) + ' d' : (s.includes('minus') ? '−' : '') + money(v);
+    let colA = '';
+    if (better && typeof vE === 'number' && Math.abs(vA - vE) >= 1) colA = (better === 'up' ? vA > vE : vA < vE) ? good : bad;
+    if (better && typeof vA === 'string' && vA.startsWith('T:')) colA = tmA.goNoGo === 'GO' ? good : bad;
     const bg = s.includes('hl') ? (forPrint ? '#f1f5f9' : 'rgba(29,187,135,.08)') : 'transparent';
+    const w = s.includes('total') ? 'font-weight:800;' : '';
     return `<tr style="background:${bg}">
-      <td style="padding:6px 8px;border-bottom:1px solid ${line};${s.includes('indent') ? 'padding-left:24px;' : ''}${s.includes('total') ? 'font-weight:800' : ''}">${esc(label)}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid ${line};text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;${s.includes('total') ? 'font-weight:800' : ''}">${val}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid ${line};color:${muted};font-size:.8rem">${esc(note)}</td></tr>`;
+      <td style="${td};${s.includes('indent') ? 'padding-left:24px;' : ''}${w}">${esc(label)}</td>
+      <td style="${td};text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;color:${muted};${w}">${fmt(vE, s)}</td>
+      <td style="${td};text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;font-weight:800;${colA ? 'color:' + colA + ';' : ''}">${fmt(vA, s)}</td>
+      <td style="${td};color:${muted};font-size:.8rem">${esc(note)}</td></tr>`;
   }).join('');
-  const buckets = buildJobMarginBuckets(tm);
+  const buckets = buildJobMarginBuckets(tmA);
   const sum = buckets.reduce((a, b) => a + b[2], 0);
-  const ok = Math.abs(sum - tm.revenue) < 1;
+  const ok = Math.abs(sum - tmA.revenue) < 1;
   const bar = buckets.filter(b => b[2] > 0).map(b => `<div title="${esc(b[0])}" style="flex:${b[2]} 0 0;background:${b[3]}"></div>`).join('');
   const legend = buckets.map(b => `<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 0;border-bottom:1px solid ${line}">
       <span style="width:10px;height:10px;border-radius:2px;background:${b[3]};margin-top:4px;flex-shrink:0"></span>
       <span style="flex:1;min-width:0">${esc(b[0])}${b[1] ? `<div style="color:${muted};font-size:.75rem">${esc(b[1])}</div>` : ''}</span>
       <b style="font-variant-numeric:tabular-nums">${money(b[2])}</b>
-      <span style="width:46px;text-align:right;color:${muted};font-size:.78rem">${tm.revenue ? Math.round(b[2] / tm.revenue * 1000) / 10 + '%' : ''}</span></div>`).join('');
+      <span style="width:46px;text-align:right;color:${muted};font-size:.78rem">${tmA.revenue ? Math.round(b[2] / tmA.revenue * 1000) / 10 + '%' : ''}</span></div>`).join('');
   // MARGIN_TILES_V2 (2026-10-09, per Travis): header = Go/No-Go, Jason pay,
-  // Travis pay, Subcontractor pay, Materials. Checking/Savings stay in the list below.
-  const tile = (label, v, sub) => `<div style="flex:1 1 150px;padding:10px 12px;border-radius:10px;border:1px solid ${line}"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:${muted}">${esc(label)}</div><div style="font-size:1.3rem;font-weight:900">${money(v)}</div></div>`; // descriptions removed from header per Travis
+  // Travis pay, Subcontractor pay, Materials -- Actual (live) values.
+  const tile = (label, v) => `<div style="flex:1 1 150px;padding:10px 12px;border-radius:10px;border:1px solid ${line}"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:${muted}">${esc(label)}</div><div style="font-size:1.3rem;font-weight:900">${money(v)}</div></div>`;
+  const notes = (info && info.notes || []).map(n => `<div>• ${esc(n)}</div>`).join('');
   return `
-  <div style="display:flex;flex-wrap:wrap;gap:10px;margin:8px 0 12px">
-    <div style="flex:1 1 150px;padding:10px 12px;border-radius:10px;border:2px solid ${goC}"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:${muted}">Go / No-Go</div><div style="font-size:1.3rem;font-weight:900;color:${goC}">${tm.goNoGo} · ${(tm.reOfRevenuePct * 100).toFixed(1)}%</div></div>
-    ${tile('Jason pay', tm.jasonTotal, money(tm.jasonCommission) + ' sales + ' + money(tm.superintendentPay) + ' super + ' + money(tm.consultantPay) + ' consultant')}
-    ${tile('Travis pay', tm.travisDraw, money(tm.ownerW2) + ' W-2 + ' + money(tm.ownerDraw) + ' draw')}
-    ${tile('Subcontractor pay', tm.realLaborCost, '60% of ' + money(tm.laborPrice) + ' labor billed')}
-    ${tile('Materials', tm.materialsCostReal, 'Paid to suppliers · ' + money(tm.materialsPrice) + ' billed')}
+  <div style="display:flex;flex-wrap:wrap;gap:10px;margin:8px 0 10px">
+    <div style="flex:1 1 150px;padding:10px 12px;border-radius:10px;border:2px solid ${goC}"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:${muted}">Go / No-Go</div><div style="font-size:1.3rem;font-weight:900;color:${goC}">${tmA.goNoGo} · ${(tmA.reOfRevenuePct * 100).toFixed(1)}%</div></div>
+    ${tile('Jason pay', tmA.jasonTotal)}
+    ${tile('Travis pay', tmA.travisDraw)}
+    ${tile('Subcontractor pay', tmA.realLaborCost)}
+    ${tile('Materials', tmA.materialsCostReal)}
   </div>
-  <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.86rem">${rows}</table></div>
-  <div style="margin-top:18px;font-weight:800">Where every dollar lands</div>
+  ${notes ? `<div style="font-size:.78rem;color:${muted};line-height:1.5;margin-bottom:8px">${notes}</div>` : ''}
+  <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.86rem">
+    <tr><td style="${td}"></td><td style="${td};text-align:right;font-size:.7rem;letter-spacing:.06em;text-transform:uppercase;color:${muted}">Estimate</td><td style="${td};text-align:right;font-size:.7rem;letter-spacing:.06em;text-transform:uppercase;font-weight:800">Actual (live)</td><td style="${td}"></td></tr>
+    ${rows}</table></div>
+  <div style="margin-top:18px;font-weight:800">Where every dollar lands (Actual)</div>
   <div style="display:flex;height:16px;border-radius:6px;overflow:hidden;margin:8px 0">${bar}</div>
   <div style="font-size:.84rem">${legend}</div>
-  <div style="margin-top:8px;font-size:.78rem;color:${ok ? '#1dbb87' : '#ef5350'}">${ok ? '✓' : '⚠'} Buckets add up to ${money(sum)} vs. price ${money(tm.revenue)}</div>`;
+  <div style="margin-top:8px;font-size:.78rem;color:${ok ? '#1dbb87' : '#ef5350'}">${ok ? '✓' : '⚠'} Buckets add up to ${money(sum)} vs. price ${money(tmA.revenue)}</div>`;
 }
 
-async function renderJobMarginPanel(jobId) {
+let _jmTimer = null, _jmSeq = 0;
+function renderJobMarginPanel(jobId) {
+  clearTimeout(_jmTimer);
+  _jmTimer = setTimeout(() => _renderJobMarginPanel(jobId), 300);
+}
+async function _renderJobMarginPanel(jobId) {
   const el = document.getElementById('fhMarginCalc');
-  if (!el) return;
-  el.innerHTML = '<div class="small muted" style="padding:12px">Loading real numbers…</div>';
+  if (!el || !jobId) return;
+  const seq = ++_jmSeq;
+  if (!el.innerHTML.trim()) el.innerHTML = '<div class="small muted" style="padding:12px">Loading real numbers…</div>';
   try {
-    const tm = await getJobMarginTm(jobId);
-    if (conCurrentJobId !== jobId) return;
-    const job = conJobs.find(j => j.id === jobId);
-    el.innerHTML = tm ? buildJobMarginHtml(job, tm, false)
-      : '<div class="small muted" style="padding:12px">No estimate line items yet — add the scope on the Estimate tab.</div>';
+    const b = await getJobMarginBoth(jobId);
+    if (seq !== _jmSeq || conCurrentJobId !== jobId) return;
+    if (!b) { el.innerHTML = '<div class="small muted" style="padding:12px">No estimate line items yet — add the scope on the Estimate tab.</div>'; return; }
+    el.innerHTML = buildJobMarginHtml(b.job, b.tmE, false, b.tmA, b.info);
+    // One profit number on the tab: the Actual Retained Earnings.
+    const re = b.tmA.retainedEarnings;
+    const pv = document.getElementById('fhProfitVal');
+    if (pv) { pv.textContent = (re < 0 ? '-' : '') + fhMoney(Math.abs(re)); pv.style.color = b.tmA.goNoGo === 'GO' ? '#a3f2d2' : '#f87171'; }
+    const ps = document.getElementById('fhProfitSub');
+    if (ps) ps.textContent = `${(b.tmA.reOfRevenuePct * 100).toFixed(1)}% of ${fhMoney(b.tmA.revenue)} · ${b.tmA.goNoGo} · estimate was ${fhMoney(b.tmE.retainedEarnings)}`;
   } catch (e) {
     console.error('renderJobMarginPanel', e);
     el.innerHTML = '<div class="small muted" style="padding:12px">Could not load the margin calculator.</div>';
@@ -23021,16 +23150,16 @@ async function printJobMarginCalculator(btn) {
   const job = conJobs.find(j => j.id === jobId);
   if (!job) return;
   if (btn) { btn.disabled = true; btn.textContent = 'Loading real numbers...'; }
-  let tm;
-  try { tm = await getJobMarginTm(jobId); }
+  let b;
+  try { b = await getJobMarginBoth(jobId, true); }
   finally { if (btn) { btn.disabled = false; btn.textContent = '🖨 Print Job Margin Calculator'; } }
-  if (!tm) { alert('This job has no estimate line items yet -- add the signed proposal\'s scope under the Estimate tab first.'); return; }
+  if (!b) { alert('This job has no estimate line items yet -- add the signed proposal\'s scope under the Estimate tab first.'); return; }
   const co = companyProfile;
   const html = `<!DOCTYPE html><html><head><title>Job Margin Calculator — ${esc(job.name||'')}</title>
   <style>body{font-family:Arial,sans-serif;max-width:900px;margin:20px auto;padding:0 16px;color:#111}@media print{@page{margin:.5in}}</style></head><body>
   <h2 style="margin-bottom:2px">${esc(co.companyName||'JTXD Contracting')} — Job Margin Calculator</h2>
   <div style="color:#666;margin-bottom:8px">${esc(job.jobNumber||job.name||'')} — ${esc(job.name||'')}${job.address?' · '+esc(job.address):''}</div>
-  ${buildJobMarginHtml(job, tm, true)}
+  ${buildJobMarginHtml(job, b.tmE, true, b.tmA, b.info)}
   <div style="margin-top:16px;text-align:center;color:#9ca3af;font-size:.75rem">${esc(co.companyName||'')} Job Margin Calculator · ${esc(job.name||'')} · Printed ${new Date().toLocaleString()}</div>
   </body></html>`;
   const titleEl = document.getElementById('viewProposalModalTitle');
