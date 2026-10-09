@@ -22981,12 +22981,16 @@ function buildJobMarginHtml(job, tm, forPrint) {
       <span style="flex:1;min-width:0">${esc(b[0])}${b[1] ? `<div style="color:${muted};font-size:.75rem">${esc(b[1])}</div>` : ''}</span>
       <b style="font-variant-numeric:tabular-nums">${money(b[2])}</b>
       <span style="width:46px;text-align:right;color:${muted};font-size:.78rem">${tm.revenue ? Math.round(b[2] / tm.revenue * 1000) / 10 + '%' : ''}</span></div>`).join('');
+  // MARGIN_TILES_V2 (2026-10-09, per Travis): header = Go/No-Go, Jason pay,
+  // Travis pay, Subcontractor pay, Materials. Checking/Savings stay in the list below.
+  const tile = (label, v, sub) => `<div style="flex:1 1 150px;padding:10px 12px;border-radius:10px;border:1px solid ${line}"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:${muted}">${esc(label)}</div><div style="font-size:1.3rem;font-weight:900">${money(v)}</div><div style="font-size:.75rem;color:${muted}">${esc(sub)}</div></div>`;
   return `
   <div style="display:flex;flex-wrap:wrap;gap:10px;margin:8px 0 12px">
-    <div style="flex:1 1 140px;padding:10px 12px;border-radius:10px;border:2px solid ${goC}"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:${muted}">Go / No-Go</div><div style="font-size:1.3rem;font-weight:900;color:${goC}">${tm.goNoGo} · ${(tm.reOfRevenuePct * 100).toFixed(1)}%</div></div>
-    <div style="flex:1 1 140px;padding:10px 12px;border-radius:10px;border:1px solid ${line}"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:${muted}">Travis pay</div><div style="font-size:1.3rem;font-weight:900">${money(tm.travisDraw)}</div><div style="font-size:.75rem;color:${muted}">${money(tm.ownerW2)} W-2 + ${money(tm.ownerDraw)} draw</div></div>
-    <div style="flex:1 1 140px;padding:10px 12px;border-radius:10px;border:1px solid ${line}"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:${muted}">Checking</div><div style="font-size:1.3rem;font-weight:900">${money(tm.checking)}</div></div>
-    <div style="flex:1 1 140px;padding:10px 12px;border-radius:10px;border:1px solid ${line}"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:${muted}">Savings</div><div style="font-size:1.3rem;font-weight:900">${money(tm.savings)}</div></div>
+    <div style="flex:1 1 150px;padding:10px 12px;border-radius:10px;border:2px solid ${goC}"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:${muted}">Go / No-Go</div><div style="font-size:1.3rem;font-weight:900;color:${goC}">${tm.goNoGo} · ${(tm.reOfRevenuePct * 100).toFixed(1)}%</div></div>
+    ${tile('Jason pay', tm.jasonTotal, money(tm.jasonCommission) + ' sales + ' + money(tm.superintendentPay) + ' super + ' + money(tm.consultantPay) + ' consultant')}
+    ${tile('Travis pay', tm.travisDraw, money(tm.ownerW2) + ' W-2 + ' + money(tm.ownerDraw) + ' draw')}
+    ${tile('Subcontractor pay', tm.realLaborCost, '60% of ' + money(tm.laborPrice) + ' labor billed')}
+    ${tile('Materials', tm.materialsCostReal, 'Paid to suppliers · ' + money(tm.materialsPrice) + ' billed')}
   </div>
   <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.86rem">${rows}</table></div>
   <div style="margin-top:18px;font-weight:800">Where every dollar lands</div>
