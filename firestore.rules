@@ -391,7 +391,12 @@ service cloud.firestore {
         // (phases, logs) and writes (messages) here anonymously, same
         // bearer-token caveat as above.
         match /{subcollection}/{docId} {
-          allow read, write: if inCompany(companyId) || request.auth == null;
+          allow read, write: if !(jobId in ['_owner', '_company']) && (inCompany(companyId) || request.auth == null);
+          // OWNER_PORTAL_V1: jobs/_owner (Owner Portal: EOS, V/TO, meetings)
+          // and jobs/_company (Company Receipts) are virtual job ids with no
+          // job doc -- readable and writable ONLY by Travis and Jason.
+          allow read, write: if jobId in ['_owner', '_company'] && inCompany(companyId)
+            && myEmail().lower() in ['travis@7pillarsgroup.org', 'jason@7pillarsgroup.org'];
         }
       }
     }

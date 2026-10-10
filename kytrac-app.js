@@ -227,6 +227,7 @@ const KT_PAGES = {
   vendors:            { el:'ktPageVendors',            title:'🏭 Vendors' },
   contractors:        { el:'ktPageContractors',        title:'👷 Contractors' },
   companyreceipts:    { el:'ktPageCompanyReceipts',    title:'🧾 Company Receipts' },
+  owner:              { el:'ktPageOwner',              title:'🛡 Owner Portal' },
   settings:           { el:'ktPageSettings',           title:'⚙️ Company Settings' },
 };
 
@@ -540,6 +541,8 @@ function ktNav(key, btn) {
   // revealing the page exists. Same pattern as switchDetailTab's financials/
   // subs block.
   if (key === 'companyreceipts' && !canViewFinancialsTab()) { key = 'dashboard'; btn = document.querySelector('.kt-nav-item'); }
+  if (key === 'companyreceipts' && canViewFinancialsTab()) { key = 'owner'; btn = document.querySelector('.kt-nav-item[onclick*="\'owner\'"]'); opTab = 'financials'; } // receipts live in the portal now
+  if (key === 'owner' && !canViewFinancialsTab()) { key = 'dashboard'; btn = document.querySelector('.kt-nav-item'); }
   if (key === 'crewmap' && !canViewCrewMap()) {
     key = 'dashboard';
     btn = document.querySelector('.kt-nav-item');
@@ -611,6 +614,7 @@ function ktNav(key, btn) {
   if(key==='contractors') { loadContractors(); renderContractors(); }
   if(key==='reports') { renderActiveReport(); }
   if(key==='companyreceipts') { renderCompanyReceiptsPage(); }
+  if(key==='owner') { openOwnerPortal(); }
   if(key==='purchaseorders') { loadPOs(); populatePOFilters(); renderPOs(); }
   if(key==='documents') { loadDocuments(); populateDocJobFilter(); renderDocuments(); }
   if(key==='invoicing') {
@@ -15092,7 +15096,8 @@ function applyRolePermissions() {
     'catalog': canSeeCatalog,
     'settings': canSeeSettings,
     'crewmap': canViewCrewMap(),
-    'companyreceipts': canViewFinancialsTab(), // Travis + Jason only
+    'companyreceipts': false, // moved inside the Owner Portal
+    'owner': canViewFinancialsTab(), // Travis + Jason only
   };
 
   // Field Technician sidebar allowlist -- confirmed with Travis directly
@@ -20791,6 +20796,9 @@ function getWeekKey(date) {
 }
 
 function renderEOSReport(el) {
+  // OWNER_PORTAL_V1: EOS moved into the Owner Portal (Travis + Jason only).
+  if (!canViewFinancialsTab()) { el.innerHTML = '<div class="small muted" style="padding:20px">Not available.</div>'; return; }
+  el.innerHTML = '<div style="padding:20px">EOS now lives in the <a href="#" onclick="ktNav(\'owner\', document.querySelector(\'.kt-nav-item[onclick*=owner]\'));return false">Owner Portal</a>.</div>'; return;
   el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted)">Loading EOS data...</div>';
   Promise.all([
     coll('eosRocks').get().catch(() => ({ forEach: () => {} })),
@@ -22915,7 +22923,8 @@ async function getJobEstimateSplit(jobId, fresh) {
   return v;
 }
 
-async function getJobActualInputs(job, est) {
+async function getJobActualInputs(job, est, opts) {
+  opts = opts || {};
   const jobId = job.id;
   const jobRef = coll('jobs').doc(jobId);
   const [expSnap, payDocs, subsSnap] = await Promise.all([
@@ -22929,7 +22938,10 @@ async function getJobActualInputs(job, est) {
   // Approved change orders that haven't been folded into the estimate yet
   // (they get added as an estimate group once their invoice is paid).
   let coMatPrice = 0, coLabPrice = 0, coMatCost = 0, coCount = 0;
-  (Array.isArray(conCOs) ? conCOs : []).forEach(co => {
+  // OWNER_PORTAL_V1: another job's change orders are fetched (conCOs only holds the open job's).
+  const coList = (jobId === conCurrentJobId && Array.isArray(conCOs)) ? conCOs
+    : await jobRef.collection('changeorders').get().then(s => { const a = []; s.forEach(d => a.push(d.data())); return a; }).catch(() => []);
+  coList.forEach(co => {
     if (co.status !== 'Approved' || co.appliedToEstimate) return;
     coCount++;
     const items = Array.isArray(co.lineItems) ? co.lineItems : [];
@@ -22949,8 +22961,8 @@ async function getJobActualInputs(job, est) {
   // Materials / job costs actually spent
   let expenses = 0;
   if (expSnap) expSnap.forEach(d => { expenses += num(d.data().amount); });
-  const billsReady = window._fhBillsFor === jobId;
-  const bills = billsReady ? (_fhBills || []).reduce((s, b) => s + num(b.amount), 0) : 0;
+  const billsReady = !!opts.billsByJob || window._fhBillsFor === jobId;
+  const bills = opts.billsByJob ? num(opts.billsByJob[jobId]) : billsReady ? (_fhBills || []).reduce((s, b) => s + num(b.amount), 0) : 0;
   const matSpent = expenses + bills;
   const estMatCost = est.matCost > 0 ? est.matCost : est.matPrice / (1 + JTXD_LOCKED_RATES.materialsMarkupPct);
   const matBudget = estMatCost + coMatCost;
@@ -22986,13 +22998,13 @@ async function getJobActualInputs(job, est) {
   return { matPrice, labPrice, matCost: matActual, realLaborCost: subCommitted || subEstimate, info };
 }
 
-async function getJobMarginBoth(jobId, fresh) {
+async function getJobMarginBoth(jobId, fresh, opts) {
   const job = conJobs.find(j => j.id === jobId);
   if (!job) return null;
   const est = await getJobEstimateSplit(jobId, fresh);
   if (!est.matPrice && !est.labPrice) return null;
   const tmE = calcTrueMargin(null, { materialsPrice: est.matPrice, laborPrice: est.labPrice, materialsCost: est.matCost });
-  const a = await getJobActualInputs(job, est);
+  const a = await getJobActualInputs(job, est, opts || {});
   const tmA = calcTrueMargin(null, { materialsPrice: a.matPrice, laborPrice: a.labPrice, materialsCost: a.matCost, realLaborCost: a.realLaborCost });
   return { job, tmE, tmA, info: a.info };
 }
@@ -25106,6 +25118,563 @@ window.crDelete = crDelete;
 window.crMoveToJob = crMoveToJob;
 window.rcMoveToCompany = rcMoveToCompany;
 window.getCompanyExpenses = getCompanyExpenses;
+
+// ════════════════════════════════════════════════════════════════════
+// ── OWNER PORTAL (NEW 2026-10-09, OWNER_PORTAL_V1) ──
+// ════════════════════════════════════════════════════════════════════
+// Travis + Jason only (canViewFinancialsTab). Runs the business on EOS:
+// Dashboard, Level 10 meeting, Scorecard, Rocks, Issues, To-Dos, V/TO,
+// Accountability Chart, Quarterly Rock scoring, and Financials (Company
+// Receipts + every job's live P/L). Data lives under jobs/_owner/* -- a
+// virtual job id with no job doc, so it never shows in any job list --
+// so it works under today's Firestore rules; the rules change that locks
+// _owner/_company to the two owner logins is in firestore.rules.
+const OP_DOC = '_owner';
+const OP_OWNERS = ['Travis', 'Jason'];
+const opColl = name => coll('jobs').doc(OP_DOC).collection(name);
+const opData = { rocks: [], metrics: [], issues: [], todos: [], meetings: [], vto: null, chart: null };
+let opTab = 'dashboard', opUnsubs = [], opLoaded = false;
+
+function opMe() {
+  const e = (conCurrentUser?.email || '').toLowerCase();
+  return e.startsWith('jason') ? 'Jason' : e.startsWith('travis') ? 'Travis' : (conCurrentUser?.displayName || '').split(' ')[0] || 'Owner';
+}
+function opQuarter(d) { d = d ? new Date(d) : new Date(); return d.getFullYear() + '-Q' + (Math.floor(d.getMonth() / 3) + 1); }
+function opQuarterEnd(q) { const [y, n] = q.split('-Q').map(Number); return new Date(y, n * 3, 0).toISOString().slice(0, 10); }
+function opNextQuarter(q) { let [y, n] = q.split('-Q').map(Number); n++; if (n > 4) { n = 1; y++; } return y + '-Q' + n; }
+function opWeekKeys(n) { const out = []; const base = new Date(getWeekKey()); for (let i = n - 1; i >= 0; i--) { const d = new Date(base); d.setDate(d.getDate() - 7 * i); out.push(d.toISOString().slice(0, 10)); } return out; }
+function opFmtWeek(k) { const d = new Date(k + 'T12:00:00'); return (d.getMonth() + 1) + '/' + d.getDate(); }
+function opMoney(n) { return '$' + Math.round(Number(n) || 0).toLocaleString(); }
+function opFmtVal(m, v) { if (v === undefined || v === null || v === '') return ''; return m.unit === '$' ? opMoney(v) : m.unit === '%' ? v + '%' : String(v); }
+function opOnTrack(m, v) { if (v === undefined || v === null || v === '' || m.goal === '' || m.goal === undefined || m.goal === null) return null; const g = Number(m.goal); return m.higherIsBetter === false ? Number(v) <= g : Number(v) >= g; }
+function opToday() { return new Date().toISOString().slice(0, 10); }
+function opNextFriday() { const d = new Date(); const add = (5 - d.getDay() + 7) % 7; d.setDate(d.getDate() + add); return d.toISOString().slice(0, 10); }
+function opOwnerSelect(id, val) { return `<select id="${id}" style="padding:7px">${OP_OWNERS.concat(['Shane']).map(o => `<option ${o === val ? 'selected' : ''}>${o}</option>`).join('')}</select>`; }
+const OP_CARD = 'border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:rgba(var(--surface-subtle-rgb),.35)';
+const OP_PILL = (txt, c) => `<span style="font-size:.7rem;font-weight:800;padding:2px 9px;border-radius:999px;border:1px solid ${c};color:${c};white-space:nowrap">${esc(txt)}</span>`;
+const OP_GREEN = '#1dbb87', OP_RED = '#ef5350', OP_AMBER = '#f59e0b', OP_BLUE = '#3b82f6';
+
+function openOwnerPortal(tab) {
+  if (!canViewFinancialsTab()) return;
+  if (tab) opTab = tab;
+  if (!opLoaded) opSubscribe();
+  renderOwnerPortal();
+}
+
+function opSubscribe() {
+  opLoaded = true;
+  opUnsubs.forEach(u => u()); opUnsubs = [];
+  const sub = (name, key, sort) => opUnsubs.push(opColl(name).onSnapshot(snap => {
+    const arr = []; snap.forEach(d => arr.push({ id: d.id, ...d.data() }));
+    if (sort) arr.sort(sort);
+    opData[key] = arr;
+    if (document.getElementById('ktPageOwner')?.classList.contains('active')) renderOwnerPortalBody();
+  }, e => console.warn('owner portal ' + name, e)));
+  const byCreated = (a, b) => (a.createdAtMs || 0) - (b.createdAtMs || 0);
+  sub('rocks', 'rocks', byCreated);
+  sub('metrics', 'metrics', (a, b) => (a.order || 0) - (b.order || 0));
+  sub('issues', 'issues', (a, b) => (a.priority || 99) - (b.priority || 99) || byCreated(a, b));
+  sub('todos', 'todos', byCreated);
+  sub('meetings', 'meetings', (a, b) => (b.date || '').localeCompare(a.date || ''));
+  opUnsubs.push(opColl('docs').doc('vto').onSnapshot(s => { opData.vto = s.exists ? s.data() : {}; if (opTab === 'vto' && !_opVtoEditing) renderOwnerPortalBody(); }));
+  opUnsubs.push(opColl('docs').doc('chart').onSnapshot(s => { opData.chart = s.exists ? s.data() : null; if (opTab === 'chart') renderOwnerPortalBody(); }));
+  opMaybeImportOldEos();
+}
+
+// One-time: bring over anything already entered in the old Reports → EOS section.
+async function opMaybeImportOldEos() {
+  try {
+    const flag = await opColl('docs').doc('meta').get();
+    if (flag.exists && flag.data().importedOldEos) return;
+    const [r, m, i] = await Promise.all([coll('eosRocks').get(), coll('eosScorecardMetrics').get(), coll('eosIssues').get()]);
+    const now = Date.now(); let n = 0;
+    const jobs = [];
+    r.forEach(d => { const x = d.data(); n++; jobs.push(opColl('rocks').add({ title: x.title || x.name || 'Rock', owner: x.ownerName || x.owner || 'Travis', quarter: x.quarter || opQuarter(), due: x.dueDate || x.due || opQuarterEnd(opQuarter()), status: x.status === 'Done' || x.status === 'Complete' ? 'Done' : x.status === 'Off Track' ? 'Off Track' : 'On Track', type: 'Company', milestones: [], notes: x.notes || '', createdAtMs: now + n })); });
+    m.forEach(d => { const x = d.data(); n++; jobs.push(opColl('metrics').add({ name: x.name || 'Measurable', owner: x.ownerName || 'Travis', goal: x.goal ?? '', higherIsBetter: x.higherIsBetter !== false, unit: x.unit || '#', values: x.values || {}, order: n, createdAtMs: now + n })); });
+    i.forEach(d => { const x = d.data(); n++; jobs.push(opColl('issues').add({ title: x.title || 'Issue', notes: x.notes || '', raisedBy: x.raisedBy || '', list: 'Short-term', status: x.status === 'Solved' ? 'Solved' : 'Open', priority: 0, createdAtMs: now + n })); });
+    await Promise.all(jobs);
+    await opColl('docs').doc('meta').set({ importedOldEos: true, importedCount: n, importedAt: new Date().toISOString() }, { merge: true });
+  } catch (e) { console.warn('EOS import skipped', e); }
+}
+
+const OP_TABS = [
+  ['dashboard', '🏠 Dashboard'], ['l10', '⏱ Level 10'], ['scorecard', '📊 Scorecard'], ['rocks', '🪨 Rocks'],
+  ['issues', '⚠️ Issues'], ['todos', '✅ To-Dos'], ['vto', '🧭 V/TO'], ['chart', '👥 Accountability'],
+  ['quarterly', '📅 Quarterly'], ['financials', '💰 Financials'],
+];
+
+function renderOwnerPortal() {
+  const page = document.getElementById('ktPageOwner');
+  if (!page) return;
+  if (!canViewFinancialsTab()) { page.innerHTML = '<div class="small muted" style="padding:20px">Not available.</div>'; return; }
+  if (!document.getElementById('opTabs')) {
+    page.innerHTML = `<div id="opTabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px"></div><div id="opBody"></div><div id="opFinHost" style="display:none"></div>`;
+  }
+  document.getElementById('opTabs').innerHTML = OP_TABS.map(([k, l]) => `<button class="con-subtab ${k === opTab ? 'active' : ''}" onclick="opSwitch('${k}')">${l}</button>`).join('');
+  renderOwnerPortalBody();
+}
+function opSwitch(k) { opTab = k; _opVtoEditing = false; renderOwnerPortal(); }
+
+function renderOwnerPortalBody() {
+  const body = document.getElementById('opBody');
+  if (!body) return;
+  const fin = document.getElementById('opFinHost');
+  if (fin) fin.style.display = opTab === 'financials' ? 'block' : 'none';
+  if (opTab === 'financials') { body.innerHTML = ''; return opRenderFinancials(); }
+  if (opTab === 'l10' && _opL10 && document.getElementById('opL10Live')) return opRenderL10(); // keep live meeting in place
+  const r = { dashboard: opRenderDashboard, l10: opRenderL10, scorecard: opRenderScorecard, rocks: opRenderRocks, issues: opRenderIssues, todos: opRenderTodos, vto: opRenderVto, chart: opRenderChart, quarterly: opRenderQuarterly }[opTab];
+  if (r) r(body);
+}
+
+// ── DASHBOARD ──
+function opRenderDashboard(body) {
+  const q = opQuarter();
+  const rocks = opData.rocks.filter(r => r.quarter === q);
+  const onTrack = rocks.filter(r => r.status === 'On Track' || r.status === 'Done').length;
+  const wk = getWeekKey(), lastWk = opWeekKeys(2)[0];
+  const scored = opData.metrics.map(m => opOnTrack(m, (m.values || {})[wk] ?? (m.values || {})[lastWk])).filter(x => x !== null);
+  const openIssues = opData.issues.filter(i => i.status !== 'Solved');
+  const openTodos = opData.todos.filter(t => !t.done);
+  const overdue = openTodos.filter(t => t.due && t.due < opToday());
+  const lastMeeting = opData.meetings.find(m => m.endedAt);
+  const tile = (label, val, sub, color, tab) => `<button onclick="opSwitch('${tab}')" style="${OP_CARD};text-align:left;cursor:pointer;flex:1 1 170px;color:inherit;font:inherit">
+    <div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">${label}</div>
+    <div style="font-size:1.5rem;font-weight:900;${color ? 'color:' + color : ''}">${val}</div>
+    <div class="small muted">${sub}</div></button>`;
+  body.innerHTML = `
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+      ${tile(`${q} Rocks on track`, rocks.length ? `${onTrack} / ${rocks.length}` : '—', rocks.length ? 'due ' + opQuarterEnd(q) : 'No Rocks set yet', rocks.length && onTrack < rocks.length ? OP_AMBER : OP_GREEN, 'rocks')}
+      ${tile('Scorecard this week', scored.length ? `${scored.filter(Boolean).length} / ${scored.length}` : '—', scored.length ? 'measurables on track' : 'Enter this week\'s numbers', scored.length && scored.includes(false) ? OP_RED : OP_GREEN, 'scorecard')}
+      ${tile('Open issues', openIssues.length, openIssues.filter(i => i.priority).length + ' prioritized for IDS', '', 'issues')}
+      ${tile('Open to-dos', openTodos.length, overdue.length ? `<span style="color:${OP_RED}">${overdue.length} overdue</span>` : 'none overdue', overdue.length ? OP_RED : '', 'todos')}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px">
+      <div style="${OP_CARD}">
+        <div style="font-weight:800;margin-bottom:6px">Next Level 10: Friday ${opNextFriday()}</div>
+        <div class="small muted" style="margin-bottom:10px">${lastMeeting ? `Last meeting ${lastMeeting.date}, rated ${opAvgRating(lastMeeting)}` : 'No meetings held yet'}</div>
+        <button class="btn-amber" onclick="opSwitch('l10')" style="padding:9px 16px">Open Level 10</button>
+      </div>
+      <div style="${OP_CARD}">
+        <div style="font-weight:800;margin-bottom:6px">${q} Rocks</div>
+        ${rocks.length ? rocks.map(r => `<div style="display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid var(--line)"><span>${esc(r.title)} <span class="small muted">· ${esc(r.owner || '')}</span></span>${opRockPill(r.status)}</div>`).join('') : '<div class="small muted">Set Rocks at the quarterly.</div>'}
+      </div>
+      <div style="${OP_CARD}">
+        <div style="font-weight:800;margin-bottom:6px">Top issues</div>
+        ${openIssues.slice(0, 5).map(i => `<div style="padding:5px 0;border-bottom:1px solid var(--line)">${i.priority ? `<b>#${i.priority}</b> ` : ''}${esc(i.title)}</div>`).join('') || '<div class="small muted">Issues List is clear.</div>'}
+      </div>
+    </div>`;
+}
+function opAvgRating(m) { const v = Object.values(m.ratings || {}).map(Number).filter(n => n > 0); return v.length ? (v.reduce((a, b) => a + b, 0) / v.length).toFixed(1) : '—'; }
+function opRockPill(s) { return OP_PILL(s || 'On Track', s === 'Done' ? OP_GREEN : s === 'Off Track' || s === 'Not Done' ? OP_RED : OP_BLUE); }
+
+// ── SCORECARD ──
+function opRenderScorecard(body, compact) {
+  const weeks = opWeekKeys(compact ? 6 : 13), wk = getWeekKey();
+  const rows = opData.metrics.map(m => {
+    const vals = m.values || {};
+    return `<tr>
+      <td style="padding:6px 8px;font-weight:700;white-space:nowrap">${esc(m.name)}</td>
+      <td style="padding:6px 8px" class="small muted">${esc(m.owner || '')}</td>
+      <td style="padding:6px 8px;white-space:nowrap" class="small">${m.higherIsBetter === false ? '≤' : '≥'} ${esc(opFmtVal(m, m.goal))}</td>
+      ${weeks.map(w => { const v = vals[w]; const ok = opOnTrack(m, v);
+        return w === wk || compact
+          ? `<td style="padding:4px"><input type="number" step="any" value="${v ?? ''}" onchange="opSetMetric('${m.id}','${w}',this.value)" style="width:78px;padding:4px 6px;text-align:right;border-radius:6px;${ok === true ? 'border-color:' + OP_GREEN : ok === false ? 'border-color:' + OP_RED + ';color:' + OP_RED : ''}"></td>`
+          : `<td style="padding:6px 8px;text-align:right;font-variant-numeric:tabular-nums;${ok === false ? 'color:' + OP_RED + ';font-weight:700' : ok ? 'color:' + OP_GREEN : ''}" ondblclick="opEditCell('${m.id}','${w}')">${esc(opFmtVal(m, v))}</td>`; }).join('')}
+      ${compact ? '' : `<td style="padding:4px;white-space:nowrap"><button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opMetricToIssue('${m.id}')">→ Issue</button> <button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opDeleteDoc('metrics','${m.id}')">✕</button></td>`}
+    </tr>`;
+  }).join('');
+  const html = `
+    <div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:.85rem;min-width:100%">
+      <tr style="color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.05em"><td style="padding:6px 8px">Measurable</td><td style="padding:6px 8px">Owner</td><td style="padding:6px 8px">Goal</td>${weeks.map(w => `<td style="padding:6px 8px;text-align:right;${w === wk ? 'color:var(--amber);font-weight:800' : ''}">${opFmtWeek(w)}</td>`).join('')}${compact ? '' : '<td></td>'}</tr>
+      ${rows || `<tr><td colspan="${weeks.length + 4}" class="small muted" style="padding:12px">No measurables yet.</td></tr>`}
+    </table></div>`;
+  if (compact) return html;
+  body.innerHTML = `
+    <div class="small muted" style="margin-bottom:10px">Weekly numbers, week starting Monday. Type this week's number in the highlighted column; double-click an older cell to change it. Red = off track.</div>
+    ${html}
+    <div style="${OP_CARD};margin-top:16px;display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end">
+      <label class="small muted" style="display:flex;flex-direction:column;gap:3px;flex:2 1 200px">Measurable<input id="opMName" placeholder="e.g. Cash collected" style="padding:7px"></label>
+      <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Owner${opOwnerSelect('opMOwner', opMe())}</label>
+      <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Unit<select id="opMUnit" style="padding:7px"><option>$</option><option>#</option><option>%</option></select></label>
+      <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Goal<input id="opMGoal" type="number" step="any" style="padding:7px;width:110px"></label>
+      <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Good when<select id="opMDir" style="padding:7px"><option value="1">At or above goal</option><option value="0">At or below goal</option></select></label>
+      <button class="btn-amber" onclick="opAddMetric()" style="padding:9px 16px">+ Add measurable</button>
+    </div>`;
+}
+async function opAddMetric() {
+  const name = document.getElementById('opMName').value.trim(); if (!name) return alert('Name the measurable.');
+  const g = document.getElementById('opMGoal').value;
+  await opColl('metrics').add({ name, owner: document.getElementById('opMOwner').value, unit: document.getElementById('opMUnit').value, goal: g === '' ? '' : Number(g), higherIsBetter: document.getElementById('opMDir').value === '1', values: {}, order: Date.now(), createdAtMs: Date.now() });
+}
+function opSetMetric(id, week, val) { opColl('metrics').doc(id).update({ ['values.' + week]: val === '' ? firebase.firestore.FieldValue.delete() : Number(val) }).catch(e => alert(e.message)); }
+function opEditCell(id, week) { const m = opData.metrics.find(x => x.id === id); const v = prompt(`${m.name} — week of ${week}:`, (m.values || {})[week] ?? ''); if (v !== null) opSetMetric(id, week, v.trim()); }
+async function opMetricToIssue(id) { const m = opData.metrics.find(x => x.id === id); await opAddIssueRaw(`Scorecard off track: ${m.name}`, ''); alert('Added to the Issues List.'); }
+
+// ── ROCKS ──
+function opRenderRocks(body) {
+  const q = _opRockQuarter || opQuarter();
+  const qs = [...new Set(opData.rocks.map(r => r.quarter).concat([opQuarter(), opNextQuarter(opQuarter())]))].sort().reverse();
+  const rocks = opData.rocks.filter(r => r.quarter === q);
+  const statusSel = r => `<select onchange="opUpdate('rocks','${r.id}',{status:this.value})" style="padding:4px 6px;font-size:.78rem">${['On Track', 'Off Track', 'Done', 'Not Done'].map(s => `<option ${s === (r.status || 'On Track') ? 'selected' : ''}>${s}</option>`).join('')}</select>`;
+  body.innerHTML = `
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+      <select onchange="_opRockQuarter=this.value;renderOwnerPortalBody()" style="padding:7px">${qs.map(x => `<option ${x === q ? 'selected' : ''}>${x}</option>`).join('')}</select>
+      <span class="small muted">${rocks.length} Rock${rocks.length === 1 ? '' : 's'} · ${rocks.filter(r => r.status === 'Done').length} done · due ${opQuarterEnd(q)}. EOS rule: 3–7 company Rocks a quarter, one owner each.</span>
+    </div>
+    ${rocks.map(r => {
+      const ms = r.milestones || [];
+      return `<div style="${OP_CARD};margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">
+          <div style="font-weight:800;font-size:.95rem">${esc(r.title)}</div>
+          <div style="display:flex;gap:6px;align-items:center">${OP_PILL(r.type || 'Company', 'var(--muted)')}${statusSel(r)}<button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opDeleteDoc('rocks','${r.id}')">✕</button></div>
+        </div>
+        <div class="small muted" style="margin:4px 0 8px">${esc(r.owner || '')} · due ${esc(r.due || opQuarterEnd(q))}${r.notes ? ' · ' + esc(r.notes) : ''}</div>
+        ${ms.map((m, i) => `<label style="display:flex;gap:8px;align-items:center;padding:2px 0;font-size:.85rem"><input type="checkbox" ${m.done ? 'checked' : ''} onchange="opToggleMilestone('${r.id}',${i},this.checked)"> <span style="${m.done ? 'text-decoration:line-through;color:var(--muted)' : ''}">${esc(m.text)}</span>${m.due ? `<span class="small muted">· ${esc(m.due)}</span>` : ''}</label>`).join('')}
+        <div style="display:flex;gap:6px;margin-top:6px"><input id="opMs_${r.id}" placeholder="Add a milestone…" style="flex:1;padding:6px" onkeydown="if(event.key==='Enter')opAddMilestone('${r.id}')"><input id="opMsD_${r.id}" type="date" style="padding:6px"><button class="btn" style="padding:4px 10px;font-size:.76rem" onclick="opAddMilestone('${r.id}')">+</button></div>
+      </div>`;
+    }).join('') || '<div class="small muted" style="margin-bottom:12px">No Rocks for this quarter yet.</div>'}
+    <div style="${OP_CARD};display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end">
+      <label class="small muted" style="display:flex;flex-direction:column;gap:3px;flex:3 1 240px">New Rock (specific, measurable, done by quarter end)<input id="opRTitle" placeholder="e.g. Friday Owner Report built and used in every L10" style="padding:7px"></label>
+      <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Owner${opOwnerSelect('opROwner', opMe())}</label>
+      <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Type<select id="opRType" style="padding:7px"><option>Company</option><option>Individual</option></select></label>
+      <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Due<input id="opRDue" type="date" value="${opQuarterEnd(q)}" style="padding:7px"></label>
+      <button class="btn-amber" onclick="opAddRock('${q}')" style="padding:9px 16px">+ Add Rock</button>
+    </div>`;
+}
+let _opRockQuarter = null;
+async function opAddRock(q) {
+  const title = document.getElementById('opRTitle').value.trim(); if (!title) return alert('Describe the Rock.');
+  await opColl('rocks').add({ title, owner: document.getElementById('opROwner').value, type: document.getElementById('opRType').value, due: document.getElementById('opRDue').value, quarter: q, status: 'On Track', milestones: [], createdAtMs: Date.now() });
+}
+async function opAddMilestone(id) {
+  const t = document.getElementById('opMs_' + id); const d = document.getElementById('opMsD_' + id);
+  if (!t.value.trim()) return;
+  const r = opData.rocks.find(x => x.id === id);
+  await opColl('rocks').doc(id).update({ milestones: (r.milestones || []).concat([{ text: t.value.trim(), due: d.value || '', done: false }]) });
+}
+function opToggleMilestone(id, i, done) { const r = opData.rocks.find(x => x.id === id); const ms = (r.milestones || []).slice(); ms[i] = { ...ms[i], done }; opColl('rocks').doc(id).update({ milestones: ms }); }
+
+// ── ISSUES (IDS) ──
+function opRenderIssues(body, inMeeting) {
+  const list = _opIssueList;
+  const open = opData.issues.filter(i => i.status !== 'Solved' && (i.list || 'Short-term') === list);
+  const solved = opData.issues.filter(i => i.status === 'Solved').slice(-10).reverse();
+  const html = `
+    <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">${['Short-term', 'Long-term'].map(l => `<button class="con-subtab ${l === list ? 'active' : ''}" onclick="_opIssueList='${l}';renderOwnerPortalBody()">${l} (${opData.issues.filter(i => i.status !== 'Solved' && (i.list || 'Short-term') === l).length})</button>`).join('')}</div>
+    <div class="small muted" style="margin-bottom:8px">IDS: pick the top 3 (1, 2, 3), then solve #1 first. <b>Identify</b> the real problem, <b>Discuss</b> once, <b>Solve</b> with a to-do.</div>
+    ${open.map(i => `<div style="${OP_CARD};margin-bottom:8px">
+      <div style="display:flex;gap:8px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap">
+        <div style="flex:1;min-width:200px"><div style="font-weight:800">${i.priority ? `<span style="color:var(--amber)">#${i.priority}</span> ` : ''}${esc(i.title)}</div>${i.notes ? `<div class="small muted" style="margin-top:2px">${esc(i.notes)}</div>` : ''}<div class="small muted">${esc(i.raisedBy || '')}</div></div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+          ${[1, 2, 3].map(p => `<button class="btn" style="padding:3px 9px;font-size:.74rem;${i.priority === p ? 'background:var(--amber);color:#fff' : ''}" onclick="opUpdate('issues','${i.id}',{priority:${i.priority === p ? 0 : p}})">${p}</button>`).join('')}
+          <button class="btn" style="padding:3px 9px;font-size:.74rem" onclick="opMoveIssue('${i.id}')">${list === 'Short-term' ? '→ Long-term' : '→ Short-term'}</button>
+          <button class="btn-amber" style="padding:4px 10px;font-size:.76rem" onclick="opSolveIssue('${i.id}')">Solve</button>
+          <button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opDeleteDoc('issues','${i.id}')">✕</button>
+        </div>
+      </div></div>`).join('') || '<div class="small muted" style="margin-bottom:10px">Nothing on this list.</div>'}
+    <div style="${OP_CARD};display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:6px">
+      <label class="small muted" style="display:flex;flex-direction:column;gap:3px;flex:2 1 220px">New issue<input id="opITitle" placeholder="What's the issue?" style="padding:7px" onkeydown="if(event.key==='Enter')opAddIssue()"></label>
+      <label class="small muted" style="display:flex;flex-direction:column;gap:3px;flex:2 1 220px">Notes (optional)<input id="opINotes" style="padding:7px"></label>
+      <button class="btn-amber" onclick="opAddIssue()" style="padding:9px 16px">+ Add issue</button>
+    </div>
+    ${!inMeeting && solved.length ? `<div style="margin-top:16px;font-weight:800">Recently solved</div>${solved.map(i => `<div class="small" style="padding:4px 0;border-bottom:1px solid var(--line)"><s>${esc(i.title)}</s>${i.solution ? ' → ' + esc(i.solution) : ''} <span class="muted">${esc(i.solvedAt || '')}</span></div>`).join('')}` : ''}`;
+  if (inMeeting) return html;
+  body.innerHTML = html;
+}
+let _opIssueList = 'Short-term';
+async function opAddIssueRaw(title, notes) { return opColl('issues').add({ title, notes: notes || '', raisedBy: opMe(), list: 'Short-term', status: 'Open', priority: 0, createdAtMs: Date.now() }); }
+async function opAddIssue() { const t = document.getElementById('opITitle').value.trim(); if (!t) return; await opAddIssueRaw(t, document.getElementById('opINotes').value.trim()); }
+function opMoveIssue(id) { const i = opData.issues.find(x => x.id === id); opUpdate('issues', id, { list: (i.list || 'Short-term') === 'Short-term' ? 'Long-term' : 'Short-term', priority: 0 }); }
+async function opSolveIssue(id) {
+  const i = opData.issues.find(x => x.id === id);
+  const solution = prompt(`Solve: ${i.title}\n\nWhat's the solution?`, ''); if (solution === null) return;
+  const todo = prompt('To-do to make it happen (leave blank for none):', ''); if (todo === null) return;
+  let owner = 'Travis';
+  if (todo.trim()) { const o = prompt('Who owns the to-do? (Travis or Jason)', opMe()); if (o === null) return; owner = o.trim() || opMe(); }
+  await opColl('issues').doc(id).update({ status: 'Solved', solution: solution.trim(), solvedAt: opToday(), priority: 0 });
+  if (todo.trim()) await opAddTodoRaw(todo.trim(), owner, i.title);
+  if (_opL10) { _opL10.solved = (_opL10.solved || []).concat([i.title]); opSaveL10(); }
+}
+
+// ── TO-DOS ──
+function opRenderTodos(body, inMeeting) {
+  const open = opData.todos.filter(t => !t.done);
+  const done = opData.todos.filter(t => t.done).slice(-15).reverse();
+  const row = t => `<div style="display:flex;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line)">
+      <input type="checkbox" ${t.done ? 'checked' : ''} onchange="opUpdate('todos','${t.id}',{done:this.checked,doneAt:this.checked?'${opToday()}':''})" style="width:18px;height:18px">
+      <div style="flex:1;min-width:0"><span style="${t.done ? 'text-decoration:line-through;color:var(--muted)' : ''}">${esc(t.text)}</span>${t.fromIssue ? `<div class="small muted">from: ${esc(t.fromIssue)}</div>` : ''}</div>
+      <span class="small muted">${esc(t.owner || '')}</span>
+      <span class="small" style="${!t.done && t.due && t.due < opToday() ? 'color:' + OP_RED + ';font-weight:700' : 'color:var(--muted)'}">${esc(t.due || '')}</span>
+      ${inMeeting ? '' : `<button class="btn" style="padding:2px 7px;font-size:.7rem" onclick="opDeleteDoc('todos','${t.id}')">✕</button>`}
+    </div>`;
+  const html = `
+    <div class="small muted" style="margin-bottom:8px">7-day to-dos. Each one is done or not done by next Friday's Level 10.</div>
+    ${open.map(row).join('') || '<div class="small muted">No open to-dos.</div>'}
+    <div style="${OP_CARD};display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:12px">
+      <label class="small muted" style="display:flex;flex-direction:column;gap:3px;flex:3 1 220px">New to-do<input id="opTText" style="padding:7px" onkeydown="if(event.key==='Enter')opAddTodo()"></label>
+      <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Owner${opOwnerSelect('opTOwner', opMe())}</label>
+      <button class="btn-amber" onclick="opAddTodo()" style="padding:9px 16px">+ Add</button>
+    </div>
+    ${!inMeeting && done.length ? `<div style="margin-top:16px;font-weight:800">Recently done</div>${done.map(row).join('')}` : ''}`;
+  if (inMeeting) return html;
+  body.innerHTML = html;
+}
+function opPlus7() { const d = new Date(); d.setDate(d.getDate() + 7); return d.toISOString().slice(0, 10); }
+async function opAddTodoRaw(text, owner, fromIssue) { return opColl('todos').add({ text, owner: owner || opMe(), due: opPlus7(), done: false, fromIssue: fromIssue || '', createdAtMs: Date.now() }); }
+async function opAddTodo() { const t = document.getElementById('opTText').value.trim(); if (!t) return; await opAddTodoRaw(t, document.getElementById('opTOwner').value); }
+
+// ── LEVEL 10 MEETING ──
+const OP_L10 = [
+  ['segue', 'Good news', 5], ['scorecard', 'Scorecard', 5], ['rocks', 'Rock review', 5], ['headlines', 'Customer & employee headlines', 5],
+  ['todos', 'To-Do list', 5], ['ids', 'IDS', 60], ['conclude', 'Conclude', 5],
+];
+let _opL10 = null, _opL10Timer = null;
+function opRenderL10(body) {
+  body = body || document.getElementById('opBody');
+  if (!_opL10) {
+    const past = opData.meetings.filter(m => m.endedAt).slice(0, 8);
+    body.innerHTML = `
+      <div style="${OP_CARD};margin-bottom:14px">
+        <div style="font-weight:800;font-size:1.05rem">Level 10 meeting · Friday, 90 minutes</div>
+        <div class="small muted" style="margin:4px 0 12px">Same day, same time, same agenda. The timer keeps each section honest; everything you enter saves as you go.</div>
+        <ol style="margin:0 0 12px 18px;padding:0;line-height:1.7">${OP_L10.map(s => `<li>${s[1]} <span class="muted small">(${s[2]} min)</span></li>`).join('')}</ol>
+        <button class="btn-amber" onclick="opStartL10()" style="padding:11px 20px;font-size:.95rem">▶ Start today's Level 10</button>
+      </div>
+      <div style="font-weight:800;margin-bottom:6px">Past meetings</div>
+      ${past.map(m => `<div style="padding:6px 0;border-bottom:1px solid var(--line)" class="small"><b>${esc(m.date)}</b> · rated ${opAvgRating(m)} · ${(m.solved || []).length} issues solved · ${(m.headlines || []).length} headlines${m.cascade ? ' · <span class="muted">' + esc(m.cascade) + '</span>' : ''}</div>`).join('') || '<div class="small muted">None yet.</div>'}`;
+    return;
+  }
+  const L = _opL10, idx = L.step, s = OP_L10[idx];
+  const elapsed = Math.floor((Date.now() - L.stepStartMs) / 1000), budget = s[2] * 60, over = elapsed > budget;
+  const total = Math.floor((Date.now() - L.startMs) / 60000);
+  let content = '';
+  if (s[0] === 'segue') content = `<div class="small muted">Each person: one personal and one business good news from the last week.</div>`;
+  if (s[0] === 'scorecard') content = `<div class="small muted" style="margin-bottom:8px">Report on track or off track only. Anything off track: don't discuss now, send it to the Issues List.</div>${opRenderScorecard(null, true)}<div style="margin-top:8px">${opData.metrics.map(m => `<button class="btn" style="padding:3px 9px;font-size:.72rem;margin:2px" onclick="opMetricToIssue('${m.id}')">${esc(m.name)} → Issue</button>`).join('')}</div>`;
+  if (s[0] === 'rocks') { const q = opQuarter(); content = `<div class="small muted" style="margin-bottom:8px">Each owner: on track or off track. Off track → Issues List.</div>` + (opData.rocks.filter(r => r.quarter === q).map(r => `<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)"><span>${esc(r.title)} <span class="small muted">· ${esc(r.owner || '')}</span></span><span style="display:flex;gap:6px;align-items:center"><select onchange="opUpdate('rocks','${r.id}',{status:this.value})" style="padding:4px;font-size:.78rem">${['On Track', 'Off Track', 'Done'].map(x => `<option ${x === (r.status || 'On Track') ? 'selected' : ''}>${x}</option>`).join('')}</select><button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opAddIssueRaw('Rock off track: ${jsAttrEsc(r.title)}','').then(()=>alert('Added to Issues'))">→ Issue</button></span></div>`).join('') || '<div class="small muted">No Rocks this quarter.</div>'); }
+  if (s[0] === 'headlines') content = `<div class="small muted" style="margin-bottom:8px">One sentence each about customers and employees. Anything that needs discussion goes to Issues.</div>
+      ${(L.headlines || []).map((h, i) => `<div style="padding:5px 0;border-bottom:1px solid var(--line)">• ${esc(h)} <button class="btn" style="padding:2px 7px;font-size:.7rem" onclick="opAddIssueRaw(_opL10.headlines[${i}],'From L10 headline').then(()=>alert('Added to Issues'))">→ Issue</button></div>`).join('')}
+      <div style="display:flex;gap:6px;margin-top:8px"><input id="opHl" placeholder="Headline…" style="flex:1;padding:7px" onkeydown="if(event.key==='Enter')opAddHeadline()"><button class="btn" onclick="opAddHeadline()">+</button></div>`;
+  if (s[0] === 'todos') content = `<div class="small muted" style="margin-bottom:8px">Each to-do: done or not done. Goal: 90% done every week.</div>${opRenderTodos(null, true)}`;
+  if (s[0] === 'ids') content = opRenderIssues(null, true);
+  if (s[0] === 'conclude') {
+    const newTodos = opData.todos.filter(t => !t.done && (t.createdAtMs || 0) >= L.startMs);
+    content = `<div style="font-weight:700;margin-bottom:6px">New to-dos from this meeting</div>${newTodos.map(t => `<div class="small">• ${esc(t.text)} — ${esc(t.owner)}</div>`).join('') || '<div class="small muted">None.</div>'}
+      <label class="small muted" style="display:flex;flex-direction:column;gap:3px;margin-top:12px">Cascading message: what do we tell the team, and who tells them?<input id="opCascade" value="${esc(L.cascade || '')}" onchange="_opL10.cascade=this.value;opSaveL10()" style="padding:7px"></label>
+      <div style="display:flex;gap:16px;margin-top:12px;flex-wrap:wrap">${OP_OWNERS.map(o => `<label class="small muted" style="display:flex;flex-direction:column;gap:3px">${o}'s rating (1–10)<input type="number" min="1" max="10" value="${(L.ratings || {})[o] || ''}" onchange="_opL10.ratings=Object.assign(_opL10.ratings||{},{${o}:Number(this.value)});opSaveL10()" style="padding:7px;width:90px"></label>`).join('')}</div>
+      <div class="small muted" style="margin-top:6px">Anything under 8: say why, and fix it next week.</div>`;
+  }
+  body.innerHTML = `<div id="opL10Live">
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">${OP_L10.map((x, i) => `<button class="con-subtab ${i === idx ? 'active' : ''}" onclick="opL10Go(${i})" style="${i < idx ? 'opacity:.6' : ''}">${i + 1}. ${x[1]}</button>`).join('')}</div>
+    <div style="${OP_CARD}">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+        <div style="font-weight:900;font-size:1.15rem">${idx + 1}. ${s[1]}</div>
+        <div style="font-variant-numeric:tabular-nums;font-weight:800;font-size:1.2rem;${over ? 'color:' + OP_RED : ''}" id="opL10Clock">${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')} / ${s[2]}:00</div>
+      </div>
+      <div id="opL10Content">${content}</div>
+      <div style="display:flex;justify-content:space-between;gap:8px;margin-top:16px;flex-wrap:wrap">
+        <span class="small muted">Meeting time: ${total} of 90 min</span>
+        <span style="display:flex;gap:8px">${idx > 0 ? `<button class="btn" onclick="opL10Go(${idx - 1})">◀ Back</button>` : ''}${idx < OP_L10.length - 1 ? `<button class="btn-amber" onclick="opL10Go(${idx + 1})" style="padding:9px 18px">Next ▶</button>` : `<button class="btn-amber" onclick="opEndL10()" style="padding:9px 18px">✓ End meeting</button>`}</span>
+      </div>
+    </div></div>`;
+  clearInterval(_opL10Timer);
+  _opL10Timer = setInterval(() => {
+    const el = document.getElementById('opL10Clock'); if (!el || !_opL10) return clearInterval(_opL10Timer);
+    const e = Math.floor((Date.now() - _opL10.stepStartMs) / 1000), b = OP_L10[_opL10.step][2];
+    el.textContent = `${Math.floor(e / 60)}:${String(e % 60).padStart(2, '0')} / ${b}:00`;
+    el.style.color = e > b * 60 ? OP_RED : '';
+  }, 1000);
+}
+async function opStartL10() {
+  const ref = await opColl('meetings').add({ type: 'L10', date: opToday(), startedAt: new Date().toISOString(), headlines: [], ratings: {}, solved: [], createdAtMs: Date.now() });
+  _opL10 = { id: ref.id, step: 0, startMs: Date.now(), stepStartMs: Date.now(), headlines: [], ratings: {}, solved: [] };
+  opRenderL10();
+}
+function opL10Go(i) { if (!_opL10) return; _opL10.step = i; _opL10.stepStartMs = Date.now(); opRenderL10(); }
+function opAddHeadline() { const el = document.getElementById('opHl'); if (!el.value.trim()) return; _opL10.headlines = (_opL10.headlines || []).concat([el.value.trim()]); opSaveL10(); opRenderL10(); }
+function opSaveL10() { if (!_opL10) return; opColl('meetings').doc(_opL10.id).update({ headlines: _opL10.headlines || [], ratings: _opL10.ratings || {}, solved: _opL10.solved || [], cascade: _opL10.cascade || '' }).catch(() => {}); }
+async function opEndL10() {
+  if (!_opL10) return;
+  const missing = OP_OWNERS.filter(o => !(_opL10.ratings || {})[o]);
+  if (missing.length && !confirm('No rating yet from ' + missing.join(' and ') + '. End anyway?')) return;
+  opSaveL10();
+  await opColl('meetings').doc(_opL10.id).update({ endedAt: new Date().toISOString(), minutes: Math.round((Date.now() - _opL10.startMs) / 60000) });
+  clearInterval(_opL10Timer); _opL10 = null;
+  renderOwnerPortalBody();
+}
+
+// ── V/TO ──
+const OP_VTO_FIELDS = [
+  ['Vision', [['coreValues', 'Core values (3–5)', 5], ['purpose', 'Core focus: purpose / cause / passion', 2], ['niche', 'Core focus: niche', 2], ['tenYear', '10-year target', 2],
+    ['targetMarket', 'Marketing strategy: target market ("the list")', 3], ['uniques', 'Marketing strategy: 3 uniques', 3], ['provenProcess', 'Marketing strategy: proven process', 3], ['guarantee', 'Marketing strategy: guarantee', 2],
+    ['threeYear', '3-year picture: date, revenue, profit, measurables, what it looks like', 8]]],
+  ['Traction', [['oneYear', '1-year plan: date, revenue, profit, measurables, 3–7 goals', 8], ['issuesLong', 'Notes for the Long-term Issues List', 4]]],
+];
+let _opVtoEditing = false;
+function opRenderVto(body) {
+  const v = opData.vto || {};
+  body.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      <div class="small muted">The Vision/Traction Organizer: where JTXD is going and how we get there. ${v.updatedAt ? 'Last updated ' + esc(v.updatedAt.slice(0, 10)) + (v.updatedBy ? ' by ' + esc(v.updatedBy) : '') : ''}</div>
+      <button class="btn-amber" onclick="opSaveVto()" style="padding:9px 16px">Save V/TO</button>
+    </div>
+    ${OP_VTO_FIELDS.map(([sec, fields]) => `<div style="font-weight:900;font-size:1rem;margin:14px 0 8px">${sec}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px">
+      ${fields.map(([k, label, rows]) => `<label style="${OP_CARD};display:flex;flex-direction:column;gap:6px"><span style="font-weight:700;font-size:.85rem">${label}</span><textarea id="opV_${k}" rows="${rows}" oninput="_opVtoEditing=true" style="padding:8px;resize:vertical;font:inherit">${esc(v[k] || '')}</textarea></label>`).join('')}
+      </div>`).join('')}
+    <div class="small muted" style="margin-top:10px">Rocks, Scorecard and Issues for the Traction side live in their own tabs.</div>`;
+}
+async function opSaveVto() {
+  const out = { updatedAt: new Date().toISOString(), updatedBy: opMe() };
+  OP_VTO_FIELDS.forEach(([, f]) => f.forEach(([k]) => { const el = document.getElementById('opV_' + k); if (el) out[k] = el.value; }));
+  await opColl('docs').doc('vto').set(out, { merge: true });
+  _opVtoEditing = false; alert('V/TO saved.');
+}
+
+// ── ACCOUNTABILITY CHART ──
+const OP_DEFAULT_SEATS = [
+  { id: 'visionary', name: 'Visionary', parent: '', person: '', roles: '20 ideas · Creativity / problem solving · Big relationships · Culture · R&D' },
+  { id: 'integrator', name: 'Integrator', parent: 'visionary', person: '', roles: 'Lead, manage, hold accountable · Execute the business plan · P&L results · Integrate major functions · Special projects' },
+  { id: 'sales', name: 'Sales / Marketing', parent: 'integrator', person: '', roles: 'Lead, manage, hold accountable · Sales and marketing results · Estimates and proposals · Pipeline' },
+  { id: 'ops', name: 'Operations', parent: 'integrator', person: '', roles: 'Lead, manage, hold accountable · Scheduling · Quality · Customer satisfaction · Process' },
+  { id: 'finance', name: 'Finance / Admin', parent: 'integrator', person: '', roles: 'Invoicing and collections · Payables · Payroll · Budget and reporting · Insurance / compliance' },
+  { id: 'super', name: 'Superintendent', parent: 'ops', person: '', roles: 'Field leadership · Crew scheduling · Job quality · Safety · Team Lead development' },
+  { id: 'leads', name: 'Team Leads', parent: 'super', person: '', roles: 'Run the crew on site · Daily logs, photos, receipts · Punch list · Customer on site' },
+];
+function opSeats() { return (opData.chart && opData.chart.seats) || OP_DEFAULT_SEATS; }
+function opRenderChart(body) {
+  const seats = opSeats();
+  const level = s => { let n = 0, p = s.parent; while (p && n < 8) { n++; p = (seats.find(x => x.id === p) || {}).parent; } return n; };
+  const ordered = []; const walk = pid => seats.filter(s => (s.parent || '') === pid).forEach(s => { ordered.push(s); walk(s.id); }); walk('');
+  seats.forEach(s => { if (!ordered.includes(s)) ordered.push(s); });
+  body.innerHTML = `
+    <div class="small muted" style="margin-bottom:12px">Seats first, then names. Each seat has one owner and about 5 roles. Edit any field, then Save. People Analyzer: does the person Get it, Want it, have the Capacity (GWC)?</div>
+    ${ordered.map(s => `<div style="${OP_CARD};margin:0 0 10px ${Math.min(level(s), 4) * 24}px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input data-seat="${s.id}" data-f="name" value="${esc(s.name)}" style="font-weight:800;padding:6px;flex:1 1 160px">
+        <input data-seat="${s.id}" data-f="person" value="${esc(s.person || '')}" placeholder="Who sits here?" style="padding:6px;flex:1 1 140px">
+        <span class="small muted">GWC:</span>${['g', 'w', 'c'].map(x => `<label class="small" style="display:flex;gap:3px;align-items:center"><input type="checkbox" data-seat="${s.id}" data-f="${x}" ${s[x] ? 'checked' : ''}>${x.toUpperCase()}</label>`).join('')}
+        <button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opRemoveSeat('${s.id}')">✕</button>
+      </div>
+      <textarea data-seat="${s.id}" data-f="roles" rows="2" style="width:100%;margin-top:6px;padding:6px;font:inherit;box-sizing:border-box">${esc(s.roles || '')}</textarea>
+      <div class="small muted" style="margin-top:4px">Reports to: <select data-seat="${s.id}" data-f="parent" style="padding:3px">${['<option value="">(top)</option>'].concat(seats.filter(x => x.id !== s.id).map(x => `<option value="${x.id}" ${x.id === s.parent ? 'selected' : ''}>${esc(x.name)}</option>`)).join('')}</select></div>
+    </div>`).join('')}
+    <div style="display:flex;gap:8px;margin-top:10px"><button class="btn" onclick="opAddSeat()">+ Add seat</button><button class="btn-amber" onclick="opSaveChart()" style="padding:9px 16px">Save chart</button></div>`;
+}
+function opCollectSeats() {
+  const seats = opSeats().map(s => ({ ...s }));
+  document.querySelectorAll('[data-seat]').forEach(el => { const s = seats.find(x => x.id === el.dataset.seat); if (!s) return; s[el.dataset.f] = el.type === 'checkbox' ? el.checked : el.value; });
+  return seats;
+}
+async function opSaveChart() { await opColl('docs').doc('chart').set({ seats: opCollectSeats(), updatedAt: new Date().toISOString(), updatedBy: opMe() }); alert('Accountability Chart saved.'); }
+function opAddSeat() { const seats = opCollectSeats(); seats.push({ id: 's' + Date.now(), name: 'New seat', parent: 'integrator', person: '', roles: '' }); opData.chart = { seats }; renderOwnerPortalBody(); }
+function opRemoveSeat(id) { if (!confirm('Remove this seat?')) return; const seats = opCollectSeats().filter(s => s.id !== id).map(s => s.parent === id ? { ...s, parent: '' } : s); opData.chart = { seats }; renderOwnerPortalBody(); }
+
+// ── QUARTERLY ──
+function opRenderQuarterly(body) {
+  const q = opQuarter(), nq = opNextQuarter(q);
+  const rocks = opData.rocks.filter(r => r.quarter === q);
+  const done = rocks.filter(r => r.status === 'Done').length;
+  const pct = rocks.length ? Math.round(done / rocks.length * 100) : 0;
+  const agenda = [['Segue: best news, what\'s working and what isn\'t', '15 min'], ['Review last quarter: numbers, Rocks done/not done (goal 80%+), lessons', '1 hr'], ['Review the V/TO: is everyone still on the same page?', '1 hr'], ['Set next quarter\'s Rocks: 3–7, one owner each', '2 hrs'], ['IDS the Issues List', '2.5 hrs'], ['Next steps, cascading messages, rate the day', '15 min']];
+  body.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px">
+      <div style="${OP_CARD}">
+        <div style="font-weight:800;margin-bottom:6px">${q} Rock score</div>
+        <div style="font-size:2rem;font-weight:900;color:${pct >= 80 ? OP_GREEN : pct >= 50 ? OP_AMBER : OP_RED}">${rocks.length ? pct + '%' : '—'}</div>
+        <div class="small muted" style="margin-bottom:10px">${done} of ${rocks.length} done. EOS goal: 80% or better.</div>
+        ${rocks.map(r => `<div style="display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid var(--line)"><span class="small">${esc(r.title)} · ${esc(r.owner || '')}</span>${opRockPill(r.status)}</div>`).join('')}
+        ${rocks.some(r => r.status !== 'Done') ? `<button class="btn" style="margin-top:10px" onclick="opRollRocks('${q}','${nq}')">Close ${q}: mark unfinished Rocks "Not Done" and copy them to ${nq}?</button>` : ''}
+      </div>
+      <div style="${OP_CARD}">
+        <div style="font-weight:800;margin-bottom:6px">Quarterly planning agenda (1 day)</div>
+        ${agenda.map((a, i) => `<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)"><span class="small">${i + 1}. ${esc(a[0])}</span><span class="small muted">${a[1]}</span></div>`).join('')}
+        <div class="small muted" style="margin-top:8px">Annual planning (2 days) adds: update the 3-year picture, build the 1-year plan and budget, then set Q1 Rocks.</div>
+      </div>
+    </div>`;
+}
+async function opRollRocks(q, nq) {
+  const left = opData.rocks.filter(r => r.quarter === q && r.status !== 'Done');
+  if (!confirm(`Mark ${left.length} unfinished ${q} Rock(s) Not Done and copy them into ${nq}?`)) return;
+  for (const r of left) {
+    await opColl('rocks').doc(r.id).update({ status: 'Not Done' });
+    await opColl('rocks').add({ title: r.title, owner: r.owner, type: r.type || 'Company', due: opQuarterEnd(nq), quarter: nq, status: 'On Track', milestones: (r.milestones || []).filter(m => !m.done), notes: 'Carried over from ' + q, createdAtMs: Date.now() });
+  }
+}
+
+// ── FINANCIALS ──
+let _opJobPL = null, _opJobPLLoading = false;
+function opRenderFinancials() {
+  const host = document.getElementById('opFinHost');
+  if (!host) return;
+  if (!document.getElementById('opJobsPL')) {
+    host.innerHTML = `<div style="${OP_CARD};margin-bottom:16px"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><div style="font-weight:900;font-size:1rem">Live P/L — every active job</div><button class="btn-amber" onclick="opLoadJobsPL()" style="padding:8px 14px">↻ Refresh</button></div><div id="opJobsPL" style="margin-top:10px"></div></div>
+      <div style="font-weight:900;font-size:1rem;margin:4px 0 10px">🧾 Company Receipts</div><div id="opReceiptsSlot"></div>`;
+  }
+  // Company Receipts page lives inside the portal now.
+  const cr = document.getElementById('ktPageCompanyReceipts'), slot = document.getElementById('opReceiptsSlot');
+  if (cr && slot && cr.parentElement !== slot) { slot.appendChild(cr); cr.classList.remove('kt-page'); cr.style.display = 'block'; }
+  renderCompanyReceiptsPage();
+  if (!_opJobPL && !_opJobPLLoading) opLoadJobsPL(); else opDrawJobsPL();
+}
+async function opAllBillsByJob() {
+  const out = {};
+  await Promise.all((Array.isArray(allVendors) ? allVendors : []).map(v => coll('vendors').doc(v.id).collection('bills').get().then(s => s.forEach(d => { const b = d.data(); if (b.jobId) out[b.jobId] = (out[b.jobId] || 0) + (Number(b.amount) || 0); })).catch(() => {})));
+  return out;
+}
+async function opLoadJobsPL() {
+  const el = document.getElementById('opJobsPL'); if (!el) return;
+  _opJobPLLoading = true;
+  const active = conJobs.filter(j => { const st = KYTRAC_STATUSES.find(s => s.name === j.status); return st && (st.group === 'active' || st.group === 'finance'); });
+  el.innerHTML = `<div class="small muted">Loading ${active.length} jobs…</div>`;
+  try {
+    const billsByJob = await opAllBillsByJob();
+    const rows = [];
+    for (let i = 0; i < active.length; i += 4) {
+      const chunk = await Promise.all(active.slice(i, i + 4).map(j => getJobMarginBoth(j.id, false, { billsByJob }).then(b => ({ job: j, b })).catch(() => ({ job: j, b: null }))));
+      rows.push(...chunk);
+      el.innerHTML = `<div class="small muted">Loading… ${rows.length} of ${active.length}</div>`;
+    }
+    _opJobPL = rows;
+  } finally { _opJobPLLoading = false; }
+  opDrawJobsPL();
+}
+function opDrawJobsPL() {
+  const el = document.getElementById('opJobsPL'); if (!el || !_opJobPL) return;
+  const rows = _opJobPL.filter(r => r.b);
+  const sum = k => rows.reduce((s, r) => s + (r.b.tmA[k] || 0), 0);
+  const sumE = k => rows.reduce((s, r) => s + (r.b.tmE[k] || 0), 0);
+  const rev = sum('revenue'), re = sum('retainedEarnings');
+  const td = 'padding:6px 8px;border-bottom:1px solid var(--line)';
+  const num = 'text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap';
+  el.innerHTML = `
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px">
+      ${[['Active job value', opMoney(rev)], ['Retained Earnings (actual)', opMoney(re)], ['Overall Go/No-Go', rev ? (re / rev * 100).toFixed(1) + '%' : '—'], ['Travis pay', opMoney(sum('travisDraw'))], ['Jason pay', opMoney(sum('jasonTotal'))], ['To Checking', opMoney(sum('checking'))], ['To Savings', opMoney(sum('savings'))]].map(([l, v]) => `<div style="flex:1 1 130px;padding:8px 10px;border:1px solid var(--line);border-radius:10px"><div style="font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)">${l}</div><div style="font-weight:900;font-size:1.1rem">${v}</div></div>`).join('')}
+    </div>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.84rem">
+      <tr style="font-size:.7rem;text-transform:uppercase;color:var(--muted)"><td style="${td}">Job</td><td style="${td}">Status</td><td style="${td};${num}">Price</td><td style="${td};${num}">Est. RE</td><td style="${td};${num}">Actual RE</td><td style="${td};${num}">Go/No-Go</td><td style="${td}">Flags</td></tr>
+      ${rows.sort((a, b) => a.b.tmA.reOfRevenuePct - b.b.tmA.reOfRevenuePct).map(({ job, b }) => {
+        const go = b.tmA.goNoGo === 'GO';
+        const flags = (b.info.notes || []).filter(n => /OVER|no agreed/.test(n)).map(n => n.replace(/^(Materials|Subs): /, '$1: ')).join(' · ');
+        return `<tr style="cursor:pointer" onclick="openJobDetail('${job.id}','financials')">
+          <td style="${td};font-weight:700">${esc(job.jobNumber || '')} <span class="muted" style="font-weight:400">${esc(job.name && job.name !== job.jobNumber ? job.name : '')}</span></td>
+          <td style="${td}" class="small muted">${esc(job.status || '')}</td>
+          <td style="${td};${num}">${opMoney(b.tmA.revenue)}</td>
+          <td style="${td};${num};color:var(--muted)">${opMoney(b.tmE.retainedEarnings)}</td>
+          <td style="${td};${num};font-weight:800;color:${b.tmA.retainedEarnings >= b.tmE.retainedEarnings - 1 ? OP_GREEN : OP_RED}">${opMoney(b.tmA.retainedEarnings)}</td>
+          <td style="${td};${num};font-weight:800;color:${go ? OP_GREEN : OP_RED}">${b.tmA.goNoGo} ${(b.tmA.reOfRevenuePct * 100).toFixed(1)}%</td>
+          <td style="${td}" class="small muted">${esc(flags)}</td></tr>`;
+      }).join('') || `<tr><td colspan="7" class="small muted" style="${td}">No active jobs with estimates.</td></tr>`}
+    </table></div>
+    <div class="small muted" style="margin-top:6px">Sorted worst first. Click a job to open its Financials tab. Estimate total RE ${opMoney(sumE('retainedEarnings'))} vs. actual ${opMoney(re)}.</div>`;
+}
+
+// ── shared ──
+function opUpdate(coll_, id, data) { opColl(coll_).doc(id).update(data).catch(e => alert('Could not save: ' + e.message)); }
+function opDeleteDoc(coll_, id) { if (!confirm('Delete this?')) return; opColl(coll_).doc(id).delete().catch(e => alert(e.message)); }
+
+Object.assign(window, { openOwnerPortal, opSwitch, opSetMetric, opEditCell, opMetricToIssue, opAddMetric, opAddRock, opAddMilestone, opToggleMilestone,
+  opAddIssue, opAddIssueRaw, opMoveIssue, opSolveIssue, opAddTodo, opStartL10, opL10Go, opAddHeadline, opSaveL10, opEndL10, opSaveVto, opSaveChart,
+  opAddSeat, opRemoveSeat, opRollRocks, opLoadJobsPL, opUpdate, opDeleteDoc, renderOwnerPortalBody });
 
 // In-app alert: while JOBSMETRIX is open, a new Receipt To-Do assigned to
 // the signed-in user pops a banner (the email covers when it's closed).

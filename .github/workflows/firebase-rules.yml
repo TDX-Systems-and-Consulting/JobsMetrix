@@ -1,0 +1,45 @@
+# Firestore security rules: compare and deploy from GitHub, no laptop CLI.
+# Run it from the Actions tab (Run workflow) or the API:
+#   mode = diff   -> prints the live rules vs. firestore.rules in this repo, changes nothing
+#   mode = deploy -> prints the diff, then deploys firestore.rules
+# Uses the same service account secret as the Hosting and Functions deploys.
+name: Firestore rules (diff / deploy)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'diff or deploy'
+        required: true
+        default: 'diff'
+
+jobs:
+  rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_KYTRAC_72D91 }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Diff live rules vs repo
+        run: |
+          TOKEN=$(gcloud auth print-access-token)
+          REL=$(curl -s -H "Authorization: Bearer $TOKEN" https://firebaserules.googleapis.com/v1/projects/kytrac-72d91/releases/cloud.firestore)
+          echo "$REL" | head -c 400; echo
+          RS=$(echo "$REL" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("rulesetName",""))')
+          if [ -z "$RS" ]; then echo "Could not read the live release (service account may lack permission)"; exit 0; fi
+          curl -s -H "Authorization: Bearer $TOKEN" "https://firebaserules.googleapis.com/v1/$RS" \
+            | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["source"]["files"][0]["content"], end="")' > live.rules
+          echo "Live ruleset: $RS ($(wc -l < live.rules) lines)"
+          echo "===== DIFF live -> repo ====="
+          diff -u live.rules firestore.rules || true
+          echo "===== END DIFF ====="
+
+      - name: Deploy firestore.rules
+        if: ${{ github.event.inputs.mode == 'deploy' }}
+        run: npx --yes firebase-tools@13 deploy --only firestore:rules --project kytrac-72d91 --non-interactive
