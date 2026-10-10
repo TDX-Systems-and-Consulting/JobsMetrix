@@ -52,7 +52,10 @@ function jobLabelParts(job) {
   // a name like "JOB-2026-561 — Contractor Grade Option" keeps just "Contractor Grade Option"
   const num = (job && job.jobNumber) || '';
   const custom = String((job && job.name) || '').replace(num, '').replace(/^[\s\u2014\u2013:\-\u00b7]+/, '').trim();
-  return [jobStreet(job), custom].filter(Boolean).join(' \u00b7 ');
+  const street = jobStreet(job);
+  // "707 Karon Dr" as the name + "707 Karon Drive" as the address = same place, show it once
+  const sameHouse = custom && street && custom.split(/\s+/)[0] === street.split(/\s+/)[0];
+  return [street, sameHouse ? '' : custom].filter(Boolean).join(' \u00b7 ');
 }
 window.jobStreet = jobStreet; window.jobLabelParts = jobLabelParts;
 const esc = s => ((s==null?'':s)).toString().replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -22995,11 +22998,12 @@ async function getJobActualInputs(job, est, opts) {
   // Subs: agreed amounts
   let subsTab = 0;
   if (subsSnap) subsSnap.forEach(d => { const s = d.data(); if (!/declin|cancel/i.test(s.status || '')) subsTab += num(s.amount); });
-  const byKey = {}; let subPaid = 0;
+  const byKey = {}; let subPaid = 0, payTotal = 0, payCount = 0;
   if (payDocs) payDocs.forEach(d => {
     const p = d.data(); if (/cancel|void/i.test(p.status || '')) return;
     const k = p.subKey || ('name:' + (p.subName || '?'));
     byKey[k] = (byKey[k] || 0) + num(p.amount);
+    payTotal += num(p.amount); payCount++;
     if (p.status === 'Paid') subPaid += num(p.amount);
   });
   (Array.isArray(allContractors) ? allContractors : []).forEach(c => {
@@ -23010,7 +23014,8 @@ async function getJobActualInputs(job, est, opts) {
   const subCommitted = Math.max(subsTab, subsPay);
   const subEstimate = labPrice * JTXD_LOCKED_RATES.realLaborCostPct;
   Object.assign(info, { subCommitted, subPaid, subEstimate, subFromEstimate: !subCommitted });
-  if (subCommitted) info.notes.push(`Subs: ${fhMoney(subCommitted)} agreed (${fhMoney(subPaid)} paid so far)${subCommitted > subEstimate + 1 ? ' — ' + fhMoney(subCommitted - subEstimate) + ' OVER the 60% budget' : ''}`);
+  // SUBPAY_NOTE_V2: say where the agreed number comes from and how much is actually marked Paid
+  if (subCommitted) info.notes.push(`Subs: ${fhMoney(subCommitted)} agreed${subsTab >= subsPay ? ' (Subs tab)' : ' (contractor job totals)'} · ${payCount} payment${payCount === 1 ? '' : 's'} entered = ${fhMoney(payTotal)} · ${fhMoney(subPaid)} marked Paid${payTotal > subPaid + 1 ? ' (mark each one Paid once the money goes out)' : ''}${subCommitted > subEstimate + 1 ? ' — ' + fhMoney(subCommitted - subEstimate) + ' OVER the 60% budget' : ''}`);
   else info.notes.push('Subs: no agreed amount entered yet — Actual uses the 60% estimate');
 
   return { matPrice, labPrice, matCost: matActual, realLaborCost: subCommitted || subEstimate, info };
