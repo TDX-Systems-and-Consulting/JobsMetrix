@@ -37,7 +37,7 @@ jobs:
             | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["source"]["files"][0]["content"], end="")' > live.rules
           echo "Live ruleset: $RS ($(wc -l < live.rules) lines)"
           echo "===== DIFF live -> repo ====="
-          diff -u live.rules firestore.rules || true
+          diff -u --strip-trailing-cr -w live.rules firestore.rules || true
           echo "===== END DIFF ====="
 
       - name: Deploy firestore.rules
