@@ -37,6 +37,22 @@ const JTXD_LOCKED_RATES = {
   materialsMarkupPct: 0.15,   // fallback only when real materials cost is unknown; markup + Flex = operating Checking
 };
 
+// JOB_STREET_V1 (2026-10-10): street-only address for labels ("707 Karon Drive"),
+// same rule the Kanban cards use: text before the first comma, trimmed at the
+// street suffix so city text glued onto the street is dropped.
+function jobStreet(job) {
+  const addr = ((job && job.address) || '').trim();
+  if (!addr) return '';
+  const beforeComma = addr.includes(',') ? addr.split(',')[0].trim() : addr;
+  const m = beforeComma.match(/^(.*?\b(?:St|Street|Ave|Avenue|Dr|Drive|Ct|Court|Ln|Lane|Rd|Road|Blvd|Boulevard|Way|Pl|Place|Cir|Circle|Pkwy|Parkway|Ter|Terrace|Trl|Trail|Loop|Hwy|Highway)\.?)\b/i);
+  return m ? m[1] : beforeComma;
+}
+// Job number + street (+ a custom name when it isn't just the job number).
+function jobLabelParts(job) {
+  const custom = job && job.name && job.name !== job.jobNumber && !String(job.name).startsWith(job.jobNumber || '\u0000') ? job.name : '';
+  return [jobStreet(job), custom].filter(Boolean).join(' \u00b7 ');
+}
+window.jobStreet = jobStreet; window.jobLabelParts = jobLabelParts;
 const esc = s => ((s==null?'':s)).toString().replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 // For embedding a value as a JS string-literal ARGUMENT inside an
 // onclick="..." HTML attribute -- a genuinely different job from esc()
@@ -3324,7 +3340,7 @@ function openJobDetail(jobId, defaultTab) {
 
   // Header
   document.getElementById('detailJobNum').textContent = '#' + (job.jobNumber || '');
-  document.getElementById('detailJobName').textContent = job.name;
+  document.getElementById('detailJobName').textContent = jobLabelParts(job) || job.name; // JOB_STREET_V1: street address instead of repeating the job number
   document.getElementById('detailJobClient').textContent = '👤 ' + job.client + (job.phone ? ' · ' + job.phone : '') + (job.email ? ' · ' + job.email : '');
   document.getElementById('detailStatusBadge').value = job.status || 'New Lead';
 
@@ -25656,7 +25672,7 @@ function opDrawJobsPL() {
         const go = b.tmA.goNoGo === 'GO';
         const flags = (b.info.notes || []).filter(n => /OVER|no agreed/.test(n)).map(n => n.replace(/^(Materials|Subs): /, '$1: ')).join(' · ');
         return `<tr style="cursor:pointer" onclick="openJobDetail('${job.id}','financials')">
-          <td style="${td};font-weight:700">${esc(job.jobNumber || '')} <span class="muted" style="font-weight:400">${esc(job.name && job.name !== job.jobNumber ? job.name : '')}</span></td>
+          <td style="${td};font-weight:700">${esc(job.jobNumber || '')} <span class="muted" style="font-weight:400">${esc(jobLabelParts(job))}</span></td>
           <td style="${td}" class="small muted">${esc(job.status || '')}</td>
           <td style="${td};${num}">${opMoney(b.tmA.revenue)}</td>
           <td style="${td};${num};color:var(--muted)">${opMoney(b.tmE.retainedEarnings)}</td>
