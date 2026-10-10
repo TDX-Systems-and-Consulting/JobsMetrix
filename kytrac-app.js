@@ -49,7 +49,9 @@ function jobStreet(job) {
 }
 // Job number + street (+ a custom name when it isn't just the job number).
 function jobLabelParts(job) {
-  const custom = job && job.name && job.name !== job.jobNumber && !String(job.name).startsWith(job.jobNumber || '\u0000') ? job.name : '';
+  // a name like "JOB-2026-561 — Contractor Grade Option" keeps just "Contractor Grade Option"
+  const num = (job && job.jobNumber) || '';
+  const custom = String((job && job.name) || '').replace(num, '').replace(/^[\s\u2014\u2013:\-\u00b7]+/, '').trim();
   return [jobStreet(job), custom].filter(Boolean).join(' \u00b7 ');
 }
 window.jobStreet = jobStreet; window.jobLabelParts = jobLabelParts;
