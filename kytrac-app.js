@@ -33,7 +33,7 @@ const JTXD_LOCKED_RATES = {
   laborEfficiency: 0.72,      // was 0.77 -- customer-facing timeline only; never touches sub pay or the Pool
   ownerPayPct: 0.20,          // Travis's pay = 20% of Retained Earnings (was 19%), checked AFTER Go/No-Go
   ownerW2Share: 0.50,         // accountant: 50% of owner pay as W-2 salary, 50% as owner draw
-  employerPayrollTaxPct: 0.0765, // company's FICA match on the W-2 half, paid from Retained Earnings
+  employerPayrollTaxPct: 0.09, // 2026-10-11 per Travis: 7.65% FICA match + ~0.95% federal/Missouri unemployment, rounded up to a flat 9% of the W-2 half, paid from Retained Earnings
   materialsMarkupPct: 0.15,   // fallback only when real materials cost is unknown; markup + Flex = operating Checking
 };
 
