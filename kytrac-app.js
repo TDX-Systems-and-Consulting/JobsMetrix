@@ -11715,6 +11715,7 @@ function renderInvoicingPage() {
 // ── Per-job invoice list (in job detail modal) ──
 function loadJobInvoices(jobId) {
   if (!conDb) return;
+  qbSyncPaymentsNow(false, 2 * 60 * 1000); // QBO_PAYMENT_PULL_V1
   coll('jobs').doc(jobId).collection('invoices')
     .orderBy('date','desc')
     .onSnapshot(snap => {
@@ -12645,6 +12646,7 @@ function quickMarkPaid(jobId, invId, total) {
       <select id="mpMethod" onchange="window.mpToggleCheckFields()" style="width:100%;padding:9px 12px;border-radius:8px;border:1px solid var(--line);background:rgba(8,18,36,.6);color:#eaf0fb;font-size:.9rem;box-sizing:border-box;margin-bottom:14px">
         <option value="Check">Check</option>
         <option value="Cash">Cash</option>
+        <option value="QuickBooks Payments">QuickBooks Payments (paid online)</option>
         <option value="Card / Online">Card / Online (Stripe)</option>
         <option value="Bank Transfer">Bank Transfer / ACH</option>
         <option value="Other">Other</option>
@@ -12710,6 +12712,15 @@ async function commitMarkPaid(jobId, invId, total) {
     let paidNote = `Invoice ${invData.number || ''} paid — $${paidAmt} (${method})`.replace('  ', ' ');
     if (method === 'Check' && payment.checkNumber) paidNote += ` #${payment.checkNumber}`;
     logInvoiceActivity(jobId, 'invoice_paid', paidNote.trim());
+
+    // QBO_PAYMENT_PULL_V1: if this invoice is already in QuickBooks, record
+    // the payment there too (best-effort; QuickBooks' own balance is checked
+    // server-side so a payment made through the QuickBooks link isn't doubled).
+    if (invData.qbInvoiceId && conFunctions && method !== 'QuickBooks Payments') {
+      conFunctions.httpsCallable('qbCreateInvoice')({ companyId: currentCompanyId, jobId, invoiceId: invId })
+        .then(() => logInvoiceActivity(jobId, 'qbo_payment_synced', 'Payment recorded in QuickBooks.'))
+        .catch(e => logInvoiceActivity(jobId, 'qbo_payment_sync_failed', 'Could not record this payment in QuickBooks: ' + e.message));
+    }
 
     const job = conJobs.find(j => j.id === jobId);
 
@@ -35501,8 +35512,8 @@ async function jobDepositInfo(jobId) {
   let paid = 0, firstDate = '';
   s.forEach(d => {
     const i = d.data();
-    if (i.status !== 'Paid') return;
-    const a = Number(i.amtPaid) || Number(i.total) || 0;
+    // QBO_PAYMENT_PULL_V1: a partly paid deposit (status Partial) counts too.
+    const a = i.status === 'Paid' ? (Number(i.amtPaid) || Number(i.total) || 0) : (Number(i.amtPaid) || 0);
     if (a <= 0) return;
     paid += a;
     if (i.paidDate && (!firstDate || i.paidDate < firstDate)) firstDate = i.paidDate;
@@ -35577,6 +35588,8 @@ async function opPipeValue(j, signed) {
 async function opLoadPipeline() {
   const el = document.getElementById('opPipe');
   _opPipeLoading = true;
+  if (el) el.innerHTML = '<div class="small muted">Checking QuickBooks for payments…</div>';
+  await Promise.race([qbSyncPaymentsNow(true), new Promise(r => setTimeout(r, 25000))]);
   const jobs = conJobs.filter(j => PB_SIGNED.includes(j.status) || PB_BIDS.includes(j.status));
   if (el) el.innerHTML = `<div class="small muted">Checking deposits on ${jobs.length} jobs…</div>`;
   try {
@@ -35680,3 +35693,35 @@ function opDrawPipeline() {
 }
 
 Object.assign(window, { opLoadPipeline, depositGateOk, jobDepositInfo });
+
+// QBO_PAYMENT_PULL_V1 (client, 2026-10-11): ask the server to read
+// payments made through QuickBooks Payments back into JOBSMETRIX.
+// Owners only; runs every 15 minutes while the app is open, on the
+// Pipeline refresh, and when a job's Invoices tab opens.
+let _qbSyncLast = 0, _qbSyncBusy = null;
+function qbSyncPaymentsNow(force, minGapMs) {
+  try { if (!conFunctions || !currentCompanyId || !conCurrentUser || !canViewFinancialsTab()) return Promise.resolve(null); } catch (e) { return Promise.resolve(null); }
+  if (_qbSyncBusy) return _qbSyncBusy;
+  const gap = minGapMs == null ? 3 * 60 * 1000 : minGapMs;
+  if (!force && Date.now() - _qbSyncLast < gap) return Promise.resolve(null);
+  _qbSyncLast = Date.now();
+  _qbSyncBusy = conFunctions.httpsCallable('qbSyncPayments')({ companyId: currentCompanyId })
+    .then(r => { const d = r && r.data; if (d && d.updated && d.updated.length) qbShowPaidToast(d.updated); return d; })
+    .catch(e => { console.warn('QuickBooks payment check:', e.message); return { error: e.message }; })
+    .finally(() => { _qbSyncBusy = null; });
+  return _qbSyncBusy;
+}
+function qbShowPaidToast(list) {
+  document.getElementById('qbPaidToast')?.remove();
+  const total = list.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const t = document.createElement('div');
+  t.id = 'qbPaidToast';
+  t.setAttribute('role', 'status');
+  t.style.cssText = 'position:fixed;top:calc(env(safe-area-inset-top) + 14px);left:50%;transform:translateX(-50%);z-index:99999;background:#0d1f35;border:2px solid #1dbb87;border-radius:12px;padding:12px 14px;display:flex;gap:10px;align-items:center;max-width:92vw;box-shadow:0 8px 24px rgba(0,0,0,.4)';
+  t.innerHTML = `<span style="color:#eaf0fb;font-size:.88rem"><strong style="color:#1dbb87">💵 Paid in QuickBooks</strong> ${list.length === 1 ? esc((list[0].number ? list[0].number + ' · ' : '') + list[0].jobName) : list.length + ' invoices'} — $${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} recorded</span>
+    <button onclick="document.getElementById('qbPaidToast')?.remove()" aria-label="Dismiss" style="background:none;border:none;color:#9aa6bd;cursor:pointer;font-size:1.1rem">✕</button>`;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 15000);
+}
+setInterval(() => { qbSyncPaymentsNow(false, 15 * 60 * 1000); }, 60 * 1000);
+window.qbSyncPaymentsNow = qbSyncPaymentsNow;

@@ -1309,8 +1309,17 @@ async function syncInvoiceToQbo(companyId, jobId, invoiceId) {
   const freshInv = (await invRef.get()).data();
   const amtPaid = freshInv.amtPaid || 0;
   const lastSynced = freshInv.qbLastSyncedAmtPaid || 0;
+  // QBO_PAYMENT_PULL_V1: never record more than QuickBooks says is still
+  // owed -- if the customer already paid through the QuickBooks pay link,
+  // the money is in QuickBooks and must not be entered a second time.
+  let qbBalance = null;
   if (amtPaid > lastSynced) {
-    const deltaAmt = amtPaid - lastSynced;
+    try { const q = await qboFetch(companyId, 'GET', `invoice/${qbInvoiceId}`); qbBalance = Number(q?.Invoice?.Balance); } catch (e) { qbBalance = null; }
+  }
+  if (amtPaid > lastSynced && qbBalance !== null && !isNaN(qbBalance) && qbBalance <= 0.009) {
+    await invRef.update({ qbLastSyncedAmtPaid: amtPaid });
+  } else if (amtPaid > lastSynced) {
+    const deltaAmt = (qbBalance !== null && !isNaN(qbBalance)) ? Math.min(amtPaid - lastSynced, qbBalance) : amtPaid - lastSynced;
     const createdPayment = await qboFetch(companyId, 'POST', 'payment', {
       CustomerRef: { value: qbCustomerId },
       TotalAmt: deltaAmt,
@@ -1325,6 +1334,99 @@ async function syncInvoiceToQbo(companyId, jobId, invoiceId) {
 
   return { success: true, qbInvoiceId };
 }
+
+// ════════════════════════════════════════════════════
+// ── QuickBooks -> JOBSMETRIX payment sync (QBO_PAYMENT_PULL_V1, 2026-10-11)
+// ════════════════════════════════════════════════════
+// Invoices go out with QuickBooks Payments' own pay link (qbPaymentLink).
+// When a customer pays there, QuickBooks knows -- JOBSMETRIX didn't, so
+// the invoice stayed unpaid, the deposit gate stayed shut, and the P/L
+// missed the cash. This reads every pushed, not-fully-paid invoice back
+// from QuickBooks (Balance vs TotalAmt) and records whatever was paid
+// there. Runs when an owner opens JOBSMETRIX (every 15 min while it's
+// open), on the Pipeline tab refresh, on a job's Invoices tab, and on
+// the "Check QuickBooks for payments" button. No Intuit webhook setup
+// needed. Payments recorded here set qbLastSyncedAmtPaid too, so the
+// push in syncInvoiceToQbo never sends them back to QuickBooks twice.
+const QBO_PULL_EARLY_STATUSES = ['New Lead', 'Appointment Set', 'Building Estimate', 'Submitted'];
+
+async function pullQboPayments(companyId) {
+  const db = admin.firestore();
+  const jobsSnap = await db.collection('companies').doc(companyId).collection('jobs').get();
+  const targets = [];
+  await Promise.all(jobsSnap.docs.map(async jd => {
+    const job = jd.data();
+    if (job.status === 'Closed Lost') return;
+    const invSnap = await jd.ref.collection('invoices').get();
+    invSnap.forEach(d => {
+      const inv = d.data();
+      if (!inv.qbInvoiceId || inv.status === 'Paid' || inv.status === 'Void') return;
+      if ((Number(inv.total) || 0) - (Number(inv.amtPaid) || 0) <= 0.009) return;
+      targets.push({ jobRef: jd.ref, jobId: jd.id, job, invRef: d.ref, invId: d.id, inv });
+    });
+  }));
+  const updated = [];
+  for (let i = 0; i < targets.length; i += 30) {
+    const chunk = targets.slice(i, i + 30);
+    const ids = chunk.map(t => `'${qboEsc(t.inv.qbInvoiceId)}'`).join(',');
+    const result = await qboFetch(companyId, 'GET',
+      `query?query=${encodeURIComponent(`SELECT * FROM Invoice WHERE Id IN (${ids}) MAXRESULTS 30`)}`);
+    const byId = {};
+    (result?.QueryResponse?.Invoice || []).forEach(q => { byId[q.Id] = q; });
+    for (const t of chunk) {
+      const q = byId[t.inv.qbInvoiceId];
+      if (!q) continue;
+      const qTotal = Number(q.TotalAmt) || 0, qBal = Number(q.Balance) || 0;
+      const paidInQbo = Math.round((qTotal - qBal) * 100) / 100;
+      const total = Number(t.inv.total) || 0;
+      const had = Number(t.inv.amtPaid) || 0;
+      if (paidInQbo <= had + 0.009) continue;
+      const newPaid = Math.min(total || paidInQbo, paidInQbo);
+      const amountNow = Math.round((newPaid - had) * 100) / 100;
+      const full = newPaid >= total - 0.009;
+      const today = new Date().toISOString().split('T')[0];
+      const upd = {
+        amtPaid: newPaid,
+        qbLastSyncedAmtPaid: Math.max(Number(t.inv.qbLastSyncedAmtPaid) || 0, paidInQbo),
+        status: full ? 'Paid' : 'Partial',
+        paymentMethod: 'QuickBooks Payments',
+        qbPaymentPulledAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      if (full) upd.paidDate = today;
+      await t.invRef.update(upd);
+      const amtStr = amountNow.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      await t.jobRef.collection('logs').add({
+        date: today,
+        notes: `Invoice ${t.inv.number || ''} ${full ? 'paid' : 'partly paid'} in QuickBooks — $${amtStr}`.replace('  ', ' '),
+        type: 'invoice_paid', userName: 'QuickBooks (auto)', companyId,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      }).catch(() => {});
+      // Same forward-only advance the manual Mark Paid does.
+      if (QBO_PULL_EARLY_STATUSES.includes(t.job.status)) {
+        await t.jobRef.update({ status: 'To Be Scheduled', statusDate: today, updatedAt: admin.firestore.FieldValue.serverTimestamp(), updatedBy: 'QuickBooks (auto)' }).catch(() => {});
+      }
+      updated.push({ jobId: t.jobId, invoiceId: t.invId, number: t.inv.number || '', jobName: t.job.address || t.job.name || '', amount: amountNow, full });
+    }
+  }
+  await db.collection('companies').doc(companyId).collection('settings').doc('quickbooks')
+    .set({ lastPaymentPullAt: Date.now(), lastPaymentPullChecked: targets.length }, { merge: true }).catch(() => {});
+  return { checked: targets.length, updated };
+}
+
+exports.qbSyncPayments = functions.runWith({ secrets: ['QBO_CLIENT_ID', 'QBO_CLIENT_SECRET', 'QBO_REDIRECT_URI', 'QBO_ENVIRONMENT', 'QBO_TOKEN_ENCRYPTION_KEY'], timeoutSeconds: 120 }).https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be signed in.');
+  const { companyId } = data || {};
+  if (!companyId || context.auth.token.companyId !== companyId) {
+    throw new functions.https.HttpsError('permission-denied', 'Not a member of this company.');
+  }
+  try {
+    return await pullQboPayments(companyId);
+  } catch (e) {
+    console.error('qbSyncPayments failed:', e.message);
+    throw new functions.https.HttpsError('internal', e.message);
+  }
+});
 
 exports.qbCreateInvoice = functions.runWith({ secrets: ['QBO_CLIENT_ID', 'QBO_CLIENT_SECRET', 'QBO_REDIRECT_URI', 'QBO_ENVIRONMENT', 'QBO_TOKEN_ENCRYPTION_KEY'] }).https.onCall(async (data, context) => {
   if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be signed in.');
