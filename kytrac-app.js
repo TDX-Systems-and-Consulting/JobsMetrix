@@ -422,7 +422,7 @@ function initDragDrop(boardId) {
       if (!col.contains(e.relatedTarget)) col.classList.remove('drag-over');
     });
 
-    col.addEventListener('drop', e => {
+    col.addEventListener('drop', async e => {
       e.preventDefault();
       e.stopPropagation();
       board.querySelectorAll('.kt-col').forEach(c => c.classList.remove('drag-over'));
@@ -442,6 +442,7 @@ function initDragDrop(boardId) {
 
       const closedLost = getClosedLostReasonIfNeeded(prevStatus, newStatus);
       if (closedLost.needed && closedLost.aborted) return; // user cancelled, don't move the card
+      if (!(await depositGateOk(job, newStatus))) { _dragJobId = null; return; } // DEPOSIT_GATE_V1
 
       console.log('Moving job', jobId, 'to', newStatus);
       // Optimistically update local state for instant visual feedback
@@ -1478,19 +1479,39 @@ function conRenderStats() {
     });
   }
 
-  // Close Rate — approved ÷ (approved + declined) proposals
+  // CLOSE_RATE_V2 (2026-10-11): per job, for proposals sent in the last
+  // 90 days. Won = signed (job reached To Be Scheduled or later, or a
+  // proposal approved). Lost = Closed Lost, declined, or still unsigned
+  // 45 days after it was sent. Proposals under 45 days old with no answer
+  // aren't counted yet. (The old version only counted proposals someone
+  // remembered to mark Declined, so it showed ~100%.)
   if (conDb) {
-    let approved = 0, total = 0;
+    const DAY = 864e5, nowMs = Date.now();
+    const WON_ST = ['To Be Scheduled', 'Permitting', 'Scheduled', 'In Progress', 'Inspection Pending', 'Complete', 'Closed Completed'];
+    const toMs = v => !v ? 0 : typeof v.toMillis === 'function' ? v.toMillis() : typeof v === 'number' ? v : (Date.parse(v) || 0);
+    let approved = 0, total = 0, lostCt = 0;
     const crPromises = conJobs.map(j =>
       coll('jobs').doc(j.id).collection('proposals').get()
-        .then(s => s.forEach(d => {
-          const st = d.data().status;
-          if (st === 'approved') { approved++; total++; }
-          else if (st === 'declined') total++;
-        })).catch(() => {})
+        .then(s => {
+          let sent = 0, anyApproved = false, anyDeclined = false;
+          s.forEach(d => {
+            const p = d.data();
+            if (!p.status || p.status === 'draft') return;
+            const t = toMs(p.sentAt) || toMs(p.createdAt);
+            if (t && (!sent || t < sent)) sent = t;
+            if (p.status === 'approved') anyApproved = true;
+            if (p.status === 'declined') anyDeclined = true;
+          });
+          if (!sent || nowMs - sent > 90 * DAY) return;
+          if (j.status === 'Closed Lost') { total++; lostCt++; }
+          else if (anyApproved || WON_ST.includes(j.status)) { approved++; total++; }
+          else if (anyDeclined || nowMs - sent > 45 * DAY) { total++; lostCt++; }
+        }).catch(() => {})
     );
     Promise.all(crPromises).then(() => {
       const rate = total > 0 ? Math.round(approved / total * 100) : null;
+      const crTile = document.getElementById('statCloseRateTile');
+      if (crTile) crTile.title = `Last 90 days: ${approved} signed, ${lostCt} lost (declined, Closed Lost, or unsigned after 45 days). Newer unanswered proposals aren't counted yet.`;
       const crColor = rate === null ? '#94a3b8' : rate >= 50 ? '#1dbb87' : rate >= 30 ? '#f59e0b' : '#ef5350';
       setTile('statCloseRate', 'statCloseRateTile', rate !== null ? rate + '%' : '—', crColor);
       _pulseCloseRate = rate;
@@ -6405,6 +6426,17 @@ function commitJobStatusChange(newStatus) {
   if ((newStatus === 'To Be Scheduled' || newStatus === 'Scheduled') && !(job.accessInfo && job.accessInfo.trim())) {
     alert('Entry Information is required before this job can move to "' + newStatus + '".\n\nGo to the "🔑 Entry Info" tab and fill in access/lockbox instructions first.');
     document.getElementById('detailStatusBadge').value = job.status || 'New Lead';
+    return;
+  }
+
+  // DEPOSIT_GATE_V1: no deposit, no start date.
+  if (DEPOSIT_GATE_STATUSES.includes(newStatus) && !job._depositGatePassed) {
+    depositGateOk(job, newStatus).then(ok => {
+      if (!ok) { const b = document.getElementById('detailStatusBadge'); if (b) b.value = job.status || 'New Lead'; return; }
+      if (conCurrentJobId !== jobId) return;
+      job._depositGatePassed = true;
+      try { commitJobStatusChange(newStatus); } finally { delete job._depositGatePassed; }
+    });
     return;
   }
 
@@ -25221,7 +25253,7 @@ async function opMaybeImportOldEos() {
 }
 
 const OP_TABS = [
-  ['dashboard', '🏠 Dashboard'], ['l10', '⏱ Level 10'], ['scorecard', '📊 Scorecard'], ['rocks', '🪨 Rocks'],
+  ['dashboard', '🏠 Dashboard'], ['pipeline', '🏗 Pipeline vs Backlog'], ['l10', '⏱ Level 10'], ['scorecard', '📊 Scorecard'], ['rocks', '🪨 Rocks'],
   ['issues', '⚠️ Issues'], ['todos', '✅ To-Dos'], ['vto', '🧭 V/TO'], ['chart', '👥 Accountability'],
   ['quarterly', '📅 Quarterly'], ['financials', '💰 Financials'],
 ];
@@ -25245,7 +25277,7 @@ function renderOwnerPortalBody() {
   if (fin) fin.style.display = opTab === 'financials' ? 'block' : 'none';
   if (opTab === 'financials') { body.innerHTML = ''; return opRenderFinancials(); }
   if (opTab === 'l10' && _opL10 && document.getElementById('opL10Live')) return opRenderL10(); // keep live meeting in place
-  const r = { dashboard: opRenderDashboard, l10: opRenderL10, scorecard: opRenderScorecard, rocks: opRenderRocks, issues: opRenderIssues, todos: opRenderTodos, vto: opRenderVto, chart: opRenderChart, quarterly: opRenderQuarterly }[opTab];
+  const r = { dashboard: opRenderDashboard, pipeline: opRenderPipeline, l10: opRenderL10, scorecard: opRenderScorecard, rocks: opRenderRocks, issues: opRenderIssues, todos: opRenderTodos, vto: opRenderVto, chart: opRenderChart, quarterly: opRenderQuarterly }[opTab];
   if (r) r(body);
 }
 
@@ -35451,3 +35483,200 @@ function dismissBoardRequest() {
     .catch(err => alert('Error: ' + err.message));
 }
 window.dismissBoardRequest = dismissBoardRequest;
+
+// ════════════════════════════════════════════════════════════════════
+// ── DEPOSIT GATE + PIPELINE VS BACKLOG (NEW 2026-10-11) ──
+// ════════════════════════════════════════════════════════════════════
+// DEPOSIT_GATE_V1: no deposit, no start date. A job can't move to
+// Scheduled or In Progress until a customer payment (the deposit
+// invoice) is marked Paid on it. Signing still moves a job to To Be
+// Scheduled automatically -- the gate is on putting a crew on it.
+// Travis/Jason can override (logged to the job's Activity); nobody
+// else can.
+const DEPOSIT_GATE_STATUSES = ['Scheduled', 'In Progress'];
+const DEPOSIT_GATE_PAST = ['Scheduled', 'In Progress', 'Inspection Pending', 'Complete', 'Closed Completed'];
+
+async function jobDepositInfo(jobId) {
+  const s = await coll('jobs').doc(jobId).collection('invoices').get();
+  let paid = 0, firstDate = '';
+  s.forEach(d => {
+    const i = d.data();
+    if (i.status !== 'Paid') return;
+    const a = Number(i.amtPaid) || Number(i.total) || 0;
+    if (a <= 0) return;
+    paid += a;
+    if (i.paidDate && (!firstDate || i.paidDate < firstDate)) firstDate = i.paidDate;
+  });
+  return { paid, firstDate };
+}
+
+async function depositGateOk(job, newStatus) {
+  if (!job || !DEPOSIT_GATE_STATUSES.includes(newStatus)) return true;
+  if (DEPOSIT_GATE_PAST.includes(job.status)) return true; // already working -- not a new start
+  if (job.depositOverride) return true;
+  let info = null;
+  try { info = await jobDepositInfo(job.id); } catch (e) { console.warn('deposit check', e); }
+  if (info && info.paid > 0) return true;
+  const label = ((job.jobNumber || '') + ' ' + (typeof jobLabelParts === 'function' ? jobLabelParts(job) : '')).trim() || 'this job';
+  if (canViewFinancialsTab()) {
+    const ok = confirm(`No deposit has been received on ${label}.\n\nRule: no deposit, no start date. Mark the deposit invoice Paid on the Invoices tab first.\n\nOwner override: schedule it anyway? This is logged to the job's Activity.`);
+    if (ok) {
+      const who = conCurrentUser?.email || 'unknown';
+      coll('jobs').doc(job.id).update({ depositOverride: { by: who, at: new Date().toISOString() } }).catch(() => {});
+      job.depositOverride = { by: who };
+      coll('jobs').doc(job.id).collection('logs').add({
+        date: new Date().toISOString().split('T')[0],
+        notes: `Moved to ${newStatus} with NO deposit received — owner override by ${who}.`,
+        type: 'deposit_override', userName: conCurrentUser?.displayName || who,
+        companyId: currentCompanyId, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      }).catch(() => {});
+    }
+    return ok;
+  }
+  alert(`No deposit received on ${label}.\n\nNo deposit, no start date: this job can't move to "${newStatus}" until its deposit invoice is marked Paid. Talk to Travis or Jason.`);
+  return false;
+}
+
+// Job edit form (the full saveJob override above) goes through the gate too.
+const _dgOrigSaveJob = window.saveJob;
+window.saveJob = function (openEstimate) {
+  const newStatus = document.getElementById('jobStatus')?.value || '';
+  if (!DEPOSIT_GATE_STATUSES.includes(newStatus)) return _dgOrigSaveJob(openEstimate);
+  const job = conEditingJobId ? conJobs.find(j => j.id === conEditingJobId) : null;
+  if (job && job.status === newStatus) return _dgOrigSaveJob(openEstimate);
+  if (!job) {
+    alert(`A new job can't start as "${newStatus}" — no deposit has been received yet. Save it as To Be Scheduled, mark the deposit Paid, then schedule it.`);
+    return;
+  }
+  depositGateOk(job, newStatus).then(ok => { if (ok) _dgOrigSaveJob(openEstimate); });
+};
+
+// PIPELINE_BACKLOG_V1: Owner Portal tab. Pipeline = work that might
+// happen; Backlog = signed AND deposit received, the only work that
+// keeps crews busy.
+const PB_SIGNED = ['To Be Scheduled', 'Permitting', 'Scheduled', 'In Progress', 'Inspection Pending'];
+const PB_BIDS = ['Building Estimate', 'Submitted'];
+let _opPipe = null, _opPipeLoading = false;
+
+function opRenderPipeline(body) {
+  body.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      <div><div style="font-weight:900;font-size:1.05rem">Pipeline vs. Backlog</div>
+      <div class="small muted" style="max-width:620px">Backlog = signed <b>and</b> deposit received. Pipeline = everything that might happen. Only backlog keeps crews working.</div></div>
+      <button class="btn-amber" onclick="opLoadPipeline()" style="padding:8px 14px">↻ Refresh</button></div>
+    <div id="opPipe"></div>`;
+  if (!_opPipe && !_opPipeLoading) opLoadPipeline(); else opDrawPipeline();
+}
+
+async function opPipeValue(j, signed) {
+  const cv = Number(j.contractValue) || 0;
+  if (signed && cv > 0) return cv;
+  try { const s = await getJobEstimateSplit(j.id); const v = (s.matPrice || 0) + (s.labPrice || 0); if (v > 0) return v; } catch (e) { /* fall through */ }
+  return cv;
+}
+
+async function opLoadPipeline() {
+  const el = document.getElementById('opPipe');
+  _opPipeLoading = true;
+  const jobs = conJobs.filter(j => PB_SIGNED.includes(j.status) || PB_BIDS.includes(j.status));
+  if (el) el.innerHTML = `<div class="small muted">Checking deposits on ${jobs.length} jobs…</div>`;
+  try {
+    const rows = [];
+    for (let i = 0; i < jobs.length; i += 5) {
+      const chunk = await Promise.all(jobs.slice(i, i + 5).map(async j => {
+        const signed = PB_SIGNED.includes(j.status);
+        const [dep, value] = await Promise.all([jobDepositInfo(j.id).catch(() => ({ paid: 0, firstDate: '' })), opPipeValue(j, signed)]);
+        return { job: j, signed, paid: dep.paid, depDate: dep.firstDate, value };
+      }));
+      rows.push(...chunk);
+      if (el) el.innerHTML = `<div class="small muted">Checking deposits… ${rows.length} of ${jobs.length}</div>`;
+    }
+    _opPipe = { rows, at: new Date() };
+  } finally { _opPipeLoading = false; }
+  opDrawPipeline();
+}
+
+function opWorkdaysUntil(iso) {
+  if (!iso) return 0;
+  const end = new Date(iso + 'T12:00:00'), d = new Date(); d.setHours(12, 0, 0, 0);
+  let n = 0;
+  while (d <= end && n < 400) { const w = d.getDay(); if (w !== 0 && w !== 6) n++; d.setDate(d.getDate() + 1); }
+  return n;
+}
+function opShortDate(iso) { if (!iso) return '—'; const d = new Date(iso + 'T12:00:00'); return isNaN(d) ? iso : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); }
+
+function opDrawPipeline() {
+  const el = document.getElementById('opPipe');
+  if (!el || !_opPipe) return;
+  const rows = _opPipe.rows;
+  const backlog = rows.filter(r => r.signed && (r.paid > 0 || r.job.depositOverride));
+  const blocked = rows.filter(r => r.signed && !(r.paid > 0 || r.job.depositOverride));
+  const bids = rows.filter(r => !r.signed);
+  const sum = a => a.reduce((s, r) => s + (r.value || 0), 0);
+  const today = opToday();
+  const ends = backlog.map(r => r.job.endDate).filter(Boolean).sort();
+  const lastEnd = ends.length ? ends[ends.length - 1] : '';
+  const days = lastEnd && lastEnd >= today ? opWorkdaysUntil(lastEnd) : 0;
+  const daysColor = days >= 20 ? OP_GREEN : days >= 10 ? OP_AMBER : OP_RED;
+
+  // Customer concentration across everything open.
+  const byClient = {};
+  rows.forEach(r => { const c = (r.job.client || 'Unknown').trim(); byClient[c] = (byClient[c] || 0) + (r.value || 0); });
+  const totalOpen = sum(rows);
+  const top = Object.entries(byClient).sort((a, b) => b[1] - a[1])[0];
+  const topPct = top && totalOpen ? Math.round(top[1] / totalOpen * 100) : 0;
+
+  // Crew booked-through, from crew assigned on backlog jobs.
+  const crew = {};
+  backlog.forEach(r => (r.job.crew || []).forEach(c => { const n = c.name || c.email; if (!n) return; const e = r.job.endDate || ''; if (!crew[n] || e > crew[n]) crew[n] = e; }));
+
+  const tile = (label, val, sub, color) => `<div style="${OP_CARD};flex:1 1 180px">
+    <div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">${label}</div>
+    <div style="font-size:1.45rem;font-weight:900;${color ? 'color:' + color : ''}">${val}</div>
+    <div class="small muted">${sub}</div></div>`;
+
+  const td = 'padding:6px 8px;border-bottom:1px solid var(--line)';
+  const num = 'text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap';
+  const table = (list, kind) => {
+    if (!list.length) return `<div class="small muted" style="padding:6px 0 2px">${kind === 'backlog' ? 'Nothing booked. No crew has deposit-backed work.' : kind === 'blocked' ? 'None.' : 'No bids out.'}</div>`;
+    return `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.84rem">
+      <tr style="font-size:.7rem;text-transform:uppercase;color:var(--muted)"><td style="${td}">Job</td><td style="${td}">Client</td><td style="${td}">Status</td><td style="${td};${num}">Value</td><td style="${td};${num}">Paid so far</td><td style="${td}">Start</td><td style="${td}">End</td><td style="${td}">Crew</td></tr>
+      ${list.sort((a, b) => (a.job.startDate || '9').localeCompare(b.job.startDate || '9')).map(r => {
+        const j = r.job;
+        const crewTxt = (j.crew || []).map(c => c.name || c.email).filter(Boolean).join(', ');
+        const missing = kind === 'backlog' && (!j.startDate || !j.endDate);
+        return `<tr style="cursor:pointer" onclick="openJobDetail('${j.id}')">
+          <td style="${td};font-weight:700;white-space:nowrap">${esc(j.jobNumber || '')} <span class="muted" style="font-weight:400">${esc(jobLabelParts(j))}</span></td>
+          <td style="${td}">${esc(j.client || '')}</td>
+          <td style="${td}" class="small muted">${esc(j.status || '')}${j.depositOverride && !(r.paid > 0) ? ' ' + OP_PILL('no deposit · override', OP_AMBER) : ''}</td>
+          <td style="${td};${num};font-weight:700">${opMoney(r.value)}</td>
+          <td style="${td};${num};color:${r.paid > 0 ? OP_GREEN : 'var(--muted)'}">${r.paid > 0 ? opMoney(r.paid) : '—'}</td>
+          <td style="${td};white-space:nowrap">${opShortDate(j.startDate)}</td>
+          <td style="${td};white-space:nowrap;${missing ? 'color:' + OP_AMBER : ''}">${missing && !j.endDate ? 'no end date' : opShortDate(j.endDate)}</td>
+          <td style="${td}" class="small">${esc(crewTxt) || '<span class="muted">—</span>'}</td></tr>`;
+      }).join('')}</table></div>`;
+  };
+  const section = (title, sub, color, list, kind) => `<div style="${OP_CARD};margin-bottom:14px;border-left:4px solid ${color}">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap"><div style="font-weight:900">${title}</div><div style="font-weight:900;font-variant-numeric:tabular-nums">${opMoney(sum(list))} · ${list.length} job${list.length === 1 ? '' : 's'}</div></div>
+    <div class="small muted" style="margin-bottom:6px">${sub}</div>${table(list, kind)}</div>`;
+
+  el.innerHTML = `
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+      ${tile('Backlog (deposit in)', opMoney(sum(backlog)), `${backlog.length} job${backlog.length === 1 ? '' : 's'} crews can work`, backlog.length ? OP_GREEN : OP_RED)}
+      ${tile('Work booked through', lastEnd ? opShortDate(lastEnd) : 'Nothing booked', lastEnd ? `${days} work day${days === 1 ? '' : 's'} from today` : 'add end dates to backlog jobs', daysColor)}
+      ${tile('Signed, no deposit', opMoney(sum(blocked)), `${blocked.length} job${blocked.length === 1 ? '' : 's'} can't be scheduled`, blocked.length ? OP_AMBER : '')}
+      ${tile('Bids out', opMoney(sum(bids)), `${bids.length} estimate${bids.length === 1 ? '' : 's'} / proposals`, '')}
+      ${tile('Biggest client', top ? topPct + '%' : '—', top ? `of open value is ${esc(top[0])}` : 'no open work', topPct > 40 ? OP_RED : topPct > 25 ? OP_AMBER : OP_GREEN)}
+    </div>
+    ${Object.keys(crew).length ? `<div style="${OP_CARD};margin-bottom:14px"><div style="font-weight:900;margin-bottom:6px">Crew booked through</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">${Object.entries(crew).sort((a, b) => (a[1] || '').localeCompare(b[1] || '')).map(([n, e]) => {
+        const c = !e || e < today ? OP_RED : opWorkdaysUntil(e) < 10 ? OP_AMBER : OP_GREEN;
+        return `<span style="padding:4px 10px;border:1px solid ${c};border-radius:999px;font-size:.8rem"><b>${esc(n)}</b> <span style="color:${c}">${e ? opShortDate(e) : 'no end date'}</span></span>`;
+      }).join('')}</div>
+      <div class="small muted" style="margin-top:6px">From the crew checked on each backlog job. Anyone not listed has no deposit-backed work.</div></div>` : ''}
+    ${section('✅ Backlog — signed and deposit received', 'Real work. Crews can be scheduled on these.', OP_GREEN, backlog, 'backlog')}
+    ${section('⛔ Signed, waiting on deposit', 'No deposit, no start date. Collect the deposit before any crew is promised this work.', OP_AMBER, blocked, 'blocked')}
+    ${section('📝 Pipeline — bids out', 'Might happen. Not work until signed and a deposit is in.', OP_BLUE, bids, 'bids')}
+    <div class="small muted">Value = signed contract value, or the estimate total if not signed yet. "Paid so far" = invoices marked Paid. Checked ${_opPipe.at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}. Click a job to open it.</div>`;
+}
+
+Object.assign(window, { opLoadPipeline, depositGateOk, jobDepositInfo });
