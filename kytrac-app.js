@@ -19503,7 +19503,8 @@ function renderPortalProposal(prop, jobId) {
       const itemsHtml = (c.items || []).length
         ? c.items.filter(it => it.label || it.notes).map(it => {
             const itPrice = data.itemized ? `<span style="float:right;color:#cbd5e1">$${it.price.toFixed(2)}</span>` : '';
-            const nameLine = it.label ? `${esc(it.label)}${itPrice}` : '';
+            const qtyTag = it.qtyText ? ` <span style="color:#cbd5e1;font-weight:700;white-space:nowrap">· ${esc(it.qtyText)}</span>` : '';
+            const nameLine = it.label ? `${esc(it.label)}${qtyTag}${itPrice}` : '';
             return `<div style="font-size:.82rem;color:var(--muted);padding-left:16px;margin-bottom:2px">
               ${nameLine}
               ${it.notes ? `<div style="font-size:.78rem;font-style:italic;color:var(--muted);white-space:pre-wrap">${esc(it.notes)}</div>` : ''}
@@ -26751,7 +26752,7 @@ function computeProposalData(job, itemized, showCategoryPricing) {
         if (item.visibleToCustomer === false) return null;
         const price = (item.qty || 1) * (item.unitPrice || item.unitCost || 0);
         if (price <= 0) return null;
-        return { label: itemDescriptionText(item.desc || item.name), price, notes: item.notes || '' };
+        return { label: itemDescriptionText(item.desc || item.name), price, notes: item.notes || '', qtyText: fmtItemQty(item) };
       }).filter(Boolean);
 
       return {
@@ -26827,7 +26828,8 @@ function renderProposalDocumentHtml(data, job, co, autoPrint) {
         ? `<div class="cat-items">${c.items.map(it => {
             if (!it.label && !it.notes) return '';
             const itPrice = itemized ? `<span style="float:right;font-weight:600;color:#374151">$${it.price.toFixed(2)}</span>` : '';
-            const nameLine = it.label ? `<div class="cat-item-name">${esc(it.label)}${itPrice}</div>` : '';
+            const qtyTag = it.qtyText ? ` <span style="color:#6b7280;font-weight:700;white-space:nowrap">· ${esc(it.qtyText)}</span>` : '';
+            const nameLine = it.label ? `<div class="cat-item-name">${esc(it.label)}${qtyTag}${itPrice}</div>` : '';
             return `<div class="cat-item">
               ${nameLine}
               ${it.notes ? `<div class="cat-item-note">${esc(it.notes)}</div>` : ''}
@@ -28012,6 +28014,23 @@ function toGenericLabel(name) {
 // clipping it. This keeps the trailing "×N" quantity-suffix cleanup
 // (still useful on a description) without the parenthetical-stripping
 // that only makes sense for short names.
+// PUNCH_QTY_V1 -- "4 ea", "32 sq ft", "250 lf". Crews were reading a
+// line like "Kitchen Can Light" as ONE light when the estimate had 4.
+// Hours are left off on purpose (labor time never shows per item on
+// crew or customer paperwork).
+function fmtItemQty(item) {
+  const unitRaw = String(item && item.unit || '').trim();
+  const u = unitRaw.toLowerCase().replace(/\./g, '');
+  if (u === 'hr' || u === 'hrs' || u === 'hour' || u === 'hours') return '';
+  const n = Number(item && item.qty);
+  const q = (isFinite(n) && n > 0) ? n : 1;
+  const qs = Math.round(q * 100) / 100;
+  const unitMap = { sqft: 'sq ft', sf: 'sq ft', 'sq ft': 'sq ft', lf: 'lf', 'lin ft': 'lf', ea: 'ea', each: 'ea' };
+  const unit = unitMap[u] || unitRaw || 'ea';
+  return qs.toLocaleString() + ' ' + unit;
+}
+window.fmtItemQty = fmtItemQty;
+
 function itemDescriptionText(desc) {
   return (desc || '').replace(/\s*×\d+$/, '').trim() || 'Work';
 }
@@ -28125,27 +28144,36 @@ function printPunchList() {
     // A subgroup is a room. Build one complete printable page for every
     // subgroup instead of combining all rooms beneath the parent group.
     (group.subgroups || []).forEach(sub => {
-      const materialItems = (sub.items||[]).filter(i => i.costType !== 'Labor' && (i.unit||'').toLowerCase() !== 'hr');
       const scopeTasks = punchListScopeTasks(sub);
       if (!(sub.items||[]).length && !scopeTasks.length) return;
-      const qtyDisplay = materialItems.length === 1 ? `${materialItems[0].qty||1} ${materialItems[0].unit||''}`.trim() : '';
-
-      let rows;
-      if (!scopeTasks.length) {
-        rows = `<tr>
-          <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;width:24px"><div style="width:18px;height:18px;border:2px solid #374151;border-radius:3px;display:inline-block"></div></td>
-          <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;font-weight:600">${esc(customerSafeLabel(sub))}</td>
-          <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;white-space:nowrap;color:#6b7280">${esc(qtyDisplay)}</td>
-          <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;width:220px;color:#9ca3af;font-style:italic;font-size:.82rem">Notes: ________________</td>
-        </tr>`;
-      } else {
-        rows = scopeTasks.map((task, taskIndex) => `<tr>
-          <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;width:24px"><div style="width:18px;height:18px;border:2px solid #374151;border-radius:3px;display:inline-block"></div></td>
+      // PUNCH_QTY_V1: list every item with its quantity so the crew sees
+      // "Kitchen Can Light -- 4 ea", not one line they read as a single
+      // light. Hour-based labor stays off (no labor time per item). An
+      // "each" labor line is dropped when the room already has a material
+      // with its own count (outlet x4 + install outlet x4 = one line);
+      // sq ft / lf labor stays, since that's where the measurement lives.
+      const isHr = i => ['hr','hrs','hour','hours'].includes((i.unit||'').toLowerCase().trim());
+      const subItems = (sub.items||[]).filter(i => !isHr(i) && i.visibleToCrew !== false);
+      const hasMaterial = subItems.some(i => i.costType !== 'Labor');
+      const punchItems = subItems.filter(i => {
+        if (i.costType !== 'Labor') return true;
+        const u = (i.unit||'').toLowerCase().replace(/\./g,'').trim();
+        return !hasMaterial || !['', 'ea', 'each'].includes(u);
+      });
+      const box = `<td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;width:24px"><div style="width:18px;height:18px;border:2px solid #374151;border-radius:3px;display:inline-block"></div></td>`;
+      const notesCell = `<td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;width:200px;color:#9ca3af;font-style:italic;font-size:.82rem">Notes: ________________</td>`;
+      const scopeRows = scopeTasks.map(task => `<tr>${box}
           <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;font-weight:600">${esc(task)}</td>
-          <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;white-space:nowrap;color:#6b7280">${taskIndex === 0 ? esc(qtyDisplay) : ''}</td>
-          <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;width:220px;color:#9ca3af;font-style:italic;font-size:.82rem">Notes: ________________</td>
-        </tr>`).join('');
-      }
+          <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb"></td>${notesCell}</tr>`).join('');
+      const itemRows = punchItems.map(i => {
+        const gradeWord = i.bundleTier ? ({ low: 'Low Grade', med: 'Medium Grade', high: 'High Grade' }[i.bundleTier] || '') : '';
+        const label = itemDescriptionText(i.desc || i.name) + (gradeWord ? ' — ' + gradeWord : '');
+        return `<tr>${box}
+          <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;${scopeTasks.length ? 'font-weight:500;color:#374151' : 'font-weight:600'}">${esc(label)}</td>
+          <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;white-space:nowrap;font-weight:800;font-size:1rem;color:#111">${esc(fmtItemQty(i))}</td>${notesCell}</tr>`;
+      }).join('');
+      let rows = scopeRows + itemRows;
+      if (!rows) rows = `<tr>${box}<td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;font-weight:600">${esc(customerSafeLabel(sub))}</td><td style="padding:10px 8px;border-bottom:1px solid #e5e7eb"></td>${notesCell}</tr>`;
 
       punchPages.push({
         title: customerSafeLabel(sub),
@@ -28160,7 +28188,7 @@ function printPunchList() {
       return `<tr>
         <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;width:24px"><div style="width:18px;height:18px;border:2px solid #374151;border-radius:3px;display:inline-block"></div></td>
         <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;font-weight:600">${esc(label)}</td>
-        <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;white-space:nowrap;color:#6b7280">${(item.qty||1)} ${item.unit||''}</td>
+        <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;white-space:nowrap;font-weight:800;font-size:1rem;color:#111">${esc(fmtItemQty(item))}</td>
         <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;width:200px;color:#9ca3af;font-style:italic;font-size:.82rem">Notes: ________________</td>
       </tr>`;
     }
