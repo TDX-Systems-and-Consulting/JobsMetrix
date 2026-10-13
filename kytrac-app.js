@@ -13465,7 +13465,78 @@ window.sendLienWaiver = sendLienWaiver;
 // same way lien waivers auto-populate from invoice data.
 // ════════════════════════════════════════════════════
 
-function buildSubAgreementText(sub, job, co) {
+// SUB_SCOPE_EXHIBIT_V1 -- Exhibit A on the Subcontractor Agreement:
+// the same rooms, tasks and quantities the crew sees on the Punch List
+// (crewScopeItems / punchListScopeTasks), so a sub signs for "Kitchen
+// Can Light -- 4 ea", not just "the agreed scope".
+async function loadEstimateTreeForScope(jobId) {
+  if (jobId === conCurrentJobId && Array.isArray(estGroups) && estGroups.length) return estGroups;
+  const byOrder = (a, b) => (a.order ?? 0) - (b.order ?? 0);
+  const jobRef = coll('jobs').doc(jobId);
+  const gSnap = await jobRef.collection('estimateGroups').get();
+  const groups = await Promise.all(gSnap.docs.map(async gDoc => {
+    const [itSnap, sgSnap] = await Promise.all([gDoc.ref.collection('items').get(), gDoc.ref.collection('subgroups').get()]);
+    const subgroups = await Promise.all(sgSnap.docs.map(async sDoc => {
+      const [sItems, ssSnap] = await Promise.all([sDoc.ref.collection('items').get(), sDoc.ref.collection('subgroups').get()]);
+      const items = sItems.docs.map(d => ({ id: d.id, ...d.data() }));
+      const ssItems = await Promise.all(ssSnap.docs.map(ss => ss.ref.collection('items').get()));
+      ssItems.forEach(snap => snap.forEach(d => items.push({ id: d.id, ...d.data() })));
+      return { id: sDoc.id, ...sDoc.data(), items: items.sort(byOrder) };
+    }));
+    return { id: gDoc.id, ...gDoc.data(), subgroups: subgroups.sort(byOrder), directItems: itSnap.docs.map(d => ({ id: d.id, ...d.data() })).sort(byOrder) };
+  }));
+  return groups.sort(byOrder);
+}
+
+// Returns [{ key, title, lines[] }] -- one per room/section that has
+// something to do. lines are already formatted bullets.
+function buildSubScopeSections(groups) {
+  const out = [];
+  (groups || []).forEach(group => {
+    (group.subgroups || []).forEach(sub => {
+      const tasks = punchListScopeTasks(sub);
+      const items = crewScopeItems(sub);
+      if (!tasks.length && !items.length) return;
+      const lines = [
+        ...tasks.map(t => '   \u2022 ' + t),
+        ...items.map(it => '   \u2022 ' + it.label + (it.qty ? ' \u2014 ' + it.qty : ''))
+      ];
+      const roomTitle = customerSafeLabel(sub);
+      out.push({ key: group.id + '/' + sub.id, title: (group.name && group.name.toLowerCase() !== roomTitle.toLowerCase()) ? group.name + ' \u2014 ' + roomTitle : roomTitle, lines });
+    });
+    const direct = (group.directItems || []).filter(i => i.costType !== 'Labor' && (i.unit||'').toLowerCase() !== 'hr');
+    if (direct.length) out.push({ key: group.id + '/direct', title: group.name || 'General', lines: direct.map(i => '   \u2022 ' + itemDescriptionText(i.desc) + ' \u2014 ' + fmtItemQty(i)) });
+  });
+  return out;
+}
+
+// Owner picks which rooms this sub's agreement covers (a team lead
+// usually takes the whole job; a trade sub only some rooms). Blank =
+// every room. Returns the exhibit text, '' if the estimate is empty,
+// or null if they cancelled.
+async function pickSubScopeExhibit(jobId, sub) {
+  let sections = [];
+  try { sections = buildSubScopeSections(await loadEstimateTreeForScope(jobId)); } catch (e) { console.warn('sub scope exhibit', e); }
+  if (!sections.length) return '';
+  let chosen = sections;
+  if (sections.length > 1) {
+    const list = sections.map((s, i) => `${i + 1}. ${s.title}`).join('\n');
+    const ans = window.prompt(`Which rooms/sections does ${sub.name || 'this sub'}'s agreement cover?\n\n${list}\n\nEnter numbers (e.g. 1,3,4) or leave blank for ALL:`, '');
+    if (ans === null) return null;
+    const nums = String(ans).split(/[^0-9]+/).map(n => parseInt(n, 10)).filter(n => n >= 1 && n <= sections.length);
+    if (nums.length) chosen = sections.filter((_, i) => nums.includes(i + 1));
+  }
+  return [
+    'EXHIBIT A \u2014 SCOPE OF WORK',
+    '',
+    'The Work consists of the following items and quantities from the project estimate. Quantities are as measured for the estimate; Subcontractor shall verify them on site and notify Company in writing before starting if any differ.',
+    '',
+    ...chosen.flatMap(s => ['\u25B8 ' + s.title, ...s.lines, ''])
+  ].join('\n').trim();
+}
+window.pickSubScopeExhibit = pickSubScopeExhibit;
+
+function buildSubAgreementText(sub, job, co, scopeExhibit) {
   const companyName = co.companyName || co.legalName || 'TDX Holdings LLC dba JTXD Contracting';
   const jobName = job.name || 'Project';
   const jobAddress = job.address || 'Address on File';
@@ -13524,7 +13595,7 @@ function buildSubAgreementText(sub, job, co) {
     '',
     `This Subcontractor Agreement ("Agreement") is entered into as of the Agreement Date above by and between ${companyName} ("Company") and ${subName} ("Subcontractor").`,
     '',
-    `1. SCOPE OF WORK. Subcontractor agrees to furnish all labor, equipment, and supervision necessary to perform ${trade} work at ${jobAddress}, in accordance with the agreed scope for this project. Company shall furnish and pay for all materials required for the Work, unless otherwise agreed in writing.`,
+    `1. SCOPE OF WORK. Subcontractor agrees to furnish all labor, equipment, and supervision necessary to perform ${trade} work at ${jobAddress}, ${scopeExhibit ? 'as itemized in Exhibit A (Scope of Work), which is part of this Agreement' : 'in accordance with the agreed scope for this project'}. Company shall furnish and pay for all materials required for the Work, unless otherwise agreed in writing.`,
     '',
     scheduleClause,
     '',
@@ -13547,6 +13618,7 @@ function buildSubAgreementText(sub, job, co) {
     '11. ENTIRE AGREEMENT. This Agreement constitutes the entire agreement between the parties regarding the Work and supersedes all prior negotiations or representations, whether written or oral. This Agreement may only be amended in writing signed by both parties.',
     '',
     'By signing below, Subcontractor acknowledges having read and agreed to the terms of this Agreement, and that Subcontractor\'s electronic signature is legally binding under the federal Electronic Signatures in Global and National Commerce Act (E-SIGN).',
+    ...(scopeExhibit ? ['', '', scopeExhibit] : []),
   ].join('\n');
 }
 
@@ -13564,7 +13636,9 @@ async function sendSubAgreement(jobId, subId) {
   if (!sub) { alert('Subcontractor record not found.'); return; }
   if (!sub.email) { alert('This subcontractor has no email on file \u2014 add one under Contractors before sending.'); return; }
 
-  const agreementText = buildSubAgreementText(sub, job, companyProfile);
+  const scopeExhibit = await pickSubScopeExhibit(jobId, sub);
+  if (scopeExhibit === null) return; // cancelled at the room picker
+  const agreementText = buildSubAgreementText(sub, job, companyProfile, scopeExhibit);
   const hash = await sha256(agreementText);
 
   const agreementData = {
@@ -13672,8 +13746,19 @@ async function printSubAgreement(jobId, subId) {
   if (!sub) { alert('Subcontractor record not found.'); return; }
   const co = companyProfile || {};
   const companyName = co.companyName || co.legalName || 'TDX Holdings LLC dba JTXD Contracting';
-  const text = buildSubAgreementText(sub, job, co).replace(/electronic signature/gi, 'signature');
-  const paras = text.split('\n').slice(1) // first line is the title, shown as a heading below
+  const scopeExhibit = await pickSubScopeExhibit(jobId, sub);
+  if (scopeExhibit === null) return; // cancelled at the room picker
+  const text = buildSubAgreementText(sub, job, co, scopeExhibit).replace(/electronic signature/gi, 'signature');
+  // Exhibit A prints AFTER the signature block, on its own page.
+  const exIdx = scopeExhibit ? text.indexOf('EXHIBIT A') : -1;
+  const mainText = exIdx > 0 ? text.slice(0, exIdx).trimEnd() : text;
+  const exhibitHtml = exIdx > 0 ? `<section class="exhibit">${text.slice(exIdx).split('\n').map(l =>
+      l.trim() === '' ? '<div style="height:8px"></div>'
+      : /^EXHIBIT A/.test(l) ? `<h2>${esc(l)}</h2>`
+      : /^\u25B8 /.test(l) ? `<p class="room">${esc(l.slice(2))}</p>`
+      : /^\s*\u2022/.test(l) ? (() => { const t = l.trim().slice(1).trim(); const k = t.lastIndexOf(' \u2014 '); return `<p class="bullet"><span class="cb"></span>${k > 0 ? esc(t.slice(0, k)) + ' <strong class="q">' + esc(t.slice(k + 3)) + '</strong>' : esc(t)}</p>`; })()
+      : `<p class="exnote">${esc(l)}</p>`).join('')}</section>` : '';
+  const paras = mainText.split('\n').slice(1) // first line is the title, shown as a heading below
     .map(l => l.trim() === '' ? '<div style="height:10px"></div>'
       : /^\d+\.\s/.test(l) ? `<p class="clause">${esc(l).replace(/^(\d+\.\s[A-Z &]+\.)/, '<strong>$1</strong>')}</p>`
       : /^\s*•/.test(l) ? `<p class="bullet">${esc(l.trim())}</p>`
@@ -13697,6 +13782,13 @@ async function printSubAgreement(jobId, subId) {
     .sig{flex:1}.sig-role{font-weight:800;margin-bottom:28px}
     .line{border-bottom:1.5px solid #6b7280;height:30px}.line.short{width:55%}
     .lbl{font-size:.75rem;color:#6b7280;margin:3px 0 14px}
+    .exhibit{page-break-before:always;break-before:page;padding-top:8px}
+    .exhibit h2{font-size:1.1rem;color:#d97706;margin:0 0 6px;letter-spacing:.03em}
+    .exhibit .exnote{color:#4b5563;font-size:.85rem}
+    .exhibit .room{font-weight:800;font-size:.98rem;margin:10px 0 4px;padding:4px 8px;background:#f3f4f6;border-left:3px solid #d97706;break-after:avoid;page-break-after:avoid}
+    .exhibit .bullet{display:flex;align-items:flex-start;gap:8px;padding-left:10px;margin:2px 0}
+    .exhibit .cb{flex:0 0 12px;height:12px;border:1.5px solid #374151;border-radius:2px;margin-top:3px}
+    .exhibit .q{white-space:nowrap}
     @media print{body{padding:16px 24px}}
   </style></head><body>
     <div class="header">
@@ -13712,6 +13804,7 @@ async function printSubAgreement(jobId, subId) {
       ${sigBlock('COMPANY', companyName)}
       ${sigBlock('SUBCONTRACTOR', sub.name || '')}
     </div>
+    ${exhibitHtml}
   </body></html>`;
   const titleEl = document.getElementById('viewProposalModalTitle');
   if (titleEl) titleEl.textContent = '🖨 Sub Agreement — ' + (sub.name || '');
@@ -28114,6 +28207,24 @@ function punchListScopeTasks(sub) {
   return [...new Set(scopeParts)];
 }
 
+// PUNCH_QTY_V1 shared rule: which estimate lines a crew/sub sees for a
+// room, each with its quantity. Used by the Punch List and by the
+// Subcontractor Agreement's Exhibit A so the two can never disagree.
+function crewScopeItems(sub) {
+  const isHr = i => ['hr','hrs','hour','hours'].includes((i.unit||'').toLowerCase().trim());
+  const subItems = (sub.items||[]).filter(i => !isHr(i) && i.visibleToCrew !== false);
+  const hasMaterial = subItems.some(i => i.costType !== 'Labor');
+  return subItems.filter(i => {
+    if (i.costType !== 'Labor') return true;
+    const u = (i.unit||'').toLowerCase().replace(/\./g,'').trim();
+    return !hasMaterial || !['', 'ea', 'each'].includes(u);
+  }).map(i => {
+    const gradeWord = i.bundleTier ? ({ low: 'Low Grade', med: 'Medium Grade', high: 'High Grade' }[i.bundleTier] || '') : '';
+    return { label: itemDescriptionText(i.desc || i.name) + (gradeWord ? ' — ' + gradeWord : ''), qty: fmtItemQty(i), raw: i };
+  });
+}
+window.crewScopeItems = crewScopeItems;
+
 function printPunchList() {
   const job = conJobs.find(j => j.id === conCurrentJobId);
   const co = companyProfile;
@@ -28152,25 +28263,16 @@ function printPunchList() {
       // "each" labor line is dropped when the room already has a material
       // with its own count (outlet x4 + install outlet x4 = one line);
       // sq ft / lf labor stays, since that's where the measurement lives.
-      const isHr = i => ['hr','hrs','hour','hours'].includes((i.unit||'').toLowerCase().trim());
-      const subItems = (sub.items||[]).filter(i => !isHr(i) && i.visibleToCrew !== false);
-      const hasMaterial = subItems.some(i => i.costType !== 'Labor');
-      const punchItems = subItems.filter(i => {
-        if (i.costType !== 'Labor') return true;
-        const u = (i.unit||'').toLowerCase().replace(/\./g,'').trim();
-        return !hasMaterial || !['', 'ea', 'each'].includes(u);
-      });
+      const punchItems = crewScopeItems(sub);
       const box = `<td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;width:24px"><div style="width:18px;height:18px;border:2px solid #374151;border-radius:3px;display:inline-block"></div></td>`;
       const notesCell = `<td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;width:200px;color:#9ca3af;font-style:italic;font-size:.82rem">Notes: ________________</td>`;
       const scopeRows = scopeTasks.map(task => `<tr>${box}
           <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;font-weight:600">${esc(task)}</td>
           <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb"></td>${notesCell}</tr>`).join('');
-      const itemRows = punchItems.map(i => {
-        const gradeWord = i.bundleTier ? ({ low: 'Low Grade', med: 'Medium Grade', high: 'High Grade' }[i.bundleTier] || '') : '';
-        const label = itemDescriptionText(i.desc || i.name) + (gradeWord ? ' — ' + gradeWord : '');
+      const itemRows = punchItems.map(pi => {
         return `<tr>${box}
-          <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;${scopeTasks.length ? 'font-weight:500;color:#374151' : 'font-weight:600'}">${esc(label)}</td>
-          <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;white-space:nowrap;font-weight:800;font-size:1rem;color:#111">${esc(fmtItemQty(i))}</td>${notesCell}</tr>`;
+          <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;${scopeTasks.length ? 'font-weight:500;color:#374151' : 'font-weight:600'}">${esc(pi.label)}</td>
+          <td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;white-space:nowrap;font-weight:800;font-size:1rem;color:#111">${esc(pi.qty)}</td>${notesCell}</tr>`;
       }).join('');
       let rows = scopeRows + itemRows;
       if (!rows) rows = `<tr>${box}<td style="padding:10px 8px;border-bottom:1px solid #e5e7eb;font-weight:600">${esc(customerSafeLabel(sub))}</td><td style="padding:10px 8px;border-bottom:1px solid #e5e7eb"></td>${notesCell}</tr>`;
