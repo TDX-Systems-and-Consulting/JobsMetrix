@@ -963,7 +963,8 @@ const KYTRAC_STATUSES = [
   {name:'Permitting',         color:'#0d9488', group:'active'},
   {name:'Scheduled',          color:'#3b82f6', group:'active'},
   {name:'In Progress',        color:'#3b82f6', group:'active'},
-  {name:'Inspection Pending', color:'#ef4444', group:'active'},
+  {name:'Customer Inspection', color:'#f59e0b', group:'active'}, // BOARD_COLS_V2: customer walkthrough / punch sign-off
+  {name:'Inspection Pending', color:'#ef4444', group:'active'}, // shown as 'Occupancy Inspection' (city)
   {name:'Complete',           color:'#7c3aed', group:'finance'},
   {name:'Closed Completed',   color:'#6b7280', group:'closed'},
   {name:'Closed Lost',        color:'#6b7280', group:'closed'},
@@ -980,10 +981,14 @@ const KANBAN_COLUMNS = [
   {label:'Appointment Set',   color:'#f97316', statuses:['Appointment Set'],     dropStatus:'Appointment Set',   group:'estimates', hidden:false},
   {label:'Building Estimate', color:'#d97706', statuses:['Building Estimate'],   dropStatus:'Building Estimate', group:'estimates', hidden:false},
   {label:'Submitted',         color:'#d97706', statuses:['Submitted'],           dropStatus:'Submitted',         group:'estimates', hidden:false},
-  {label:'To Be Scheduled',   color:'#0d9488', statuses:['To Be Scheduled','Permitting'], dropStatus:'To Be Scheduled', group:'active', hidden:false},
+  {label:'To Be Scheduled',   color:'#0d9488', statuses:['To Be Scheduled'],     dropStatus:'To Be Scheduled',   group:'active',   hidden:false},
+  // BOARD_COLS_V2 (2026-10-14): deposit paid, waiting on the city's permit before it can be scheduled
+  {label:'Permitting',        color:'#0891b2', statuses:['Permitting'],          dropStatus:'Permitting',        group:'active',   hidden:false},
   {label:'Scheduled',         color:'#3b82f6', statuses:['Scheduled'],           dropStatus:'Scheduled',         group:'active',   hidden:false},
   {label:'In Progress',       color:'#3b82f6', statuses:['In Progress'],         dropStatus:'In Progress',       group:'active',   hidden:false},
-  {label:'Inspection Pending',color:'#ef4444', statuses:['Inspection Pending'],  dropStatus:'Inspection Pending',group:'active',   hidden:false},
+  {label:'Customer Inspection', color:'#f59e0b', statuses:['Customer Inspection'], dropStatus:'Customer Inspection', group:'active', hidden:false},
+  // Status value stays 'Inspection Pending' so existing jobs, SLAs and reports keep working
+  {label:'Occupancy Inspection', color:'#ef4444', statuses:['Inspection Pending'], dropStatus:'Inspection Pending', group:'active', hidden:false},
   {label:'Complete – Awaiting Final Payment', color:'#7c3aed', statuses:['Complete'], dropStatus:'Complete', group:'finance', hidden:false},
   {label:'Closed Completed',  color:'#6b7280', statuses:['Closed Completed'],    dropStatus:'Closed Completed',  group:'closed',   hidden:true},
   {label:'Closed Lost',       color:'#6b7280', statuses:['Closed Lost'],         dropStatus:'Closed Lost',       group:'closed',   hidden:true},
@@ -998,7 +1003,7 @@ const PIPELINE_BUCKETS = {
   bidding:   ['Building Estimate', 'Submitted'],
   approved:  [],
   scheduled: ['To Be Scheduled', 'Permitting', 'Scheduled'],
-  inprogress:['In Progress', 'Inspection Pending'],
+  inprogress:['In Progress', 'Customer Inspection', 'Inspection Pending'],
   closing:   ['Complete'],
 };
 
@@ -1580,7 +1585,7 @@ function conRenderStats() {
   // remembered to mark Declined, so it showed ~100%.)
   if (conDb) {
     const DAY = 864e5, nowMs = Date.now();
-    const WON_ST = ['To Be Scheduled', 'Permitting', 'Scheduled', 'In Progress', 'Inspection Pending', 'Complete', 'Closed Completed'];
+    const WON_ST = ['To Be Scheduled', 'Permitting', 'Scheduled', 'In Progress', 'Customer Inspection', 'Inspection Pending', 'Complete', 'Closed Completed'];
     const toMs = v => !v ? 0 : typeof v.toMillis === 'function' ? v.toMillis() : typeof v === 'number' ? v : (Date.parse(v) || 0);
     let approved = 0, total = 0, lostCt = 0;
     const crPromises = conJobs.map(j =>
@@ -6022,7 +6027,7 @@ function renderJCDKpis() {
   const atRisk = jobs.filter(j => {
     if (!getJobValue(j) || !j.estCost || j.estCost >= getJobValue(j)) return false;
     const m = (getJobValue(j) - j.estCost) / getJobValue(j) * 100;
-    return m < 15 && ['In Progress','Scheduled','Inspection Pending'].includes(j.status);
+    return m < 15 && ['In Progress','Scheduled','Customer Inspection','Inspection Pending'].includes(j.status);
   }).length;
 
   // Approved CO total
@@ -10109,7 +10114,7 @@ async function renderMasterSchedulePage() {
 
   el.innerHTML = '<div class="small muted" style="padding:24px;font-style:italic">Loading all jobs...</div>';
 
-  const ACTIVE = ['Scheduled','In Progress','To Be Scheduled','Inspection Pending'];
+  const ACTIVE = ['Scheduled','In Progress','To Be Scheduled','Permitting','Customer Inspection','Inspection Pending'];
   const activeJobs = conJobs.filter(j => ACTIVE.includes(j.status))
     .sort((a,b) => (a.startDate||'9999').localeCompare(b.startDate||'9999'));
 
@@ -10481,7 +10486,7 @@ function renderMasterGantt() {
   if (!el) return;
   const isFullscreen = card?.dataset.fullscreen === 'true';
 
-  const ACTIVE = ['Scheduled','In Progress','To Be Scheduled','Inspection Pending'];
+  const ACTIVE = ['Scheduled','In Progress','To Be Scheduled','Permitting','Customer Inspection','Inspection Pending'];
   const allActive = conJobs.filter(j => ACTIVE.includes(j.status))
     .sort((a,b) => (a.startDate||'9999').localeCompare(b.startDate||'9999'));
   const jobs = allActive.filter(j => j.startDate && j.endDate);
@@ -10916,7 +10921,10 @@ function renderNeedsAttention() {
   conJobs.forEach(job => {
     // Complete jobs needing attention (invoice follow-up handled by SLA triggers)
     if (job.status === 'Inspection Pending') {
-      items.push({ color:'#2563eb', icon:'🔍', text: job.name, sub: 'Inspection pending', jobId: job.id });
+      items.push({ color:'#2563eb', icon:'🔍', text: job.name, sub: 'Waiting on occupancy inspection', jobId: job.id });
+    }
+    if (job.status === 'Customer Inspection') {
+      items.push({ color:'#f59e0b', icon:'🧾', text: job.name, sub: 'Waiting on customer walkthrough', jobId: job.id });
     }
     // Jobs with no logs in 3+ days (active jobs only)
     const activeStatuses = ACTIVE_STATUSES;
@@ -18875,7 +18883,7 @@ function renderPortalJob(job) {
   const customerStages = [
     { label: 'Estimate', statuses: ['New Lead','Appointment Set','Building Estimate','Submitted'] },
     { label: 'Scheduled', statuses: ['To Be Scheduled','Permitting','Scheduled'] },
-    { label: 'In Progress', statuses: ['In Progress','Inspection Pending'] },
+    { label: 'In Progress', statuses: ['In Progress','Customer Inspection','Inspection Pending'] },
     { label: 'Complete', statuses: ['Complete','Closed Completed'] },
   ];
 
@@ -35789,7 +35797,7 @@ window.dismissBoardRequest = dismissBoardRequest;
 // Travis/Jason can override (logged to the job's Activity); nobody
 // else can.
 const DEPOSIT_GATE_STATUSES = ['Scheduled', 'In Progress'];
-const DEPOSIT_GATE_PAST = ['Scheduled', 'In Progress', 'Inspection Pending', 'Complete', 'Closed Completed'];
+const DEPOSIT_GATE_PAST = ['Scheduled', 'In Progress', 'Customer Inspection', 'Inspection Pending', 'Complete', 'Closed Completed'];
 
 async function jobDepositInfo(jobId) {
   const s = await coll('jobs').doc(jobId).collection('invoices').get();
@@ -35849,7 +35857,7 @@ window.saveJob = function (openEstimate) {
 // PIPELINE_BACKLOG_V1: Owner Portal tab. Pipeline = work that might
 // happen; Backlog = signed AND deposit received, the only work that
 // keeps crews busy.
-const PB_SIGNED = ['To Be Scheduled', 'Permitting', 'Scheduled', 'In Progress', 'Inspection Pending'];
+const PB_SIGNED = ['To Be Scheduled', 'Permitting', 'Scheduled', 'In Progress', 'Customer Inspection', 'Inspection Pending'];
 const PB_BIDS = ['Building Estimate', 'Submitted'];
 let _opPipe = null, _opPipeLoading = false;
 
