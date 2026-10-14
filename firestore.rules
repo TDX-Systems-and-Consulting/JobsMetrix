@@ -157,6 +157,13 @@ service cloud.firestore {
       // level as the jobs doc itself: any signed-in company member can
       // read/write, since assigning jobs to customers is a normal
       // team-wide action, not a financial one.
+      // QBO_INVOICE_IMPORT_V1: QuickBooks invoices the import couldn't
+      // place on a job. Written only by Cloud Functions (admin SDK).
+      match /qbUnmatchedInvoices/{qbId} {
+        allow read: if inCompany(companyId) && hasFullAccess();
+        allow write: if false;
+      }
+
       match /customers/{customerId} {
         allow read, write: if inCompany(companyId);
       }

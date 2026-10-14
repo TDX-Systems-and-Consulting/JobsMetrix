@@ -11672,6 +11672,7 @@ function renderInvoicingPage() {
   const tbody = document.getElementById('invAllBody');
   const tfoot = document.getElementById('invAllFoot');
   if (!tbody) return;
+  if (typeof renderQbUnmatched === 'function') setTimeout(renderQbUnmatched, 0); // QBO_INVOICE_IMPORT_V1
 
   // Populate job filter
   const jobFilter = document.getElementById('invJobFilter');
@@ -35888,7 +35889,13 @@ function qbSyncPaymentsNow(force, minGapMs) {
   if (!force && Date.now() - _qbSyncLast < gap) return Promise.resolve(null);
   _qbSyncLast = Date.now();
   _qbSyncBusy = conFunctions.httpsCallable('qbSyncPayments')({ companyId: currentCompanyId })
-    .then(r => { const d = r && r.data; if (d && d.updated && d.updated.length) qbShowPaidToast(d.updated); return d; })
+    .then(r => {
+      const d = r && r.data;
+      if (d && d.updated && d.updated.length) qbShowPaidToast(d.updated);
+      if (d && d.imported && d.imported.length) qbShowImportedToast(d.imported);
+      if (d) { window._qbLastSync = d; qbLoadUnmatched(); }
+      return d;
+    })
     .catch(e => { console.warn('QuickBooks payment check:', e.message); return { error: e.message }; })
     .finally(() => { _qbSyncBusy = null; });
   return _qbSyncBusy;
@@ -35905,5 +35912,63 @@ function qbShowPaidToast(list) {
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 15000);
 }
+// QBO_INVOICE_IMPORT_V1: invoices made directly in QuickBooks come in on the
+// same sync. Ones the import couldn't place (no job with that customer
+// name, or more than one open job) show on the Invoicing page with a job
+// picker.
+function qbShowImportedToast(list) {
+  document.getElementById('qbImportToast')?.remove();
+  const t = document.createElement('div');
+  t.id = 'qbImportToast';
+  t.setAttribute('role', 'status');
+  t.style.cssText = 'position:fixed;top:calc(env(safe-area-inset-top) + 70px);left:50%;transform:translateX(-50%);z-index:99999;background:#0d1f35;border:2px solid #60a5fa;border-radius:12px;padding:12px 14px;display:flex;gap:10px;align-items:center;max-width:92vw;box-shadow:0 8px 24px rgba(0,0,0,.4)';
+  t.innerHTML = `<span style="color:#eaf0fb;font-size:.88rem"><strong style="color:#60a5fa">📗 From QuickBooks</strong> ${list.length === 1 ? esc((list[0].number ? '#' + list[0].number + ' → ' : '') + list[0].jobName) : list.length + ' invoices'} added to ${list.length === 1 ? 'the job' : 'their jobs'}</span>
+    <button onclick="document.getElementById('qbImportToast')?.remove()" aria-label="Dismiss" style="background:none;border:none;color:#9aa6bd;cursor:pointer;font-size:1.1rem">✕</button>`;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 15000);
+}
+
+let _qbUnmatched = [];
+function qbLoadUnmatched() {
+  try { if (!conDb || !canViewFinancialsTab()) return; } catch (e) { return; }
+  coll('qbUnmatchedInvoices').get().then(snap => {
+    _qbUnmatched = [];
+    snap.forEach(d => { const x = d.data(); if (!x.ignored) _qbUnmatched.push({ id: d.id, ...x }); });
+    _qbUnmatched.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    renderQbUnmatched();
+  }).catch(() => {});
+}
+function renderQbUnmatched() {
+  const tbody = document.getElementById('invAllBody');
+  if (!tbody) return;
+  const table = tbody.closest('table');
+  const host = (table && table.parentElement) || tbody.parentElement;
+  let box = document.getElementById('qbUnmatchedBox');
+  if (!_qbUnmatched.length) { if (box) box.remove(); return; }
+  if (!box) { box = document.createElement('div'); box.id = 'qbUnmatchedBox'; host.parentElement.insertBefore(box, host); }
+  const money = v => '$' + (Number(v) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const jobOpts = (sel) => conJobs.filter(j => j.status !== 'Closed Lost')
+    .map(j => `<option value="${j.id}" ${sel === j.id ? 'selected' : ''}>${esc((j.client ? j.client + ' — ' : '') + (j.address || j.name || ''))}</option>`).join('');
+  box.style.cssText = 'margin:0 0 14px;padding:12px 14px;border:1px solid rgba(96,165,250,.4);background:rgba(96,165,250,.07);border-radius:10px';
+  box.innerHTML = `<div style="font-weight:800;margin-bottom:6px">📗 ${_qbUnmatched.length} QuickBooks invoice${_qbUnmatched.length === 1 ? '' : 's'} need${_qbUnmatched.length === 1 ? 's' : ''} a job</div>
+    <div class="small muted" style="margin-bottom:8px">Matched by customer name. These had no job with that name, or more than one open job. Pick the job once and it stays linked.</div>
+    ${_qbUnmatched.map(u => `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--line)">
+      <div style="flex:1 1 220px;min-width:0"><b>${esc(u.customerName || '—')}</b> · #${esc(u.number || u.qbInvoiceId)} · ${esc(u.date || '')} · ${money(u.total)}${u.balance > 0 ? ' <span class="small muted">(' + money(u.balance) + ' open)</span>' : ' <span class="small" style="color:#1dbb87">paid</span>'}<div class="small muted">${esc(u.reason || '')}</div></div>
+      <select id="qbUm_${u.id}" style="flex:1 1 220px;min-width:0;font-size:.82rem"><option value="">Pick the job…</option>${jobOpts((u.candidateJobIds || [])[0])}</select>
+      <button class="btn btn-amber" style="padding:6px 12px;font-size:.8rem" onclick="qbAssignUnmatched('${u.id}')">Link</button>
+      <button class="btn" style="padding:6px 10px;font-size:.78rem" onclick="qbAssignUnmatched('${u.id}', true)" title="Not a job invoice — stop showing it">Ignore</button>
+    </div>`).join('')}`;
+}
+async function qbAssignUnmatched(qbId, ignore) {
+  const jobId = ignore ? null : document.getElementById('qbUm_' + qbId)?.value;
+  if (!ignore && !jobId) { alert('Pick the job first.'); return; }
+  try {
+    await conFunctions.httpsCallable('qbAssignInvoice')({ companyId: currentCompanyId, qbInvoiceId: qbId, jobId, ignore: !!ignore });
+    _qbUnmatched = _qbUnmatched.filter(u => u.id !== qbId);
+    renderQbUnmatched();
+  } catch (e) { alert('Could not link it: ' + e.message); }
+}
+window.qbAssignUnmatched = qbAssignUnmatched;
+
 setInterval(() => { qbSyncPaymentsNow(false, 15 * 60 * 1000); }, 60 * 1000);
 window.qbSyncPaymentsNow = qbSyncPaymentsNow;

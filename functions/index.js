@@ -1350,8 +1350,155 @@ async function syncInvoiceToQbo(companyId, jobId, invoiceId) {
 // push in syncInvoiceToQbo never sends them back to QuickBooks twice.
 const QBO_PULL_EARLY_STATUSES = ['New Lead', 'Appointment Set', 'Building Estimate', 'Submitted'];
 
+// QBO_INVOICE_IMPORT_V1 (2026-10-14). Travis makes most invoices directly
+// in QuickBooks, not in JOBSMETRIX, so the payment pull below (which only
+// follows invoices JOBSMETRIX created) never saw them. This pulls every
+// QuickBooks invoice changed in the last 180 days (or since the last run),
+// and for any JOBSMETRIX doesn't already have, finds the job by CUSTOMER
+// NAME (how Travis identifies jobs in QuickBooks). Exactly one open job for
+// that customer -> the invoice is added to that job. None, or several ->
+// it waits in qbUnmatchedInvoices for the owner to pick the job.
+function qboNormName(s) {
+  return String(s || '').toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\b(llc|inc|co|corp|company|the)\b/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+}
+
+function qboInvoiceToDoc(q, jobId) {
+  const today = new Date().toISOString().split('T')[0];
+  const total = Number(q.TotalAmt) || 0;
+  const bal = Number(q.Balance) || 0;
+  const paid = Math.round((total - bal) * 100) / 100;
+  let status = 'Sent';
+  if (total > 0 && bal <= 0.009) status = 'Paid';
+  else if (paid > 0.009) status = 'Partial';
+  else if (q.DueDate && q.DueDate < today) status = 'Overdue';
+  const lineItems = (q.Line || [])
+    .filter(l => l.DetailType === 'SalesItemLineDetail' || l.DetailType === 'DescriptionOnly')
+    .map(l => {
+      const d = l.SalesItemLineDetail || {};
+      const qty = Number(d.Qty) || 1;
+      const rate = d.UnitPrice != null ? Number(d.UnitPrice) : (Number(l.Amount) || 0) / qty;
+      return { desc: l.Description || (d.ItemRef && d.ItemRef.name) || '', qty, rate: Math.round(rate * 100) / 100 };
+    })
+    .filter(li => li.desc || li.rate);
+  const subtotal = lineItems.reduce((s, li) => s + li.qty * li.rate, 0);
+  const tax = Number(q.TxnTaxDetail && q.TxnTaxDetail.TotalTax) || 0;
+  const doc = {
+    number: q.DocNumber || '',
+    type: 'Progress',
+    date: q.TxnDate || today,
+    dueDate: q.DueDate || '',
+    status,
+    lineItems,
+    subtotal: Math.round(subtotal * 100) / 100,
+    taxRate: subtotal > 0 ? Math.round(tax / subtotal * 10000) / 100 : 0,
+    taxAmt: tax,
+    total,
+    amtPaid: paid,
+    qbLastSyncedAmtPaid: paid,
+    paymentMethod: paid > 0 ? 'QuickBooks' : '',
+    notes: q.CustomerMemo && q.CustomerMemo.value ? q.CustomerMemo.value : '',
+    qbInvoiceId: q.Id,
+    qbCustomerName: (q.CustomerRef && q.CustomerRef.name) || '',
+    qbPaymentLink: q.InvoiceLink || '',
+    source: 'quickbooks',
+    jobId,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedBy: 'QuickBooks (import)',
+  };
+  if (status === 'Paid') doc.paidDate = q.MetaData && q.MetaData.LastUpdatedTime ? q.MetaData.LastUpdatedTime.slice(0, 10) : today;
+  return doc;
+}
+
+async function importQboInvoices(companyId) {
+  const db = admin.firestore();
+  const coRef = db.collection('companies').doc(companyId);
+  const settingsRef = coRef.collection('settings').doc('quickbooks');
+  const settings = (await settingsRef.get()).data() || {};
+  const sinceMs = settings.lastInvoiceImportAt ? settings.lastInvoiceImportAt - 24 * 3600 * 1000 : Date.now() - 180 * 24 * 3600 * 1000;
+  const since = new Date(sinceMs).toISOString().slice(0, 19) + 'Z';
+  const startedAt = Date.now();
+
+  // Every invoice JOBSMETRIX already knows about, by QuickBooks Id.
+  const jobsSnap = await coRef.collection('jobs').get();
+  const known = new Set();
+  const jobs = [];
+  await Promise.all(jobsSnap.docs.map(async jd => {
+    const j = jd.data();
+    if (!j.archived) jobs.push({ id: jd.id, ref: jd.ref, ...j });
+    const inv = await jd.ref.collection('invoices').get();
+    inv.forEach(d => { const x = d.data(); if (x.qbInvoiceId) known.add(String(x.qbInvoiceId)); });
+  }));
+  const unmatchedSnap = await coRef.collection('qbUnmatchedInvoices').get();
+  const unmatchedIds = new Set(unmatchedSnap.docs.map(d => d.id));
+
+  // Jobs by customer name; closed-lost jobs never take an invoice.
+  const byName = {};
+  jobs.forEach(j => {
+    if (j.status === 'Closed Lost') return;
+    const k = qboNormName(j.client);
+    if (!k) return;
+    (byName[k] = byName[k] || []).push(j);
+  });
+
+  const qInvoices = [];
+  for (let start = 1; start < 5000; start += 500) {
+    const q = `SELECT * FROM Invoice WHERE MetaData.LastUpdatedTime >= '${since}' ORDERBY MetaData.LastUpdatedTime STARTPOSITION ${start} MAXRESULTS 500`;
+    const r = await qboFetch(companyId, 'GET', `query?query=${encodeURIComponent(q)}`);
+    const page = (r && r.QueryResponse && r.QueryResponse.Invoice) || [];
+    qInvoices.push(...page);
+    if (page.length < 500) break;
+  }
+
+  const imported = [], unmatched = [];
+  for (const q of qInvoices) {
+    const id = String(q.Id);
+    if (known.has(id)) continue;
+    const custName = (q.CustomerRef && q.CustomerRef.name) || '';
+    const key = qboNormName(custName);
+    let cands = byName[key] || [];
+    // More than one job for the customer: prefer the ones still open.
+    if (cands.length > 1) {
+      const open = cands.filter(j => j.status !== 'Closed Completed');
+      if (open.length) cands = open;
+    }
+    if (cands.length === 1) {
+      const job = cands[0];
+      await job.ref.collection('invoices').add(qboInvoiceToDoc(q, job.id));
+      if (unmatchedIds.has(id)) await coRef.collection('qbUnmatchedInvoices').doc(id).delete().catch(() => {});
+      const today = new Date().toISOString().split('T')[0];
+      await job.ref.collection('logs').add({
+        date: today, type: 'invoice_imported', userName: 'QuickBooks (auto)', companyId,
+        notes: `QuickBooks invoice ${q.DocNumber || ''} for $${(Number(q.TotalAmt) || 0).toFixed(2)} added from QuickBooks`.replace('  ', ' '),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      }).catch(() => {});
+      imported.push({ jobId: job.id, jobName: job.address || job.name || '', number: q.DocNumber || '', total: Number(q.TotalAmt) || 0 });
+    } else {
+      await coRef.collection('qbUnmatchedInvoices').doc(id).set({
+        qbInvoiceId: id, number: q.DocNumber || '', customerName: custName,
+        date: q.TxnDate || '', total: Number(q.TotalAmt) || 0, balance: Number(q.Balance) || 0,
+        candidateJobIds: cands.map(j => j.id),
+        reason: cands.length ? 'More than one open job for this customer' : 'No job with this customer name',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      unmatched.push({ number: q.DocNumber || '', customerName: custName });
+    }
+  }
+  await settingsRef.set({ lastInvoiceImportAt: startedAt, lastInvoiceImportCount: imported.length }, { merge: true }).catch(() => {});
+  return { imported, unmatched: unmatched.length };
+}
+
 async function pullQboPayments(companyId) {
   const db = admin.firestore();
+  // QBO_INVOICE_IMPORT_V1: bring in invoices made directly in QuickBooks
+  // first, so their payments are picked up by the pull below too.
+  let importResult = { imported: [], unmatched: 0 };
+  try { importResult = await importQboInvoices(companyId); }
+  catch (e) { console.error('QuickBooks invoice import failed:', e.message); importResult.error = e.message; }
   const jobsSnap = await db.collection('companies').doc(companyId).collection('jobs').get();
   const targets = [];
   await Promise.all(jobsSnap.docs.map(async jd => {
@@ -1411,7 +1558,7 @@ async function pullQboPayments(companyId) {
   }
   await db.collection('companies').doc(companyId).collection('settings').doc('quickbooks')
     .set({ lastPaymentPullAt: Date.now(), lastPaymentPullChecked: targets.length }, { merge: true }).catch(() => {});
-  return { checked: targets.length, updated };
+  return { checked: targets.length, updated, imported: importResult.imported, unmatched: importResult.unmatched, importError: importResult.error || null };
 }
 
 exports.qbSyncPayments = functions.runWith({ secrets: ['QBO_CLIENT_ID', 'QBO_CLIENT_SECRET', 'QBO_REDIRECT_URI', 'QBO_ENVIRONMENT', 'QBO_TOKEN_ENCRYPTION_KEY'], timeoutSeconds: 120 }).https.onCall(async (data, context) => {
@@ -1424,6 +1571,36 @@ exports.qbSyncPayments = functions.runWith({ secrets: ['QBO_CLIENT_ID', 'QBO_CLI
     return await pullQboPayments(companyId);
   } catch (e) {
     console.error('qbSyncPayments failed:', e.message);
+    throw new functions.https.HttpsError('internal', e.message);
+  }
+});
+
+// QBO_INVOICE_IMPORT_V1: owner picks the job for a QuickBooks invoice the
+// import couldn't place on its own.
+exports.qbAssignInvoice = functions.runWith({ secrets: ['QBO_CLIENT_ID', 'QBO_CLIENT_SECRET', 'QBO_REDIRECT_URI', 'QBO_ENVIRONMENT', 'QBO_TOKEN_ENCRYPTION_KEY'], timeoutSeconds: 60 }).https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be signed in.');
+  const { companyId, qbInvoiceId, jobId, ignore } = data || {};
+  if (!companyId || !qbInvoiceId || context.auth.token.companyId !== companyId) {
+    throw new functions.https.HttpsError('permission-denied', 'Not a member of this company.');
+  }
+  if (!isQboFullAccess(context.auth.token)) {
+    throw new functions.https.HttpsError('permission-denied', 'Only Owner, Project Manager, or Accounting can do this.');
+  }
+  const coRef = admin.firestore().collection('companies').doc(companyId);
+  const umRef = coRef.collection('qbUnmatchedInvoices').doc(String(qbInvoiceId));
+  if (ignore) { await umRef.set({ ignored: true }, { merge: true }); return { ok: true, ignored: true }; }
+  if (!jobId) throw new functions.https.HttpsError('invalid-argument', 'Pick a job.');
+  try {
+    const r = await qboFetch(companyId, 'GET', `invoice/${encodeURIComponent(qbInvoiceId)}`);
+    const q = r && r.Invoice;
+    if (!q) throw new Error('QuickBooks invoice not found');
+    const jobRef = coRef.collection('jobs').doc(jobId);
+    const dup = await jobRef.collection('invoices').where('qbInvoiceId', '==', String(q.Id)).limit(1).get();
+    if (dup.empty) await jobRef.collection('invoices').add(qboInvoiceToDoc(q, jobId));
+    await umRef.delete().catch(() => {});
+    return { ok: true };
+  } catch (e) {
+    console.error('qbAssignInvoice failed:', e.message);
     throw new functions.https.HttpsError('internal', e.message);
   }
 });
