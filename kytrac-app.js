@@ -487,6 +487,38 @@ function toggleColTotals() {
 }
 window.toggleColTotals = toggleColTotals;
 
+// AUTO_CLOSE_PAID_V1 (2026-10-14, Travis): the Complete column means
+// "Complete – Awaiting Final Payment". Once a job there is paid in full
+// (collected >= signed price + approved change orders), it moves itself to
+// Closed Completed. Runs on an owner's app after invoices / change-order
+// totals load or change. Never closes a job it can't price, or before its
+// change-order total has loaded.
+function scheduleAutoCloseFullyPaid() {
+  clearTimeout(window._autoCloseTimer);
+  window._autoCloseTimer = setTimeout(autoCloseFullyPaidJobs, 2500);
+}
+function autoCloseFullyPaidJobs() {
+  try { if (!conDb || !canViewFinancialsTab()) return; } catch (e) { return; }
+  const today = new Date().toISOString().split('T')[0];
+  conJobs.filter(j => j.status === 'Complete').forEach(j => {
+    if (!(j.id in _jcdCOTotals)) return;
+    const price = (Number(getJobValue(j)) || 0) || (Number(j.estPrice) || 0);
+    if (price <= 0) return;
+    const due = price + (Number(_jcdCOTotals[j.id]) || 0);
+    const paid = jobCollectedAmount(j);
+    if (paid + 0.5 < due) return;
+    j.status = 'Closed Completed';
+    coll('jobs').doc(j.id).update({ status: 'Closed Completed', statusDate: today, updatedAt: firebase.firestore.FieldValue.serverTimestamp(), updatedBy: 'Auto (paid in full)' })
+      .then(() => coll('jobs').doc(j.id).collection('logs').add({
+        date: today, type: 'status_change', userName: 'JOBSMETRIX (auto)', companyId: currentCompanyId || null,
+        notes: `Paid in full ($${Math.round(paid).toLocaleString()} of $${Math.round(due).toLocaleString()}) — moved from Complete to Closed Completed`,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      }))
+      .catch(e => { j.status = 'Complete'; console.warn('Auto-close failed', e.message); });
+  });
+}
+window.autoCloseFullyPaidJobs = autoCloseFullyPaidJobs;
+
 const _colTotSynced = new Set();
 function colTotalsHtml(jobs, color, colLabel) {
   if (!_showColTotals) return '';
@@ -952,7 +984,7 @@ const KANBAN_COLUMNS = [
   {label:'Scheduled',         color:'#3b82f6', statuses:['Scheduled'],           dropStatus:'Scheduled',         group:'active',   hidden:false},
   {label:'In Progress',       color:'#3b82f6', statuses:['In Progress'],         dropStatus:'In Progress',       group:'active',   hidden:false},
   {label:'Inspection Pending',color:'#ef4444', statuses:['Inspection Pending'],  dropStatus:'Inspection Pending',group:'active',   hidden:false},
-  {label:'Complete',          color:'#7c3aed', statuses:['Complete'],            dropStatus:'Complete',          group:'finance',  hidden:false},
+  {label:'Complete – Awaiting Final Payment', color:'#7c3aed', statuses:['Complete'], dropStatus:'Complete', group:'finance', hidden:false},
   {label:'Closed Completed',  color:'#6b7280', statuses:['Closed Completed'],    dropStatus:'Closed Completed',  group:'closed',   hidden:true},
   {label:'Closed Lost',       color:'#6b7280', statuses:['Closed Lost'],         dropStatus:'Closed Lost',       group:'closed',   hidden:true},
 ];
@@ -6372,6 +6404,7 @@ function loadAllCOTotals() {
         snap.forEach(doc => { const c = doc.data(); if (['Customer Approved','Invoiced','Paid'].includes(normalizeCOStatus(c.status))) total += Number(c.amount||0); });
         _jcdCOTotals[job.id] = total;
         if (_showColTotals) { clearTimeout(window._colTotTimer); window._colTotTimer = setTimeout(() => { if (document.getElementById('jobsBoard')) renderJobsBoard(); }, 600); }
+        scheduleAutoCloseFullyPaid(); // AUTO_CLOSE_PAID_V1
       }).catch(()=>{});
   });
 }
@@ -11738,6 +11771,7 @@ function renderInvoicingPage() {
   const tfoot = document.getElementById('invAllFoot');
   if (!tbody) return;
   if (typeof renderQbUnmatched === 'function') setTimeout(renderQbUnmatched, 0); // QBO_INVOICE_IMPORT_V1
+  scheduleAutoCloseFullyPaid(); // AUTO_CLOSE_PAID_V1
   // COL_TOTALS_V1: invoices arrive after the board draws -- refresh the column totals once they settle.
   if (_showColTotals && typeof _jobsView !== 'undefined' && _jobsView === 'kanban') { clearTimeout(window._colTotTimer); window._colTotTimer = setTimeout(() => { if (document.getElementById('jobsBoard')) renderJobsBoard(); }, 600); }
 
