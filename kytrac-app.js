@@ -487,7 +487,8 @@ function toggleColTotals() {
 }
 window.toggleColTotals = toggleColTotals;
 
-function colTotalsHtml(jobs, color) {
+const _colTotSynced = new Set();
+function colTotalsHtml(jobs, color, colLabel) {
   if (!_showColTotals) return '';
   const money = v => '$' + Math.round(v).toLocaleString();
   const can = (typeof canViewJobMoney === 'function') ? canViewJobMoney() : false;
@@ -495,8 +496,15 @@ function colTotalsHtml(jobs, color) {
   // obviously it's owed"): Owed = signed price + approved change orders -
   // what's been paid, invoice or no invoice. Jobs not signed yet owe nothing.
   let owed = 0, paid = 0, owingJobs = 0, value = 0, soldCount = 0;
+  const lost = /lost/i.test(colLabel || '');
   jobs.forEach(j => {
     value += Number(getJobValueOrEstimate(j)) || 0; // signed price, else the estimate total
+    // Older jobs never had their estimate total saved (it's saved when the
+    // estimate is opened) -- work it out once in the background and redraw.
+    if (can && !getJobValueOrEstimate(j) && !_colTotSynced.has(j.id) && typeof syncJobEstimateCost === 'function') {
+      _colTotSynced.add(j.id);
+      syncJobEstimateCost(j.id).then(c => { if (c != null && (j.estPrice || 0) > 0) { clearTimeout(window._colTotTimer); window._colTotTimer = setTimeout(() => { if (document.getElementById('jobsBoard')) renderJobsBoard(); }, 800); } });
+    }
     const got = (typeof jobCollectedAmount === 'function') ? jobCollectedAmount(j) : 0;
     paid += got;
     // A job past the proposal stage is sold: use its signed price, or its
@@ -512,8 +520,8 @@ function colTotalsHtml(jobs, color) {
   const row = (label, val, c) => `<div style="display:flex;justify-content:space-between;gap:8px"><span style="color:var(--muted)">${label}</span><span style="font-weight:800;font-variant-numeric:tabular-nums;color:${c || 'var(--text)'}">${val}</span></div>`;
   return `<div class="kt-col-totals" style="margin:-2px 0 8px;padding:7px 9px;border-radius:8px;background:${color}12;border:1px solid ${color}33;font-size:.74rem;display:grid;gap:3px" title="Outstanding balance = signed price (or estimate price if none entered) + approved change orders − paid">
     ${row('Jobs', jobs.length)}
-    ${can ? row(jobs.length && !soldCount ? 'Estimate value' : 'Job value', value > 0.009 ? money(value) : '—', '#93c5fd') : ''}
-    ${can ? (owed > 0.009 ? row('Outstanding balance' + (owingJobs > 1 ? ' (' + owingJobs + ' jobs)' : ''), money(owed), '#f59e0b') : row('Outstanding balance', jobs.length && !soldCount ? 'not sold yet' : '—')) : ''}
+    ${can ? row(lost ? 'Total lost' : (jobs.length && !soldCount ? 'Estimate value' : 'Job value'), value > 0.009 ? money(value) : '—', lost ? '#f87171' : '#93c5fd') : ''}
+    ${can && !lost ? (owed > 0.009 ? row('Outstanding balance' + (owingJobs > 1 ? ' (' + owingJobs + ' jobs)' : ''), money(owed), '#f59e0b') : row('Outstanding balance', jobs.length && !soldCount ? 'not sold yet' : '—')) : ''}
     ${can ? (paid > 0.009 ? row('Paid', money(paid), '#1dbb87') : row('Paid', '—')) : ''}
   </div>`;
 }
@@ -537,7 +545,7 @@ function renderJobsBoard() {
     el.className = 'kt-col';
     el.style.borderTopColor = col.color;
     el.dataset.status = col.dropStatus; // what gets written to Firestore on drop
-    el.innerHTML = `<div class="kt-col-head" onclick="toggleColTotals()" style="cursor:pointer" title="Show / hide column totals"><span class="kt-col-head-label" style="color:${col.color}">${col.label}</span><span class="kt-col-count" style="background:${col.color}22;color:${col.color};flex-shrink:0">${jobs.length}</span></div>${colTotalsHtml(jobs, col.color)}`;
+    el.innerHTML = `<div class="kt-col-head" onclick="toggleColTotals()" style="cursor:pointer" title="Show / hide column totals"><span class="kt-col-head-label" style="color:${col.color}">${col.label}</span><span class="kt-col-count" style="background:${col.color}22;color:${col.color};flex-shrink:0">${jobs.length}</span></div>${colTotalsHtml(jobs, col.color, col.label)}`;
     jobs.forEach(job => {
       const card = document.createElement('div');
       card.className = 'kt-job-card';
