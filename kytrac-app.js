@@ -27596,14 +27596,46 @@ window.printProposal = printProposal;
 // direct tap of the Print button itself, a genuine user gesture, not
 // an automatic background action.
 function printViewProposalModal() {
-  const html = document.getElementById('viewProposalIframe').srcdoc;
-  const win = window.open('', '_blank');
-  if (!win) { alert('Your browser blocked the popup — check your popup/pop-up blocker settings for this site and try again.'); return; }
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
-  win.focus();
-  setTimeout(() => win.print(), 300);
+  // PRINT_INPLACE_V1 (2026-10-14): Travis was stranded again on his iPhone
+  // in a bare proposal tab with no Print or Close button -- the new tab
+  // this used to open has no way back inside the installed app. Now the
+  // document is copied into a print-only container on THIS page and the
+  // page itself prints; everything else is hidden only while printing.
+  // He never leaves the app, so the modal's Close is always right there.
+  const html = document.getElementById('viewProposalIframe').srcdoc || '';
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.querySelectorAll('script').forEach(n => n.remove());
+  const css = [...doc.querySelectorAll('style')].map(st => st.textContent)
+    .join('\n')
+    // the document's own page-level rules (body/html) now apply to the host box
+    .replace(/(^|[},\s])(html|body)(?=\s*[{,:.\s])/g, '$1#printHost')
+    .replace(/@media\s+print\s*\{/g, '@media print{');
+  let host = document.getElementById('printHost');
+  if (!host) { host = document.createElement('div'); host.id = 'printHost'; document.body.appendChild(host); }
+  host.innerHTML = `<style>${css}</style>` + doc.body.innerHTML;
+  let guard = document.getElementById('printHostCss');
+  if (!guard) {
+    guard = document.createElement('style');
+    guard.id = 'printHostCss';
+    guard.textContent = `#printHost{display:none}
+      @media print{
+        html.jm-printing, html.jm-printing body{background:#fff !important;height:auto !important;overflow:visible !important}
+        html.jm-printing body > *:not(#printHost){display:none !important}
+        html.jm-printing #printHost{display:block !important;color:#1f2937;background:#fff}
+        @page{margin:12mm}
+      }`;
+    document.head.appendChild(guard);
+  }
+  document.documentElement.classList.add('jm-printing');
+  // The print copy is invisible on screen, so it's simply left in place
+  // (iPhone builds its print preview after print() returns -- clearing it
+  // early would print a blank page). The next print overwrites it, and
+  // the print-only class comes off a few seconds after printing.
+  const done = () => { window.removeEventListener('afterprint', done); setTimeout(() => document.documentElement.classList.remove('jm-printing'), 3000); };
+  window.addEventListener('afterprint', done);
+  setTimeout(() => {
+    try { window.print(); } catch (e) { alert('Printing is not available on this device. Take a screenshot or use Email instead.'); }
+  }, 150);
 }
 window.printViewProposalModal = printViewProposalModal;
 
