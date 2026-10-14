@@ -491,19 +491,23 @@ function colTotalsHtml(jobs, color) {
   if (!_showColTotals) return '';
   const money = v => '$' + Math.round(v).toLocaleString();
   const can = (typeof canViewJobMoney === 'function') ? canViewJobMoney() : false;
-  const ids = new Set(jobs.map(j => j.id));
-  let owed = 0, openInv = 0, paid = 0;
-  (allInvoices || []).forEach(i => {
-    if (!ids.has(i.jobId)) return;
-    if (i.status === 'Draft' || i.status === 'Void') return;
-    const bal = (Number(i.total) || 0) - (Number(i.amtPaid) || 0);
-    if (bal > 0.009) { owed += bal; openInv++; }
+  // COL_TOTALS_V2 (Travis: "since I have not told you it was paid then
+  // obviously it's owed"): Owed = signed price + approved change orders -
+  // what's been paid, invoice or no invoice. Jobs not signed yet owe nothing.
+  let owed = 0, paid = 0, owingJobs = 0;
+  jobs.forEach(j => {
+    const got = (typeof jobCollectedAmount === 'function') ? jobCollectedAmount(j) : 0;
+    paid += got;
+    const signed = Number(getJobValue(j)) || 0;
+    if (signed > 0) {
+      const bal = signed + (Number((typeof _jcdCOTotals !== 'undefined' && _jcdCOTotals[j.id]) || 0)) - got;
+      if (bal > 0.009) { owed += bal; owingJobs++; }
+    }
   });
-  jobs.forEach(j => { paid += (typeof jobCollectedAmount === 'function') ? jobCollectedAmount(j) : 0; });
   const row = (label, val, c) => `<div style="display:flex;justify-content:space-between;gap:8px"><span style="color:var(--muted)">${label}</span><span style="font-weight:800;font-variant-numeric:tabular-nums;color:${c || 'var(--text)'}">${val}</span></div>`;
-  return `<div class="kt-col-totals" style="margin:-2px 0 8px;padding:7px 9px;border-radius:8px;background:${color}12;border:1px solid ${color}33;font-size:.74rem;display:grid;gap:3px">
+  return `<div class="kt-col-totals" style="margin:-2px 0 8px;padding:7px 9px;border-radius:8px;background:${color}12;border:1px solid ${color}33;font-size:.74rem;display:grid;gap:3px" title="Owed = signed price + approved change orders − paid">
     ${row('Jobs', jobs.length)}
-    ${can ? (owed > 0.009 ? row('Owed' + (openInv ? ' (' + openInv + ' inv.)' : ''), money(owed), '#f59e0b') : row('Owed', '—')) : ''}
+    ${can ? (owed > 0.009 ? row('Owed' + (owingJobs > 1 ? ' (' + owingJobs + ' jobs)' : ''), money(owed), '#f59e0b') : row('Owed', '—')) : ''}
     ${can ? (paid > 0.009 ? row('Paid', money(paid), '#1dbb87') : row('Paid', '—')) : ''}
   </div>`;
 }
@@ -6344,12 +6348,16 @@ function getJobTotalActual(jobId) {
 function loadAllCOTotals() {
   if (!conDb || !conJobs.length) return;
   conJobs.forEach(job => {
-    coll('jobs').doc(job.id).collection('changeorders')
-      .where('status','==','Approved').get()
+    // COL_TOTALS_V2: was `status == 'Approved'` -- the OLD status name.
+    // Approved change orders are now 'Customer Approved' / 'Invoiced' /
+    // 'Paid' (normalizeCOStatus maps the old name too), so these totals
+    // were always $0.
+    coll('jobs').doc(job.id).collection('changeorders').get()
       .then(snap => {
         let total = 0;
-        snap.forEach(doc => { total += Number(doc.data().amount||0); });
+        snap.forEach(doc => { const c = doc.data(); if (['Customer Approved','Invoiced','Paid'].includes(normalizeCOStatus(c.status))) total += Number(c.amount||0); });
         _jcdCOTotals[job.id] = total;
+        if (_showColTotals) { clearTimeout(window._colTotTimer); window._colTotTimer = setTimeout(() => { if (document.getElementById('jobsBoard')) renderJobsBoard(); }, 600); }
       }).catch(()=>{});
   });
 }
