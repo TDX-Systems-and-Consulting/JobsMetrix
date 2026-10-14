@@ -3335,7 +3335,7 @@ function openJobDetail(jobId, defaultTab) {
   });
 
   // Weather
-  if (job.address) loadJobWeather(job.address);
+  if (job.address) loadJobWeather(job.address, job);
 
   // Load phases, logs, activity
   conLoadPhases(jobId);
@@ -10517,7 +10517,122 @@ function renderFieldTechHome() {
       </div>`).join('');
   }
   window._ftMyJobs = myJobs;
+  renderFieldTechNav(myJobs);
+  renderFieldTechWeather();
 }
+
+// FT_MAP_WEATHER_V1 (2026-10-14, Travis: field techs "need to know weather
+// for outside painting and such and gps to get to the job"). Field techs
+// can't open the job Dashboard tab (it carries money), so the job's
+// directions and forecast live on their home screen instead. Only the
+// jobs they're assigned to, only the address and weather -- no client
+// contact info, no money.
+function ftDirectionsUrl(addr) {
+  return 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(addr);
+}
+
+function renderFieldTechNav(myJobs) {
+  const box = document.getElementById('ftNavContent');
+  if (!box) return;
+  const jobs = (myJobs || []).filter(j => (j.address || '').trim());
+  if (!jobs.length) {
+    box.innerHTML = `<div style="padding:10px 0;color:var(--muted);font-style:italic;text-align:center">${(myJobs || []).length ? 'No address on your job yet — ask the office' : 'No job assigned yet'}</div>`;
+    return;
+  }
+  box.innerHTML = jobs.map(j => `
+    <div style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div style="font-weight:700;font-size:.9rem">${esc(j.name || 'Job')}</div>
+      <div style="color:var(--muted);font-size:.8rem;margin:2px 0 8px;user-select:all">${esc(j.address)}</div>
+      <a href="${ftDirectionsUrl(j.address)}" target="_blank" rel="noopener" class="btn btn-amber"
+        style="display:block;text-align:center;padding:10px;font-weight:800;text-decoration:none">🧭 Get Directions</a>
+    </div>`).join('');
+}
+
+// Coordinates for a job: saved on the job (same geoLat/geoLon the job map
+// stores), else looked up once from the address and saved.
+async function getJobCoords(job) {
+  if (typeof job.geoLat === 'number' && typeof job.geoLon === 'number') return { lat: job.geoLat, lon: job.geoLon };
+  const addr = (job.address || '').trim();
+  if (!addr) return null;
+  if (typeof _geoCache !== 'undefined' && _geoCache[addr]) return _geoCache[addr];
+  try {
+    const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=us&q=' + encodeURIComponent(addr), { headers: { 'Accept': 'application/json' } });
+    const res = await r.json();
+    if (!Array.isArray(res) || !res.length) return null;
+    const lat = parseFloat(res[0].lat), lon = parseFloat(res[0].lon);
+    if (isNaN(lat) || isNaN(lon)) return null;
+    if (typeof _geoCache !== 'undefined') _geoCache[addr] = { lat, lon };
+    if (conDb) coll('jobs').doc(job.id).update({ geoLat: lat, geoLon: lon }).catch(() => {});
+    job.geoLat = lat; job.geoLon = lon;
+    return { lat, lon };
+  } catch (e) { return null; }
+}
+window.getJobCoords = getJobCoords;
+
+const _wxIcon = c => c === 0 ? '☀️' : c <= 3 ? '⛅' : c <= 49 ? '🌫️' : c <= 67 ? '🌧️' : c <= 77 ? '❄️' : c <= 82 ? '🌦️' : '⛈️';
+const _wxLabel = c => c === 0 ? 'Clear' : c <= 3 ? 'Partly cloudy' : c <= 49 ? 'Fog' : c <= 67 ? 'Rain' : c <= 77 ? 'Snow' : c <= 82 ? 'Showers' : 'Storms';
+
+// One line per day on whether it's a day for outside work like exterior
+// paint: rain chance 40%+, below 50°F (most exterior latex minimum -- check
+// the can), or wind 15+ mph.
+function wxWorkFlag(rainPct, lo, hi, wind) {
+  const f = [];
+  if (rainPct >= 40) f.push('🌧 Rain ' + rainPct + '% — no exterior paint');
+  if (lo < 50) f.push('🥶 Low ' + Math.round(lo) + '° — check paint label');
+  if (wind >= 15) f.push('💨 Wind ' + Math.round(wind) + ' mph');
+  if (hi >= 95) f.push('🔥 ' + Math.round(hi) + '° — heat breaks');
+  return f.length ? { ok: false, text: f.join(' · ') } : { ok: true, text: '✅ Good day for outside work' };
+}
+
+async function renderFieldTechWeather() {
+  const box = document.getElementById('ftWeatherContent');
+  const sel = document.getElementById('ftWeatherJob');
+  if (!box) return;
+  const jobs = (window._ftMyJobs || []).filter(j => (j.address || '').trim());
+  if (!jobs.length) { box.innerHTML = '<div class="small muted">No job assigned yet</div>'; if (sel) sel.style.display = 'none'; return; }
+  if (sel) {
+    const cur = sel.value;
+    sel.innerHTML = jobs.map(j => `<option value="${j.id}">${esc(j.name || j.address)}</option>`).join('');
+    if (jobs.some(j => j.id === cur)) sel.value = cur;
+    sel.style.display = jobs.length > 1 ? '' : 'none';
+  }
+  const job = jobs.find(j => j.id === (sel && sel.value)) || jobs[0];
+  box.innerHTML = '<div class="small muted">Loading weather…</div>';
+  const c = await getJobCoords(job);
+  if (!c) { box.innerHTML = '<div class="small muted">Couldn\'t find this address on the map — ask the office to check it.</div>'; return; }
+  try {
+    const url = 'https://api.open-meteo.com/v1/forecast?latitude=' + c.lat + '&longitude=' + c.lon
+      + '&current=temperature_2m,weathercode,windspeed_10m'
+      + '&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max,windspeed_10m_max'
+      + '&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto&forecast_days=7';
+    const wx = await (await fetch(url)).json();
+    const cur = wx.current || {}, d = wx.daily || {};
+    const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const rows = (d.time || []).map((date, i) => {
+      const dt = new Date(date + 'T12:00:00');
+      const rain = Math.round((d.precipitation_probability_max || [])[i] || 0);
+      const hi = d.temperature_2m_max[i], lo = d.temperature_2m_min[i], wind = (d.windspeed_10m_max || [])[i] || 0;
+      const flag = wxWorkFlag(rain, lo, hi, wind);
+      return `<div style="display:grid;grid-template-columns:44px 30px 70px 52px 1fr;gap:6px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line);font-size:.84rem">
+        <div style="font-weight:800">${i === 0 ? 'Today' : names[dt.getDay()]}</div>
+        <div style="font-size:1.1rem">${_wxIcon(d.weathercode[i])}</div>
+        <div style="font-variant-numeric:tabular-nums"><b>${Math.round(hi)}°</b> / ${Math.round(lo)}°</div>
+        <div style="color:${rain >= 40 ? '#60a5fa' : 'var(--muted)'};font-variant-numeric:tabular-nums">💧${rain}%</div>
+        <div style="font-size:.76rem;color:${flag.ok ? '#1dbb87' : '#f59e0b'};min-width:0">${flag.text}</div>
+      </div>`;
+    }).join('');
+    box.innerHTML = `
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+        <div style="font-size:2.2rem">${_wxIcon(cur.weathercode)}</div>
+        <div><div style="font-size:1.5rem;font-weight:900">${Math.round(cur.temperature_2m)}°F</div>
+        <div style="font-size:.8rem;color:var(--muted)">${_wxLabel(cur.weathercode)} · Wind ${Math.round(cur.windspeed_10m || 0)} mph · ${esc(job.address)}</div></div>
+      </div>
+      <div style="overflow-x:auto">${rows}</div>`;
+  } catch (e) {
+    box.innerHTML = '<div class="small muted">Weather unavailable right now</div>';
+  }
+}
+window.renderFieldTechWeather = renderFieldTechWeather;
 
 // The "My Job" tile itself -- opens directly into the single assigned
 // job, or does nothing extra for 0/many (those cases already render
@@ -34037,12 +34152,18 @@ window.saveJob = function(openEstimate) {
 // ════════════════════════════════════════════════════
 // ── JOB WEATHER ──
 // ════════════════════════════════════════════════════
-async function loadJobWeather(address) {
+async function loadJobWeather(address, job) {
   const el = document.getElementById('detailWeather');
   if (!el) return;
   el.innerHTML = '<div class="small muted">Loading weather...</div>';
 
   try {
+    // FT_MAP_WEATHER_V1: use the job's real map coordinates when we can.
+    // The old lookup sent only "address, city" to a city-name search, so an
+    // address with no commas (e.g. "707 Karon Dr Pevely MO") fell back to
+    // downtown St. Louis weather.
+    const jc = job ? await getJobCoords(job) : null;
+    if (jc) { return renderDetailWeather(el, jc.lat, jc.lon); }
     // Use Open-Meteo geocoding — free, no API key, no referrer restrictions
     const city = address.split(',').slice(0,2).join(',').trim();
     const geoRes = await fetch('https://geocoding-api.open-meteo.com/v1/search?name=' + encodeURIComponent(city) + '&count=1&language=en&format=json');
@@ -34056,6 +34177,15 @@ async function loadJobWeather(address) {
       lat = 38.6270; lng = -90.1994; // St. Louis fallback
     }
 
+    return renderDetailWeather(el, lat, lng);
+  } catch(e) {
+    console.error('Weather error:', e);
+    el.innerHTML = '<div class="small muted">Weather unavailable</div>';
+  }
+}
+
+async function renderDetailWeather(el, lat, lng) {
+  try {
     const wxRes = await fetch('https://api.open-meteo.com/v1/forecast?latitude=' + lat + '&longitude=' + lng + '&current=temperature_2m,weathercode,windspeed_10m&daily=weathercode,temperature_2m_max,temperature_2m_min&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto&forecast_days=7');
     const wx = await wxRes.json();
     const cur = wx.current;
