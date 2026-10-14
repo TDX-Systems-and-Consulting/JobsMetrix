@@ -13004,6 +13004,9 @@ function conLoadJobs() {
     loadPOs();
     loadTeamCache();
     renderHomeDashboard();
+    // FT_MAP_WEATHER_V1: a Field Tech can land on their home before the
+    // job list arrives -- redraw My Job / Directions / Weather once it does.
+    if (document.getElementById('ktPageFieldTechHome')?.classList.contains('active')) renderFieldTechHome();
   }, (err) => {
     // Real gap this closes: this listener had no error handler at
     // all, so a permission-denied read (e.g. a team member's custom
