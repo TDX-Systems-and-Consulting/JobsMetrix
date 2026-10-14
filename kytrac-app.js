@@ -27683,15 +27683,16 @@ function renderChangeOrderDocumentHtml(co, job, comp, autoPrint) {
 
   const scheduleHtml = co.days ? `<div class="intro" style="margin-bottom:0"><strong>Schedule Impact:</strong> +${co.days} day${co.days!=1?'s':''} added to the project schedule.</div>` : '';
 
-  // 50/50 deposit schedule on every change order -- half due to approve
-  // the change, half due on completion, same split shown on the
-  // proposal's own deposit schedule options.
-  const half = amt / 2;
-  const halfDisplay = '$' + Math.abs(half).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  // CO_DUE_ON_RECEIPT_V1 -- per Travis 10/14/26: change orders are not
+  // on a payment schedule; the full amount is due on receipt. A
+  // negative change order is a credit, applied to the final invoice.
+  const fullDisplay = '$' + Math.abs(amt).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
   const depositScheduleHtml = `
   <div style="margin:20px 0;padding:16px 20px;background:#f9fafb;border-radius:10px;border:1px solid #e5e7eb">
-    <div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:#9ca3af;font-weight:700;margin-bottom:8px">Deposit Schedule</div>
-    <div style="font-size:.92rem;color:#1f2937">50 / 50 &nbsp;—&nbsp; ${halfDisplay} due upon approval of this Change Order, ${halfDisplay} due upon completion of the additional work.</div>
+    <div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:#9ca3af;font-weight:700;margin-bottom:8px">Payment Terms</div>
+    <div style="font-size:.92rem;color:#1f2937">${amt < 0
+      ? `Credit of ${fullDisplay}, applied to your final invoice.`
+      : `<strong>Due upon receipt</strong> &nbsp;—&nbsp; the full ${fullDisplay} is due upon approval of this Change Order.`}</div>
   </div>`;
 
   // Pay Now button, only when a Stripe checkout link already exists on
@@ -27845,8 +27846,8 @@ async function emailChangeOrderToCustomer(coId) {
   // CO_NO_STRIPE_V1 -- invoices moved to QuickBooks Payments on
   // 9/27/26 and Stripe is no longer connected, so change orders no
   // longer try to make a Stripe link (that blocked every send). The
-  // change order goes out for approval; the deposit is billed on a
-  // normal invoice, which carries the QuickBooks Pay Now link.
+  // change order goes out for approval; the full amount (due on
+  // receipt) is billed on a normal invoice with the QuickBooks Pay Now link.
   const stripePayLink = '';
   const toName = job.client || job.name || 'Valued Customer';
   const jobNum = job.jobNumber || '';
@@ -27857,8 +27858,8 @@ async function emailChangeOrderToCustomer(coId) {
     <p>Hi ${toName},</p>
     <p>${companyProfile?.companyName || 'JTXD Contracting'} has sent you a Change Order${jobNum ? ' for job <strong>' + jobNum + '</strong>' : ''}: <strong>${esc(co.title||'')}</strong>.</p>
     <p><strong>Amount: ${amtDisplay}</strong>${co.days ? ` &nbsp;·&nbsp; +${co.days} day${co.days!=1?'s':''} to schedule` : ''}</p>
-    <p>Please see the attached document for full details, including the deposit schedule.</p>
-    <p>Once you approve this change, we'll send an invoice for the deposit with a secure online payment link.</p>
+    <p>Please see the attached document for full details.</p>
+    ${amt < 0 ? `<p>This credit will be applied to your final invoice.</p>` : `<p><strong>Payment is due upon receipt.</strong> Once you approve this change, we'll send an invoice for the full amount with a secure online payment link.</p>`}
     ${stripePayLink ? `
     <div style="text-align:center;margin:24px 0">
       <a href="${stripePayLink}" style="background:#d97706;color:#fff;padding:14px 32px;border-radius:10px;text-decoration:none;font-weight:700;font-size:1rem;display:inline-block">
