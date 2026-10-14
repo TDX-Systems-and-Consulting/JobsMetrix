@@ -2840,233 +2840,143 @@ function syncCurrentJobEstimateCost() {
 // more complete than the stored field. Doesn't touch job.actualCost
 // itself — CSV-imported jobs that rely on that field for bulk-imported
 // historical data are unaffected; this only wins when live data exists.
+// JOB_MONEY_V1 (2026-10-14, Travis: "the numbers on the dashboard and
+// estimate don't match ... we need to revisit all this"). ONE calculation
+// now feeds every money number on a job -- the top bar, the Dashboard
+// panel, the Financials tab, the Estimate tab tiles, the Financials Hub
+// and the Owner Portal P&L: getJobMarginBoth()'s Actual column (tmA),
+// i.e. the locked waterfall in calcTrueMargin with:
+//   price      = signed price + approved change orders (estimate before signing)
+//   sub labor  = agreed sub amounts (Subs tab / payments), else 60% of labor billed,
+//                plus any hourly (W-2) labor clocked on the job
+//   materials  = what's been spent, or the estimate's cost if more
+//   Jason      = sales 6% before the Pool, superintendent + consultant from Overhead
+// Previously the top bar ran a different formula (computeLockedBucketSplit:
+// no Jason commission, materials at marked-up price) and the Estimate tab
+// ran a third (live items, always 60% sub placeholder).
+let _jmRefreshTimer = null;
 function refreshJobFinancials(job) {
   if (!job) return;
-  applyJobFinancialsDisplay(job, job.actualCost || 0, null, null, false);
-
+  paintJobMoney(job, null);
   if (!conDb) return;
-  const jobId = job.id;
-  let billsPaid = 0, materialsTotal = 0, subPayTotal = 0, laborCost = 0, doneCount = 0;
-  let projectedRealCost = null;
-  let lockedSplit = null;
-  const maybeApplyLive = () => {
-    if (++doneCount < 6) return;
-    const liveActual = Math.round((billsPaid + materialsTotal + subPayTotal + laborCost) * 100) / 100;
-    // Only override if live tracking actually has data, or the stored
-    // field is empty — never silently zero out a real imported number.
-    if (liveActual > 0 || !(job.actualCost > 0)) {
-      applyJobFinancialsDisplay(job, liveActual, projectedRealCost, lockedSplit, true);
-    }
-  };
-  coll('vendors').get().then(vSnap => {
-    const billPromises = vSnap.docs.map(vDoc =>
-      vDoc.ref.collection('bills').where('jobId','==',jobId).get()
-        .then(bSnap => bSnap.forEach(bDoc => { billsPaid += (bDoc.data().amtPaid || 0); }))
-        .catch(() => {})
-    );
-    Promise.all(billPromises).then(maybeApplyLive);
-  }).catch(maybeApplyLive);
-  coll('jobs').doc(jobId).collection('expenses').get()
-    .then(eSnap => { eSnap.forEach(eDoc => { materialsTotal += (eDoc.data().amount || 0); }); maybeApplyLive(); })
-    .catch(maybeApplyLive);
-  // Subcontractor payments — PAID ONLY here, deliberately different
-  // from computeRealJobCost's own subcontractorPayments query (leg 5
-  // below, which correctly counts Agreed too, since TOTAL real cost
-  // includes committed-but-unpaid obligations). This variable feeds
-  // "ac" below, which gets SUBTRACTED from total cost to compute
-  // Cost to Complete — an Agreed-but-unpaid payment is a real cost,
-  // but it hasn't actually left the bank yet, so subtracting it here
-  // would double-count it: once correctly as part of total cost, and
-  // again incorrectly as if it were already spent. Real bug found
-  // this way — an Agreed payment for the FULL labor cost made Cost to
-  // Complete drop to just Materials, since the whole labor figure got
-  // subtracted from itself.
-  coll('jobs').doc(jobId).collection('subcontractorPayments').get()
-    .then(sSnap => { sSnap.forEach(sDoc => { const p = sDoc.data(); if (p.status === 'Paid') subPayTotal += (p.amount || 0); }); maybeApplyLive(); })
-    .catch(maybeApplyLive);
-  // Real labor cost: hours logged on THIS job × each hourly person's
-  // burdened rate. Flat-rate subcontractors are explicitly excluded —
-  // their hours are informational only (Estimated vs Actual), their
-  // real cost is the subcontractorPayments total above, not hours×rate.
-  //
-  // Simplification worth knowing: overtime is calculated per-job here
-  // (hours on THIS job vs the weekly OT threshold), not blended across
-  // a person's hours on OTHER jobs the same week. For a crew working
-  // one job at a time (the normal case), this is accurate. If someone
-  // splits a week across two jobs, this could slightly under- or
-  // over-count which job "caused" the overtime — a real edge case, but
-  // a rare one, and far more accurate than the $0 labor cost this
-  // replaced.
-  coll('timeentries').where('jobId', '==', jobId).get()
-    .then(tSnap => {
-      const byPerson = {};
-      tSnap.forEach(tDoc => {
-        const t = tDoc.data();
-        if (!t.hours) return;
-        if (isFlatRateSubcontractor(t.userId, t.userEmail)) return;
-        const key = t.userId || t.userEmail || 'unknown';
-        if (!byPerson[key]) byPerson[key] = { hours: 0, rate: getPersonBurdenRate(t.userId, t.userEmail) };
-        byPerson[key].hours += t.hours;
-      });
-      const { threshold, multiplier } = getOtSettings();
-      Object.values(byPerson).forEach(p => {
-        const reg = Math.min(p.hours, threshold);
-        const ot = Math.max(0, p.hours - threshold);
-        laborCost += reg * p.rate + ot * p.rate * multiplier;
-      });
-      maybeApplyLive();
-    })
-    .catch(maybeApplyLive);
-  // Fifth leg of the same live recompute: what "Cost to Complete"
-  // should show BEFORE any real spend exists on the job at all — a
-  // real projection using true materials (billed ÷ 1.15) and the best
-  // available real labor cost, not job.estCost (the old catalog/billed-
-  // price-derived estimate field this whole dashboard was silently
-  // falling back to whenever the job was too new to have any live
-  // actual cost yet — which is every brand-new job, always).
-  computeRealJobCost(jobId)
-    .then(rc => { projectedRealCost = rc.materials + rc.labor; maybeApplyLive(); })
-    .catch(() => { maybeApplyLive(); });
-  // Sixth leg: the real locked-formula bottom line (Retained Earnings),
-  // the SAME number the COO Budget Breakdown and the Financials Hub
-  // panel both show -- so Profit/Margin on the top stat bar finally
-  // agree with the rest of the page instead of being a separate,
-  // partial (materials+labor only, no Overhead/Marketing/Flex/Taxes)
-  // calculation that happened to share the same "Projected Profit"
-  // label. Travis: "I want it done right."
-  computeLockedBucketSplit(job)
-    .then(split => { lockedSplit = split; maybeApplyLive(); })
-    .catch(() => { maybeApplyLive(); });
+  clearTimeout(_jmRefreshTimer);
+  _jmRefreshTimer = setTimeout(() => {
+    const token = (window._jmTok = (window._jmTok || 0) + 1);
+    getJobMarginBoth(job.id, true)
+      .then(b => { if (window._jmTok === token) paintJobMoney(job, b || { empty: true }); })
+      .catch(e => { console.warn('Job money calc failed', e); if (window._jmTok === token) paintJobMoney(job, { error: true }); });
+  }, 400);
 }
 
-function applyJobFinancialsDisplay(job, acOverride, realCostOverride, lockedSplitOverride, isLive) {
-  const fmt = v => '$' + Number(v||0).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0});
-  const cv = getJobValue(job);
-  // Projected cost baseline for a job with no real spend logged yet:
-  // prefer the real-cost projection (true materials + best-available
-  // real labor cost — see computeRealJobCost) over job.estCost, which
-  // is the OLD catalog/billed-price-derived estimate field. Every
-  // brand-new job falls into this branch, always, since it by
-  // definition has zero real spend yet — this was previously showing
-  // stale catalog-cost numbers on literally every job until real
-  // activity got logged on it.
-  const ec = (typeof realCostOverride === 'number' && realCostOverride > 0) ? realCostOverride : (job.estCost || 0);
-  const ac = acOverride || 0;
-  // Best-known TOTAL cost for Cost to Complete (materials + labor only —
-  // "what does this job cost to finish," a real operational number
-  // independent of company-level allocations like Overhead/Marketing).
-  const bestCost = ec;
-  // Profit/Margin, on the other hand, are the REAL bottom line -- same
-  // number as the COO Budget Breakdown's Retained Earnings and the
-  // Financials Hub panel's Projected Company Profit (see
-  // computeLockedBucketSplit). This used to be cv - bestCost (materials
-  // + labor only, skipping Overhead/Marketing/Flex/Taxes entirely) --
-  // technically gross profit, but labeled and colored like it was the
-  // final number, which is exactly what made it read ~$22K too high.
-  // Falls back to the gross calc only for the very first paint, before
-  // the locked-formula fetch (async, since it needs real subcontractor
-  // + Stripe fee data) has had a chance to resolve.
-  const profit = lockedSplitOverride ? lockedSplitOverride.retainedEarnings : (cv - bestCost);
-  const margin = lockedSplitOverride
-    ? (lockedSplitOverride.revenue > 0 ? (profit / lockedSplitOverride.revenue * 100) : 0)
-    : (cv ? (profit / cv * 100) : 0);
-
-  // Collected: prefer the imported JobTread figure; fall back to in-app invoice payments.
+function jobCollectedAmount(job) {
   const jobInvs = (allInvoices || []).filter(i => i.jobId === job.id);
-  const inAppCollected = jobInvs.reduce((s,i) => s + (i.amtPaid||0), 0);
-  const collected = (typeof job.collected === 'number') ? job.collected : inAppCollected;
-  const balance = cv - collected;
-  // Cost to Complete = total real cost to JTXD for this job, full
-  // stop -- per Travis's direct correction, this is NOT "remaining to
-  // be spent" (ec - ac). It should never read $0 just because a
-  // deposit's been paid or the job's fully wrapped; it always answers
-  // "what does this job cost, total," same number whether the job
-  // hasn't started or is completely paid off. If a separate "how much
-  // is still owed to subs/vendors" figure is ever wanted, that needs
-  // its own metric -- this field doesn't track that anymore.
-  const costToComplete = ec;
-  const projProfit = profit;
-  const projMargin = margin;
+  const inApp = jobInvs.reduce((s, i) => s + (i.amtPaid || 0), 0);
+  return (typeof job.collected === 'number') ? job.collected : inApp;
+}
 
-  const _canSeeMoney = canViewJobMoney();
-  const setFin = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = _canSeeMoney ? fmt(val) : '\u2022\u2022\u2022'; };
-  // Fields whose real value depends on the async live-data chain
-  // (Firestore fetches for vendor bills, subcontractor payments, hours,
-  // the locked-formula split) showed a fully-formatted, confident "$0"
-  // the instant a job opened, before that chain had a chance to
-  // resolve -- indistinguishable from "confirmed, nothing spent." A
-  // real screenshot of that exact flash ($0 Spent to Date on a job that
-  // actually had $924 spent) is what prompted this. isLive=false only
-  // on the very first, fast-paint call in refreshJobFinancials(); every
-  // subsequent call (after the live chain resolves) passes true.
-  const setFinAsync = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = !isLive ? '…' : (_canSeeMoney ? fmt(val) : '\u2022\u2022\u2022'); };
-  // Top financial bar
-  setFin('fbarApproved', cv);
-  setFin('fbarCollected', collected);
-  setFin('fbarBalance', balance);
-  setFinAsync('fbarCostComplete', costToComplete);
-  setFinAsync('fbarSpentToDate', ac);
-  // fbarProfit's color was hardcoded green (#a3f2d2) directly in the
-  // HTML template and never touched again -- setFin() only ever set
-  // .textContent. A genuine loss (e.g. -$60,011 on a job with no
-  // approved price yet but real projected costs) displayed in green,
-  // which reads as "good" when it's the opposite. Same 3-way
-  // green/red/neutral-amber pattern already used correctly elsewhere
-  // in this file (e.g. Financials Hub net cash position).
-  const fbarP = document.getElementById('fbarProfit');
-  if (fbarP) {
-    fbarP.textContent = !isLive ? '…' : (_canSeeMoney ? fmt(projProfit) : '\u2022\u2022\u2022');
-    fbarP.style.color = !isLive ? 'var(--muted)' : !_canSeeMoney ? 'var(--muted)' : projProfit > 0 ? '#a3f2d2' : projProfit < 0 ? '#f87171' : '#f59e0b';
+function paintJobMoney(job, b) {
+  const fmt = v => (v < 0 ? '-$' : '$') + Math.abs(Math.round(Number(v) || 0)).toLocaleString();
+  const can = canViewJobMoney();
+  const ready = !!(b && b.tmA);
+  const pending = !b;
+  const tm = ready ? b.tmA : null;
+  const info = ready ? (b.info || {}) : {};
+  const el = id => document.getElementById(id);
+  const put = (id, text, color, title) => {
+    const e = el(id); if (!e) return;
+    e.textContent = !can ? '\u2022\u2022\u2022' : text;
+    if (color !== undefined) e.style.color = !can ? 'var(--muted)' : color;
+    if (title !== undefined) e.title = title;
+  };
+  const wait = pending ? '…' : '—';
+  const signed = getJobValue(job) > 0;
+
+  const revenue = ready ? tm.revenue : (signed ? getJobValue(job) : Number(job.estPrice || 0));
+  const collected = jobCollectedAmount(job);
+  const balance = revenue - collected;
+  const lbl = el('fbarApprovedLabel'); if (lbl) lbl.textContent = signed ? 'Contract Price' : 'Estimate Price';
+  put('fbarApproved', fmt(revenue), '#a3f2d2',
+    signed ? `Signed price ${fmt(getJobValue(job))}` + (info.coApprovedTotal ? ` + approved change orders ${fmt(info.coApprovedTotal)}` : '') : 'Not signed yet — this is the estimate price');
+  const note = el('fbarApprovedNote');
+  if (note) {
+    const d = ready ? (info.drift || 0) : 0;
+    note.textContent = (can && signed && Math.abs(d) >= 1) ? `Estimate ${d > 0 ? '+' : '−'}${fmt(Math.abs(d))}` : (can && info.coApprovedTotal ? `incl. ${fmt(info.coApprovedTotal)} COs` : '');
+    note.style.color = (can && signed && Math.abs(d) >= 1) ? '#f59e0b' : 'var(--muted)';
+    note.title = (signed && Math.abs(d) >= 1) ? 'The estimate no longer matches the signed price + approved change orders. Profit uses the signed price. If the scope changed, write a change order.' : '';
   }
-  const fbarM = document.getElementById('fbarMargin');
-  // Was `projMargin > 0` -- a genuinely flat 0% margin (not a loss,
-  // just break-even or no revenue basis yet) fell into the red branch
-  // right alongside real negative margins. >= 0 treats true zero as
-  // neutral instead of alarming.
-  if (fbarM) {
-    fbarM.textContent = !isLive ? '…' : (_canSeeMoney ? (projMargin.toFixed(1) + '%') : '\u2022\u2022\u2022');
-    fbarM.style.color = !isLive ? 'var(--muted)' : !_canSeeMoney ? 'var(--muted)' : projMargin > 0 ? '#a3f2d2' : projMargin < 0 ? '#f87171' : '#f59e0b';
-  }
+  put('fbarCollected', fmt(collected), '#60a5fa');
+  put('fbarBalance', fmt(balance), 'var(--amber)');
+
+  const totalCost = ready ? tm.materialsCostReal + tm.realLaborCost : null;
+  let spent = ready ? (info.spentToDate || 0) : null;
+  if (ready && !spent && job.actualCost > 0) spent = job.actualCost; // older imported jobs
+  const left = ready ? Math.max(0, totalCost - spent) : null;
+  put('fbarCostComplete', ready ? fmt(totalCost) : wait, undefined,
+    ready ? `Materials ${fmt(tm.materialsCostReal)} + labor ${fmt(tm.realLaborCost)}${info.subFromEstimate ? ' (60% of labor billed — no sub amounts entered yet)' : ''}` : '');
+  put('fbarSpentToDate', ready ? fmt(spent) : wait, '#f59e0b',
+    ready ? `Vendor bills paid ${fmt(info.billsPaid || 0)} + receipts ${fmt(info.expenses || 0)} + sub payments ${fmt(info.subPaymentsTotal || 0)}${info.hourlyLabor ? ' + hourly labor ' + fmt(info.hourlyLabor) : ''}` : '');
+  put('fbarLeftToSpend', ready ? fmt(left) : wait, undefined, ready ? 'Total Job Cost minus Spent to Date' : '');
+  const profit = ready ? tm.retainedEarnings : null;
+  const pct = ready ? tm.reOfRevenuePct * 100 : null;
+  const pc = v => v > 0 ? '#a3f2d2' : v < 0 ? '#f87171' : '#f59e0b';
+  put('fbarProfit', ready ? fmt(profit) : wait, ready ? pc(profit) : 'var(--muted)', ready ? 'Retained Earnings after Jason, Overhead, Marketing, Flex and Taxes' : '');
+  put('fbarMargin', ready ? pct.toFixed(1) + '%' : wait, ready ? (pct >= 10 ? '#a3f2d2' : pct >= 5 ? '#f59e0b' : '#f87171') : 'var(--muted)',
+    ready ? `Retained Earnings ÷ price. Go/No-Go floor is 10% — this job is ${tm.goNoGo}.` : '');
+
+  // Job totals row (what used to live only on the Estimate tab)
+  put('fbarLaborBilled', ready ? fmt(tm.laborPrice) : wait);
+  put('fbarMaterialsBilled', ready ? fmt(tm.materialsPrice) : wait, undefined, ready ? `Real materials cost ${fmt(tm.materialsCostReal)} · markup ${fmt(tm.materialsMarkup)}` : '');
+  put('fbarSubLabor', ready ? fmt(tm.realLaborCost) : wait, undefined, ready ? (info.subFromEstimate ? '60% of labor billed — enter the agreed sub amounts on the Subs tab' : 'Agreed sub amounts' + (info.hourlyLabor ? ' + hourly labor' : '')) : '');
+  const subLbl = el('fbarSubLaborLabel'); if (subLbl) subLbl.textContent = ready && !info.subFromEstimate ? 'Sub Labor (agreed)' : 'Sub Labor (60% est.)';
+  put('fbarJasonPay', ready ? fmt(tm.jasonTotal) : wait, undefined,
+    ready ? `Sales ${fmt(tm.jasonCommission)} + superintendent ${fmt(tm.superintendentPay)} + consultant ${fmt(tm.consultantPay)}` : '');
+  put('fbarDays', ready ? `${tm.billedDays.toFixed(1)} / ${tm.efficiencyDays.toFixed(1)}` : wait, undefined, 'Billed days / realistic days (8-hr days)');
+  put('fbarGoNoGo', ready ? tm.goNoGo : wait, ready ? (tm.goNoGo === 'GO' ? '#1dbb87' : '#ef5350') : 'var(--muted)');
 
   // Dashboard right panel
-  setFin('dashFinApproved', cv);
-  setFin('dashFinCollected', collected);
-  setFin('dashFinBalance', balance);
-  setFinAsync('dashFinCost', bestCost);
-  // Same hardcoded-green bug as fbarProfit above -- this panel's Proj.
-  // Profit and Margin were also frozen green (#a3f2d2) in the HTML,
-  // never updated for a real loss.
-  const dashP = document.getElementById('dashFinProfit');
-  if (dashP) {
-    dashP.textContent = !isLive ? '…' : (_canSeeMoney ? fmt(projProfit) : '\u2022\u2022\u2022');
-    dashP.style.color = !isLive ? 'var(--muted)' : !_canSeeMoney ? 'var(--muted)' : projProfit > 0 ? '#a3f2d2' : projProfit < 0 ? '#f87171' : '#f59e0b';
-  }
-  const dashM = document.getElementById('dashFinMargin');
-  if (dashM) {
-    dashM.textContent = !isLive ? '…' : (_canSeeMoney ? (projMargin.toFixed(1) + '%') : '\u2022\u2022\u2022');
-    dashM.style.color = !isLive ? 'var(--muted)' : !_canSeeMoney ? 'var(--muted)' : projMargin > 0 ? '#a3f2d2' : projMargin < 0 ? '#f87171' : '#f59e0b';
-  }
+  put('dashFinApproved', fmt(revenue));
+  put('dashFinCollected', fmt(collected));
+  put('dashFinBalance', fmt(balance));
+  put('dashFinCost', ready ? fmt(totalCost) : wait);
+  put('dashFinProfit', ready ? fmt(profit) : wait, ready ? pc(profit) : 'var(--muted)');
+  put('dashFinMargin', ready ? pct.toFixed(1) + '%' : wait, ready ? pc(pct) : 'var(--muted)');
 
   // Financials tab est/actual block
-  setFin('finContract', cv);
-  setFinAsync('finEstCost', bestCost);
-  setFinAsync('finEstProfit', profit);
-  const finM = document.getElementById('finEstMargin');
-  if (finM) finM.textContent = !isLive ? '…' : (margin.toFixed(1) + '%');
-  const finBar = document.getElementById('finMarginBar');
-  if (finBar) finBar.style.width = (!isLive ? 0 : Math.min(Math.max(margin,0), 100)) + '%';
-  setFinAsync('finActualCost', ac);
-  const variance = ec - ac;
-  const varEl = document.getElementById('finVariance');
-  if (varEl) {
-    varEl.textContent = !isLive ? '…' : ((variance >= 0 ? '+' : '') + fmt(variance));
-    varEl.style.color = !isLive ? 'var(--muted)' : (variance >= 0 ? '#a3f2d2' : '#ef5350');
-  }
-  const aciEl = document.getElementById('actualCostInput');
-  if (aciEl) aciEl.value = ac || '';
+  put('finContract', fmt(revenue));
+  put('finEstCost', ready ? fmt(totalCost) : wait);
+  put('finEstProfit', ready ? fmt(profit) : wait);
+  const finM = el('finEstMargin'); if (finM) finM.textContent = ready ? pct.toFixed(1) + '%' : wait;
+  const finBar = el('finMarginBar'); if (finBar) finBar.style.width = (ready ? Math.min(Math.max(pct, 0), 100) : 0) + '%';
+  put('finActualCost', ready ? fmt(spent) : wait);
+  const varEl = el('finVariance');
+  if (varEl) { varEl.textContent = ready ? '+' + fmt(left) : wait; varEl.style.color = ready ? '#a3f2d2' : 'var(--muted)'; varEl.title = 'Left to spend'; }
+  const aciEl = el('actualCostInput'); if (aciEl && ready) aciEl.value = spent || '';
 
-  // Payment Milestones panel — completion %, and Progress/Final invoice triggers
+  // Estimate tab tiles: the same numbers (only while this job's estimate is open)
+  if (ready && job.id === conCurrentJobId) { window._jmLast = { jobId: job.id, tm, info }; paintEstimateMoneyTiles(tm, info); }
+
   renderPaymentMilestones(job.id, balance);
+}
+
+function paintEstimateMoneyTiles(tm, info) {
+  const fmt = v => (v < 0 ? '-$' : '$') + Math.abs(Math.round(Number(v) || 0)).toLocaleString();
+  const set = (id, v, color, title) => { const e = document.getElementById(id); if (!e) return; e.textContent = v; if (color) e.style.color = color; if (title !== undefined) e.title = title; };
+  set('estKpiLaborCost', fmt(tm.laborPrice));
+  set('estKpiMaterialsCost', fmt(tm.materialsPrice));
+  set('estKpiPrice', fmt(tm.revenue), null, info.signed ? 'Signed price + approved change orders' + (Math.abs(info.drift || 0) >= 1 ? ` (the estimate lines add up to ${fmt(info.estTotal)})` : '') : 'Estimate price');
+  const pl = document.getElementById('estKpiPriceLabel'); if (pl) pl.textContent = info.signed ? 'Contract Price' : 'Est. Price';
+  set('estKpiJtxdActual', fmt(tm.jtxdActual));
+  set('estKpiDaysToComplete', tm.billedDays.toFixed(1) + ' / ' + tm.efficiencyDays.toFixed(1));
+  set('estKpiSubLabor', fmt(tm.realLaborCost));
+  const sl = document.getElementById('estKpiSubLaborLabel'); if (sl) sl.textContent = info.subFromEstimate ? 'Est. Subcontractor Labor (60%)' : 'Subcontractor Labor (agreed)';
+  set('estKpiJasonCommission', fmt(tm.jasonCommission));
+  const jl = document.getElementById('estKpiJasonCommissionLabel'); if (jl) jl.textContent = `Jason Sales Commission (${Math.round(JTXD_LOCKED_RATES.jasonCommissionPct * 100)}%)`;
+  set('estKpiSuperintendentPay', fmt(tm.superintendentPay));
+  set('estKpiConsultantPay', fmt(tm.consultantPay));
+  set('estKpiJasonTotalPay', fmt(tm.jasonTotal));
+  set('estKpiProfit', fmt(tm.retainedEarnings), tm.retainedEarnings >= 0 ? '#1dbb87' : '#ef5350');
+  const m = tm.reOfRevenuePct * 100;
+  set('estKpiMargin', (Math.round(m * 10) / 10) + '%', m >= 10 ? '#1dbb87' : m >= 5 ? '#f59e0b' : '#ef5350');
 }
 
 // Counts done vs total tasks across every Epic/Feature in this job's estimate
@@ -6609,6 +6519,8 @@ function switchDetailTab(tab, btn) {
   if (headerBlock) headerBlock.style.display = isEstimate ? 'none' : '';
   if (finBar) finBar.style.display = isEstimate ? 'none' : 'grid';
   if (finBar) finBar.classList.toggle('est-tab-hide', isEstimate);
+  const finBar2 = document.getElementById('jobFinBar2');
+  if (finBar2) { finBar2.style.display = isEstimate ? 'none' : 'grid'; finBar2.classList.toggle('est-tab-hide', isEstimate); }
   // Tab row too — with the compact header's own "← Dashboard" button
   // providing a way back, the full 15-tab row is just clutter while
   // heads-down building an estimate. One click on "← Dashboard" (or
@@ -12480,88 +12392,19 @@ window.pushProposalToQuickBooks = pushProposalToQuickBooks;
 // prior bucket, in this exact order: Overhead -> Marketing -> Flex ->
 // Taxes -> Retained Earnings.
 async function computeLockedBucketSplit(job) {
-  const rc = await computeRealJobCost(job.id);
-  const realSubcontractorTotal = rc.labor;
-  // Materials Billed to Customer -- the marked-up estimate figure, NOT
-  // real spend (rc.materials, used below for the returned "materials"
-  // field, stays the real/actual cost -- everything else in the app
-  // that displays "materials" keeps meaning the same thing it always
-  // has). This is Travis's rebuilt formula: Labor Billed derives from
-  // what the customer was actually billed for materials, matching the
-  // JTXD Job Margin Calculator exactly.
-  const { materials: materialsBilled, laborAndOther: laborBilledFromEstimate } = await fetchEstimateCostSplitFresh(job.id);
-
-  // Revenue: prefer the approved contract value once one exists
-  // (contractValue / approvedOrders / pendingOrders). Before a job is
-  // formally approved -- every job still at the estimate/proposal
-  // stage, i.e. exactly the jobs this function is most useful on --
-  // getJobValue(job) returns 0. Falling straight through to that 0
-  // made Labor Billed go deeply negative (Revenue minus a REAL,
-  // positive Materials Billed number), which cascaded a nonsense
-  // negative Retained Earnings through the whole bucket formula on
-  // every un-approved job. Fall back to the estimate's own total
-  // price instead, same number the Estimate tab's own true-margin
-  // calculation already uses -- a real, always-populated revenue
-  // figure that doesn't depend on approval status.
-  const approvedValue = getJobValue(job);
-  const revenue = approvedValue > 0 ? approvedValue : (materialsBilled + laborBilledFromEstimate);
-
-  // Labor Billed (implied) = whatever's left of the customer price
-  // after Materials Billed.
-  const laborBilled = revenue - materialsBilled;
-
-  // JTXD Actual = Labor Billed minus Real Subcontractor/Labor Total,
-  // direct. No theoretical 62%/38% target split -- matches
-  // calcTrueMargin() and the finalized JTXD Job Margin Calculator
-  // template exactly (the split used to cancel out to this same number
-  // algebraically anyway; this is just honest about it, and consistent
-  // everywhere in the app now instead of three different versions of
-  // the same formula).
-
-  // Crew Food/Gas Expense -- Travis's real policy: $150/Friday lunch +
-  // $50/week gas, 2-week minimum before either charges at all, scaled
-  // off "Chosen Benchmark" days. JOBSMETRIX has no field to capture a
-  // Chosen Benchmark per job yet (it only exists as a manual entry in
-  // the spreadsheet) -- defaults to $0 here, same safe fallback the
-  // blank spreadsheet template uses, until there's somewhere real to
-  // log/store that number per job.
-  const crewFood = 0;
-  const crewGas = 0;
-
-  const jtxdActual = laborBilled - realSubcontractorTotal - crewFood - crewGas;
-
-  // Overhead/Marketing/Flex/Taxes now cascade off JTXD Actual -- what
-  // JTXD really keeps after subcontractor pay settles -- instead of
-  // off raw Revenue. Materials and Labor are pass-through money that's
-  // never really the company's to begin with; on a small job that pass-
-  // through can be most of the contract, and taking 18%+10% off the
-  // FULL revenue can exceed what's actually left over (confirmed on a
-  // real $2,698 job: 28% of revenue was $755 against only $656 truly
-  // retained). Same formula Travis's calculator now uses.
-  const overhead = jtxdActual * JTXD_LOCKED_RATES.overhead;
-  const marketing = jtxdActual * JTXD_LOCKED_RATES.marketing;
-  const remainAfterOhMkt = jtxdActual - overhead - marketing;
-  const flex = remainAfterOhMkt * JTXD_LOCKED_RATES.flex;
-  const remainAfterFlex = remainAfterOhMkt - flex;
-  const taxes = remainAfterFlex * JTXD_LOCKED_RATES.taxes;
-  // Real Stripe processing fees (card ~2.9%+$0.30, ACH/US bank
-  // account meaningfully less) come straight out of Retained Earnings
-  // -- true profit is what's left after every real cost, and this is
-  // a real cost, just a variable one tied to how the customer chose
-  // to pay rather than something baked into the estimate up front.
-  // Pulled from the ACTUAL fee Stripe charged (stripeFeeTotal on each
-  // invoice, recorded by the webhook from the real balance transaction
-  // at the moment of payment), not an estimated rate -- exact, not
-  // approximated, and correctly reflects ACH's lower real cost too.
-  // The spreadsheet has no equivalent visibility into this, so it's a
-  // genuine, deliberate difference in scope, not a mismatch to fix.
-  const stripeFees = await getJobStripeFeesTotal(job.id);
-  const retainedEarnings = remainAfterFlex - taxes - stripeFees;
-  const r = v => Math.round(v * 100) / 100;
+  // JOB_MONEY_V1: same single calculation as the job's top bar and the
+  // Job Margin Calculator's Actual column, so every screen agrees. (The
+  // old version here skipped Jason's commission and used the marked-up
+  // materials price as cost.)
+  const r = v => Math.round((Number(v) || 0) * 100) / 100;
+  const b = await getJobMarginBoth(job.id, true);
+  if (!b) return { revenue: r(getJobValue(job)), materials: 0, labor: 0, overhead: 0, marketing: 0, flex: 0, taxes: 0, stripeFees: 0, retainedEarnings: 0, jasonTotal: 0 };
+  const t = b.tmA;
   return {
-    revenue: r(revenue), materials: r(rc.materials), labor: r(realSubcontractorTotal),
-    overhead: r(overhead), marketing: r(marketing), flex: r(flex),
-    taxes: r(taxes), stripeFees: r(stripeFees), retainedEarnings: r(retainedEarnings),
+    revenue: r(t.revenue), materials: r(t.materialsCostReal), labor: r(t.realLaborCost),
+    overhead: r(t.overhead), marketing: r(t.marketing), flex: r(t.flex),
+    taxes: r(t.taxes), stripeFees: 0, retainedEarnings: r(t.retainedEarnings),
+    jasonTotal: r(t.jasonTotal), jasonCommission: r(t.jasonCommission),
   };
 }
 window.computeLockedBucketSplit = computeLockedBucketSplit;
@@ -23069,26 +22912,91 @@ function calcTrueMargin(allItems, preAggregated) {
 //             60% estimate, flagged, when nothing has been entered yet.
 // Used inline on every job's Financials tab AND by the print button.
 const _jmEstCache = {};
+// JOB_MONEY_V1 (2026-10-14): read every estimate line straight from
+// Firestore and split it the SAME way calcTrueMargin does (costType
+// 'Labor' = labor, everything else = materials). The old version used
+// fetchEstimateCostSplitFresh, which put untyped items in labor -- the
+// opposite of the Estimate tab -- one reason the two screens disagreed.
 async function getJobEstimateSplit(jobId, fresh) {
   const c = _jmEstCache[jobId];
   if (!fresh && c && Date.now() - c.t < 60000) return c.v;
-  const [price, cost] = await Promise.all([
-    fetchEstimateCostSplitFresh(jobId),
-    fetchEstimateTrueCostSplit(jobId).catch(() => ({ materials: 0 })),
-  ]);
-  const v = { matPrice: price.materials || 0, labPrice: price.laborAndOther || 0, matCost: cost.materials || 0 };
+  const items = await fetchEstimateItemsFlat(jobId);
+  let matPrice = 0, labPrice = 0, matCost = 0, labCost = 0;
+  items.forEach(it => {
+    const q = Number(it.qty) || 1, uc = Number(it.unitCost) || 0;
+    const up = (it.unitPrice != null && it.unitPrice !== '') ? (Number(it.unitPrice) || 0) : uc * (1 + (Number(it.markup) || 0) / 100);
+    if (it.costType === 'Labor') { labPrice += q * up; labCost += q * uc; }
+    else { matPrice += q * up; matCost += q * uc; }
+  });
+  const v = { matPrice, labPrice, matCost, labCost, itemCount: items.length };
   _jmEstCache[jobId] = { t: Date.now(), v };
   return v;
+}
+
+async function fetchEstimateItemsFlat(jobId) {
+  const jobRef = coll('jobs').doc(jobId);
+  const gSnap = await jobRef.collection('estimateGroups').get();
+  const out = [];
+  await Promise.all(gSnap.docs.map(async gDoc => {
+    const [itSnap, sgSnap] = await Promise.all([gDoc.ref.collection('items').get(), gDoc.ref.collection('subgroups').get()]);
+    itSnap.forEach(d => out.push(d.data()));
+    await Promise.all(sgSnap.docs.map(async sDoc => {
+      const [sItems, ssSnap] = await Promise.all([sDoc.ref.collection('items').get(), sDoc.ref.collection('subgroups').get()]);
+      sItems.forEach(d => out.push(d.data()));
+      const ss = await Promise.all(ssSnap.docs.map(x => x.ref.collection('items').get()));
+      ss.forEach(snap => snap.forEach(d => out.push(d.data())));
+    }));
+  }));
+  return out;
+}
+window.fetchEstimateItemsFlat = fetchEstimateItemsFlat;
+
+// Real hourly (W-2 / non-flat-rate) labor cost logged on a job: hours x
+// burdened rate, overtime per the company OT settings. Flat-rate subs are
+// excluded -- their cost is their agreed amount. Same math the old
+// dashboard used for Spent to Date.
+async function computeJobHourlyLabor(jobId) {
+  try {
+    const tSnap = await coll('timeentries').where('jobId', '==', jobId).get();
+    const byPerson = {};
+    tSnap.forEach(d => {
+      const t = d.data();
+      if (!t.hours) return;
+      if (typeof isFlatRateSubcontractor === 'function' && isFlatRateSubcontractor(t.userId, t.userEmail)) return;
+      const key = t.userId || t.userEmail || 'unknown';
+      if (!byPerson[key]) byPerson[key] = { hours: 0, rate: getPersonBurdenRate(t.userId, t.userEmail) || 0 };
+      byPerson[key].hours += t.hours;
+    });
+    const { threshold, multiplier } = getOtSettings();
+    let cost = 0;
+    Object.values(byPerson).forEach(p => {
+      cost += Math.min(p.hours, threshold) * p.rate + Math.max(0, p.hours - threshold) * p.rate * multiplier;
+    });
+    return cost;
+  } catch (e) { return 0; }
+}
+
+async function fetchJobBillTotals(jobId) {
+  let amount = 0, paid = 0;
+  try {
+    const vSnap = await coll('vendors').get();
+    await Promise.all(vSnap.docs.map(v => v.ref.collection('bills').where('jobId', '==', jobId).get()
+      .then(b => b.forEach(d => { const x = d.data(); amount += Number(x.amount) || 0; paid += Number(x.amtPaid) || 0; }))
+      .catch(() => {})));
+  } catch (e) {}
+  return { amount, paid };
 }
 
 async function getJobActualInputs(job, est, opts) {
   opts = opts || {};
   const jobId = job.id;
   const jobRef = coll('jobs').doc(jobId);
-  const [expSnap, payDocs, subsSnap] = await Promise.all([
+  const [expSnap, payDocs, subsSnap, billTotals, hourlyLabor] = await Promise.all([
     jobRef.collection('expenses').get().catch(() => null),
     jobRef.collection('subcontractorPayments').get().catch(() => null),
     jobRef.collection('subs').get().catch(() => null),
+    opts.billsByJob ? Promise.resolve(null) : fetchJobBillTotals(jobId),
+    computeJobHourlyLabor(jobId),
   ]);
   const num = v => Number(v) || 0;
   const info = { notes: [] };
@@ -23099,8 +23007,14 @@ async function getJobActualInputs(job, est, opts) {
   // OWNER_PORTAL_V1: another job's change orders are fetched (conCOs only holds the open job's).
   const coList = (jobId === conCurrentJobId && Array.isArray(conCOs)) ? conCOs
     : await jobRef.collection('changeorders').get().then(s => { const a = []; s.forEach(d => a.push(d.data())); return a; }).catch(() => []);
+  // JOB_MONEY_V1: the status check was `!== 'Approved'`, the OLD name --
+  // change orders are now 'Customer Approved' / 'Invoiced' / 'Paid', so
+  // approved change orders were silently never counted anywhere.
+  const coCounts = c => ['Customer Approved', 'Invoiced', 'Paid'].includes(normalizeCOStatus(c.status));
+  let coApprovedTotal = 0;
+  coList.forEach(co => { if (coCounts(co)) coApprovedTotal += num(co.amount); });
   coList.forEach(co => {
-    if (co.status !== 'Approved' || co.appliedToEstimate) return;
+    if (!coCounts(co) || co.appliedToEstimate) return;
     coCount++;
     const items = Array.isArray(co.lineItems) ? co.lineItems : [];
     if (!items.length) { coLabPrice += num(co.amount); return; }
@@ -23114,20 +23028,34 @@ async function getJobActualInputs(job, est, opts) {
   if (coCount) info.notes.push(`${coCount} approved change order${coCount > 1 ? 's' : ''} (${fhMoney(info.coTotal)}) not in the estimate yet — included in Actual`);
 
   const matPrice = est.matPrice + coMatPrice;
-  const labPrice = est.labPrice + coLabPrice;
+  // JOB_MONEY_V1 (Travis 10/14/26): once a job is signed, profit is figured
+  // from the SIGNED price + approved change orders, not the live estimate.
+  // Labor billed is whatever of that price isn't materials. Before signing,
+  // the estimate is the price.
+  const contract = num(getJobValue(job));
+  const estTotal = est.matPrice + est.labPrice + coMatPrice + coLabPrice;
+  let labPrice = est.labPrice + coLabPrice;
+  if (contract > 0) {
+    const revenueSigned = contract + coApprovedTotal;
+    labPrice = Math.max(0, revenueSigned - matPrice);
+    info.drift = estTotal - revenueSigned;
+    if (Math.abs(info.drift) >= 1) info.notes.push(`Estimate is ${fhMoney(Math.abs(info.drift))} ${info.drift > 0 ? 'more' : 'less'} than the signed price + approved change orders — profit uses the signed price`);
+  }
+  Object.assign(info, { contract, coApprovedTotal, estTotal, signed: contract > 0 });
 
   // Materials / job costs actually spent
   let expenses = 0;
   if (expSnap) expSnap.forEach(d => { expenses += num(d.data().amount); });
   const billsReady = !!opts.billsByJob || window._fhBillsFor === jobId;
-  const bills = opts.billsByJob ? num(opts.billsByJob[jobId]) : billsReady ? (_fhBills || []).reduce((s, b) => s + num(b.amount), 0) : 0;
+  const bills = opts.billsByJob ? num(opts.billsByJob[jobId]) : billTotals ? billTotals.amount : billsReady ? (_fhBills || []).reduce((s, b) => s + num(b.amount), 0) : 0;
+  const billsPaid = billTotals ? billTotals.paid : bills;
   const matSpent = expenses + bills;
   const estMatCost = est.matCost > 0 ? est.matCost : est.matPrice / (1 + JTXD_LOCKED_RATES.materialsMarkupPct);
   const matBudget = estMatCost + coMatCost;
   const complete = /^(complete|completed|closed completed)$/i.test(job.status || '');
   const matActual = complete ? matSpent : Math.max(matSpent, matBudget);
-  Object.assign(info, { matSpent, matBudget, complete, billsReady });
-  if (!billsReady) info.notes.push('Vendor bills still loading…');
+  Object.assign(info, { matSpent, matBudget, complete, billsReady: billsReady || !!billTotals });
+  if (!billsReady && !billTotals) info.notes.push('Vendor bills still loading…');
   if (complete) info.notes.push(`Materials: job is Complete — Actual uses the ${fhMoney(matSpent)} really spent`);
   else if (matSpent > matBudget) info.notes.push(`Materials: ${fhMoney(matSpent)} spent — ${fhMoney(matSpent - matBudget)} OVER the ${fhMoney(matBudget)} budget`);
   else info.notes.push(`Materials: ${fhMoney(matSpent)} spent of ${fhMoney(matBudget)} budget (${matBudget ? Math.round(matSpent / matBudget * 100) : 0}%) — Actual holds the budget until spending passes it or the job is marked Complete`);
@@ -23155,7 +23083,13 @@ async function getJobActualInputs(job, est, opts) {
   if (subCommitted) info.notes.push(`Subs: ${fhMoney(subCommitted)} agreed${subsTab >= subsPay ? ' (Subs tab)' : ' (contractor job totals)'} · ${payCount} payment${payCount === 1 ? '' : 's'} entered = ${fhMoney(payTotal)} · ${fhMoney(subPaid)} marked Paid${payTotal > subPaid + 1 ? ' (mark each one Paid once the money goes out)' : ''}${subCommitted > subEstimate + 1 ? ' — ' + fhMoney(subCommitted - subEstimate) + ' OVER the 60% budget' : ''}`);
   else info.notes.push('Subs: no agreed amount entered yet — Actual uses the 60% estimate');
 
-  return { matPrice, labPrice, matCost: matActual, realLaborCost: subCommitted || subEstimate, info };
+  // JOB_MONEY_V1: hourly (W-2) labor is a real labor cost too.
+  const realLaborCost = subCommitted ? subCommitted + hourlyLabor : Math.max(subEstimate, hourlyLabor);
+  // Spent to Date = money actually out: vendor bills paid + receipts/expenses
+  // + EVERY sub payment entered (not voided) + hourly labor.
+  const spentToDate = billsPaid + expenses + payTotal + hourlyLabor;
+  Object.assign(info, { hourlyLabor, billsPaid, expenses, subPaymentsTotal: payTotal, spentToDate });
+  return { matPrice, labPrice, matCost: matActual, realLaborCost, info };
 }
 
 async function getJobMarginBoth(jobId, fresh, opts) {
@@ -24057,6 +23991,10 @@ function updateEstimateSummary() {
   // straightforward sums, split by costType via calcTrueMargin.
   const tm = calcTrueMargin(allItemsFlat);
   const profit = tm.retainedEarnings;
+  // JOB_MONEY_V1: once the shared job calculation has run for this job,
+  // the tiles below are repainted from it (paintEstimateMoneyTiles) so the
+  // Estimate tab and the top bar always show the same numbers. This quick
+  // paint from the live lines only shows while that's loading.
 
   const setEl = (id, v, color) => {
     const el = document.getElementById(id);
@@ -24098,6 +24036,8 @@ function updateEstimateSummary() {
       + `Labor Billed $${Math.round(tm.laborPrice).toLocaleString()} vs. real cost $${Math.round(tm.laborCost).toLocaleString()} `
       + `feeds Overhead 18% / Marketing 6% / Flex 5% / Taxes 27.5%. True Margin: ${tm.trueMarginPct.toFixed(1)}%.`;
   }
+
+  if (window._jmLast && window._jmLast.jobId === conCurrentJobId) paintEstimateMoneyTiles(window._jmLast.tm, window._jmLast.info);
 
   // Sync estCost/estPrice from the estimate. Do NOT overwrite contractValue —
   // the contract/approved price is set on the job and only moves via change orders.
