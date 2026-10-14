@@ -27595,7 +27595,93 @@ window.printProposal = printProposal;
 // there. Safe from popup blockers since this only ever fires on a
 // direct tap of the Print button itself, a genuine user gesture, not
 // an automatic background action.
+// PDF_SAVE_V1 (2026-10-14): Save PDF on the document viewer. Inside the
+// installed iPhone app Apple ignores window.print(), so Print did nothing.
+// This builds a real PDF in the app (html2pdf, loaded on first use) and
+// hands it to the share sheet -- Mail, Messages, Save to Files, or Print
+// from there. On a computer it downloads the file.
+let _html2pdfLoading = null;
+function loadHtml2Pdf() {
+  if (window.html2pdf) return Promise.resolve();
+  if (_html2pdfLoading) return _html2pdfLoading;
+  _html2pdfLoading = new Promise((res, rej) => {
+    const sc = document.createElement('script');
+    sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
+    sc.onload = () => res(); sc.onerror = () => { _html2pdfLoading = null; rej(new Error('Could not load the PDF tool — check your connection.')); };
+    document.head.appendChild(sc);
+  });
+  return _html2pdfLoading;
+}
+function isIosInstalledApp() {
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  return ios && (navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches));
+}
+function viewerDocAsElement(stripImages) {
+  const html = document.getElementById('viewProposalIframe').srcdoc || '';
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.querySelectorAll('script').forEach(n => n.remove());
+  if (stripImages) doc.querySelectorAll('img').forEach(n => n.remove());
+  const css = [...doc.querySelectorAll('style')].map(st => st.textContent).join('\n')
+    .replace(/(^|[},\s])(html|body)(?=\s*[{,:.\s])/g, '$1.jm-pdf-root');
+  const el = document.createElement('div');
+  el.className = 'jm-pdf-root';
+  el.style.cssText = 'width:800px;background:#fff;color:#1f2937';
+  el.innerHTML = `<style>${css}</style>` + doc.body.innerHTML;
+  return el;
+}
+let _pendingPdfFile = null;
+async function saveViewProposalPdf(btn) {
+  // Second tap after "Share PDF" appears: share the file already built
+  // (iPhone only allows the share sheet straight from a tap).
+  if (_pendingPdfFile && _pendingPdfFile.src !== document.getElementById('viewProposalIframe').srcdoc) _pendingPdfFile = null; // different document now
+  if (_pendingPdfFile) {
+    const f = _pendingPdfFile.file; _pendingPdfFile = null;
+    if (btn) btn.textContent = '📄 Save PDF';
+    try { await navigator.share({ files: [f], title: f.name }); } catch (e) {}
+    return;
+  }
+  const titleTxt = (document.getElementById('viewProposalModalTitle')?.textContent || 'Document').replace(/^[^A-Za-z0-9]+/, '').trim();
+  const fname = (titleTxt.replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, ' ').trim() || 'Document') + '.pdf';
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Making PDF…'; }
+  try {
+    await loadHtml2Pdf();
+    const make = (strip) => window.html2pdf().set({
+      margin: [8, 8, 10, 8],
+      filename: fname,
+      image: { type: 'jpeg', quality: 0.95 },
+      html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', windowWidth: 820 },
+      jsPDF: { unit: 'mm', format: 'letter', orientation: 'portrait' },
+      pagebreak: { mode: ['css', 'legacy'], avoid: ['.cat-block', '.room-heading', 'tr', '.sig', '.sig-block', '.total-box'] },
+    }).from(viewerDocAsElement(strip)).outputPdf('blob');
+    let blob;
+    try { blob = await make(false); } catch (e) { blob = await make(true); } // a logo that won't load shouldn't block the PDF
+    const file = new File([blob], fname, { type: 'application/pdf' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: fname }); }
+      catch (e) {
+        if (e && e.name === 'AbortError') return; // they closed the share sheet
+        _pendingPdfFile = { file, src: document.getElementById('viewProposalIframe').srcdoc }; // tap took too long -- one more tap opens the share sheet
+        if (btn) { btn.disabled = false; btn.textContent = '📤 Share PDF'; return; }
+      }
+    } else {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = fname;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    }
+  } catch (e) {
+    alert('Could not make the PDF: ' + e.message);
+  } finally {
+    if (btn && !_pendingPdfFile) { btn.disabled = false; btn.textContent = orig || '📄 Save PDF'; }
+  }
+}
+window.saveViewProposalPdf = saveViewProposalPdf;
+
 function printViewProposalModal() {
+  // Inside the installed iPhone app print() is ignored -- go straight to the
+  // PDF + share sheet, which has its own Print option.
+  if (isIosInstalledApp()) { saveViewProposalPdf(document.getElementById('viewPdfBtn')); return; }
   // PRINT_INPLACE_V1 (2026-10-14): Travis was stranded again on his iPhone
   // in a bare proposal tab with no Print or Close button -- the new tab
   // this used to open has no way back inside the installed app. Now the
