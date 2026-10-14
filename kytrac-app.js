@@ -474,6 +474,40 @@ window.initDragDrop = initDragDrop;
 // ── Jobs page kanban board (separate from Home board) ──
 let _showClosedLanes = false;
 
+// COL_TOTALS_V1 (2026-10-14): per-column totals under each Jobs board
+// header -- job count, money owed (open invoice balances), and money paid.
+// One toggle (header click or the "Column Totals" button) opens/closes them
+// on every column; remembered on this device. Money lines only for people
+// allowed to see job money.
+let _showColTotals = (() => { try { return localStorage.getItem('jmColTotals') === '1'; } catch (e) { return false; } })();
+function toggleColTotals() {
+  _showColTotals = !_showColTotals;
+  try { localStorage.setItem('jmColTotals', _showColTotals ? '1' : '0'); } catch (e) {}
+  renderJobsBoard();
+}
+window.toggleColTotals = toggleColTotals;
+
+function colTotalsHtml(jobs, color) {
+  if (!_showColTotals) return '';
+  const money = v => '$' + Math.round(v).toLocaleString();
+  const can = (typeof canViewJobMoney === 'function') ? canViewJobMoney() : false;
+  const ids = new Set(jobs.map(j => j.id));
+  let owed = 0, openInv = 0, paid = 0;
+  (allInvoices || []).forEach(i => {
+    if (!ids.has(i.jobId)) return;
+    if (i.status === 'Draft' || i.status === 'Void') return;
+    const bal = (Number(i.total) || 0) - (Number(i.amtPaid) || 0);
+    if (bal > 0.009) { owed += bal; openInv++; }
+  });
+  jobs.forEach(j => { paid += (typeof jobCollectedAmount === 'function') ? jobCollectedAmount(j) : 0; });
+  const row = (label, val, c) => `<div style="display:flex;justify-content:space-between;gap:8px"><span style="color:var(--muted)">${label}</span><span style="font-weight:800;font-variant-numeric:tabular-nums;color:${c || 'var(--text)'}">${val}</span></div>`;
+  return `<div class="kt-col-totals" style="margin:-2px 0 8px;padding:7px 9px;border-radius:8px;background:${color}12;border:1px solid ${color}33;font-size:.74rem;display:grid;gap:3px">
+    ${row('Jobs', jobs.length)}
+    ${can ? (owed > 0.009 ? row('Owed' + (openInv ? ' (' + openInv + ' inv.)' : ''), money(owed), '#f59e0b') : row('Owed', '—')) : ''}
+    ${can ? (paid > 0.009 ? row('Paid', money(paid), '#1dbb87') : row('Paid', '—')) : ''}
+  </div>`;
+}
+
 function renderJobsBoard() {
   const board = document.getElementById('jobsBoard');
   if (!board) return;
@@ -493,7 +527,7 @@ function renderJobsBoard() {
     el.className = 'kt-col';
     el.style.borderTopColor = col.color;
     el.dataset.status = col.dropStatus; // what gets written to Firestore on drop
-    el.innerHTML = `<div class="kt-col-head"><span class="kt-col-head-label" style="color:${col.color}">${col.label}</span><span class="kt-col-count" style="background:${col.color}22;color:${col.color};flex-shrink:0">${jobs.length}</span></div>`;
+    el.innerHTML = `<div class="kt-col-head" onclick="toggleColTotals()" style="cursor:pointer" title="Show / hide column totals"><span class="kt-col-head-label" style="color:${col.color}">${col.label}</span><span class="kt-col-count" style="background:${col.color}22;color:${col.color};flex-shrink:0">${jobs.length}</span></div>${colTotalsHtml(jobs, col.color)}`;
     jobs.forEach(job => {
       const card = document.createElement('div');
       card.className = 'kt-job-card';
@@ -550,6 +584,15 @@ function renderJobsBoard() {
     board.parentElement?.insertBefore(toggleBtn, board);
   }
   toggleBtn.textContent = _showClosedLanes ? '▲ Hide Closed' : '▼ Show Closed';
+  let totalsBtn = document.getElementById('toggleColTotalsBtn');
+  if (!totalsBtn) {
+    totalsBtn = document.createElement('button');
+    totalsBtn.id = 'toggleColTotalsBtn';
+    totalsBtn.style.cssText = toggleBtn.style.cssText + ';margin-left:8px';
+    totalsBtn.onclick = toggleColTotals;
+    toggleBtn.insertAdjacentElement('afterend', totalsBtn);
+  }
+  totalsBtn.textContent = _showColTotals ? '▲ Hide Column Totals' : '▼ Column Totals';
 
   // Init drag and drop after render
   setTimeout(() => initDragDrop('jobsBoard'), 50);
@@ -11673,6 +11716,8 @@ function renderInvoicingPage() {
   const tfoot = document.getElementById('invAllFoot');
   if (!tbody) return;
   if (typeof renderQbUnmatched === 'function') setTimeout(renderQbUnmatched, 0); // QBO_INVOICE_IMPORT_V1
+  // COL_TOTALS_V1: invoices arrive after the board draws -- refresh the column totals once they settle.
+  if (_showColTotals && typeof _jobsView !== 'undefined' && _jobsView === 'kanban') { clearTimeout(window._colTotTimer); window._colTotTimer = setTimeout(() => { if (document.getElementById('jobsBoard')) renderJobsBoard(); }, 600); }
 
   // Populate job filter
   const jobFilter = document.getElementById('invJobFilter');
