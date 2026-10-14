@@ -10562,7 +10562,7 @@ async function getJobCoords(job) {
     const lat = parseFloat(res[0].lat), lon = parseFloat(res[0].lon);
     if (isNaN(lat) || isNaN(lon)) return null;
     if (typeof _geoCache !== 'undefined') _geoCache[addr] = { lat, lon };
-    if (conDb) coll('jobs').doc(job.id).update({ geoLat: lat, geoLon: lon }).catch(() => {});
+    try { if (conDb && job.id) coll('jobs').doc(job.id).update({ geoLat: lat, geoLon: lon }).catch(() => {}); } catch (e) {}
     job.geoLat = lat; job.geoLon = lon;
     return { lat, lon };
   } catch (e) { return null; }
