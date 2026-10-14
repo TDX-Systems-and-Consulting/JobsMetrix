@@ -27842,35 +27842,12 @@ async function emailChangeOrderToCustomer(coId) {
   if (!job.email) { alert('This job has no customer email on file. Add one in the job details first.'); return; }
   if (!conFunctions) { alert("Email sending isn't set up yet — deploy the Cloud Functions first."); return; }
 
-  // STRIPE-ONLY, same pattern as invoices: generate a fresh Card + ACH
-  // (us_bank_account) payment link for the remaining balance every send.
-  // If Stripe fails, stop and tell Travis rather than emailing a change
-  // order with no way for the customer to actually pay it.
-  const balance = (co.amount || 0) - (co.amtPaid || 0);
-  let stripePayLink = '';
-  let stripeErrorMsg = '';
-  if (balance > 0) {
-    try {
-      const createLink = conFunctions.httpsCallable('createStripePaymentLinkForCO');
-      const result = await createLink({ companyId: currentCompanyId, jobId: conCurrentJobId, coId });
-      if (result.data?.url) stripePayLink = result.data.url;
-    } catch (e) {
-      stripeErrorMsg = e.message || String(e);
-      console.warn('Stripe payment link not generated for change order:', stripeErrorMsg);
-    }
-    if (!stripePayLink) {
-      alert('Could not generate a Stripe payment link for this change order.\n\n'
-        + 'The change order was NOT sent.\n\n'
-        + (stripeErrorMsg ? ('Actual error: ' + stripeErrorMsg + '\n\n') : '')
-        + 'Check that Stripe is connected under Settings, then try again.');
-      return;
-    }
-    // Reflect the fresh link locally so the preview iframe (rendered
-    // below via renderChangeOrderDocumentHtml) shows the real Pay Now
-    // button immediately, without waiting on a Firestore listener.
-    co.paymentLink = stripePayLink;
-  }
-
+  // CO_NO_STRIPE_V1 -- invoices moved to QuickBooks Payments on
+  // 9/27/26 and Stripe is no longer connected, so change orders no
+  // longer try to make a Stripe link (that blocked every send). The
+  // change order goes out for approval; the deposit is billed on a
+  // normal invoice, which carries the QuickBooks Pay Now link.
+  const stripePayLink = '';
   const toName = job.client || job.name || 'Valued Customer';
   const jobNum = job.jobNumber || '';
   const amt = Number(co.amount || 0);
@@ -27880,7 +27857,8 @@ async function emailChangeOrderToCustomer(coId) {
     <p>Hi ${toName},</p>
     <p>${companyProfile?.companyName || 'JTXD Contracting'} has sent you a Change Order${jobNum ? ' for job <strong>' + jobNum + '</strong>' : ''}: <strong>${esc(co.title||'')}</strong>.</p>
     <p><strong>Amount: ${amtDisplay}</strong>${co.days ? ` &nbsp;·&nbsp; +${co.days} day${co.days!=1?'s':''} to schedule` : ''}</p>
-    <p>Please see the attached document for full details, including the deposit schedule and how to pay.</p>
+    <p>Please see the attached document for full details, including the deposit schedule.</p>
+    <p>Once you approve this change, we'll send an invoice for the deposit with a secure online payment link.</p>
     ${stripePayLink ? `
     <div style="text-align:center;margin:24px 0">
       <a href="${stripePayLink}" style="background:#d97706;color:#fff;padding:14px 32px;border-radius:10px;text-decoration:none;font-weight:700;font-size:1rem;display:inline-block">
@@ -27890,7 +27868,7 @@ async function emailChangeOrderToCustomer(coId) {
     <p>Thank you for choosing ${companyProfile?.companyName || 'JTXD Contracting'}.</p>
   `;
 
-  const coHtml = renderChangeOrderDocumentHtml(co, job, companyProfile, false);
+  const coHtml = renderChangeOrderDocumentHtml({ ...co, paymentLink: '' }, job, companyProfile, false);
   document.getElementById('emailPreviewProposalFrame').srcdoc = coHtml;
 
   _pendingCOEmail = { job, co, toName, subject, bodyHtml };
