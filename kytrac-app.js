@@ -498,16 +498,19 @@ function colTotalsHtml(jobs, color) {
   jobs.forEach(j => {
     const got = (typeof jobCollectedAmount === 'function') ? jobCollectedAmount(j) : 0;
     paid += got;
-    const signed = Number(getJobValue(j)) || 0;
+    // A job past the proposal stage is sold: use its signed price, or its
+    // estimate price when no contract price was ever entered.
+    const sold = !['New Lead', 'Appointment Set', 'Building Estimate', 'Submitted', 'Closed Lost'].includes(j.status);
+    const signed = (Number(getJobValue(j)) || 0) || (sold ? (Number(j.estPrice) || 0) : 0);
     if (signed > 0) {
       const bal = signed + (Number((typeof _jcdCOTotals !== 'undefined' && _jcdCOTotals[j.id]) || 0)) - got;
       if (bal > 0.009) { owed += bal; owingJobs++; }
     }
   });
   const row = (label, val, c) => `<div style="display:flex;justify-content:space-between;gap:8px"><span style="color:var(--muted)">${label}</span><span style="font-weight:800;font-variant-numeric:tabular-nums;color:${c || 'var(--text)'}">${val}</span></div>`;
-  return `<div class="kt-col-totals" style="margin:-2px 0 8px;padding:7px 9px;border-radius:8px;background:${color}12;border:1px solid ${color}33;font-size:.74rem;display:grid;gap:3px" title="Owed = signed price + approved change orders − paid">
+  return `<div class="kt-col-totals" style="margin:-2px 0 8px;padding:7px 9px;border-radius:8px;background:${color}12;border:1px solid ${color}33;font-size:.74rem;display:grid;gap:3px" title="Outstanding balance = signed price (or estimate price if none entered) + approved change orders − paid">
     ${row('Jobs', jobs.length)}
-    ${can ? (owed > 0.009 ? row('Owed' + (owingJobs > 1 ? ' (' + owingJobs + ' jobs)' : ''), money(owed), '#f59e0b') : row('Owed', '—')) : ''}
+    ${can ? (owed > 0.009 ? row('Outstanding balance' + (owingJobs > 1 ? ' (' + owingJobs + ' jobs)' : ''), money(owed), '#f59e0b') : row('Outstanding balance', '—')) : ''}
     ${can ? (paid > 0.009 ? row('Paid', money(paid), '#1dbb87') : row('Paid', '—')) : ''}
   </div>`;
 }
