@@ -1754,7 +1754,7 @@ function conRenderStats() {
           let s = 0;
           eSnap.forEach(eDoc => {
             const m = eDoc.data();
-            if (m.date && m.date >= monthStart2 && m.amount > 0) s += m.amount;
+            if (m.date && m.date >= monthStart2 && m.amount) s += m.amount; // RECEIPT_RETURNS_V1: returns are negative
           });
           return s;
         }).catch(() => 0)
@@ -6698,7 +6698,7 @@ const FH_BILL_COLORS = { Paid:'#1dbb87', Partial:'#f97316', Unpaid:'#f59e0b', Ov
 function fhBadge(txt, color) {
   return `<span class="finhub-badge" style="color:${color};background:${color}22">${esc(txt)}</span>`;
 }
-function fhMoney(n) { return '$' + Math.round(n||0).toLocaleString(); }
+function fhMoney(n) { const v = Math.round(n||0); return (v < 0 ? '\u2212$' : '$') + Math.abs(v).toLocaleString(); }
 
 // Load bills tagged to this job across all vendors (bills live under vendors/{id}/bills with a jobId field)
 function fhLoadJobBills(jobId, cb) {
@@ -25005,7 +25005,19 @@ let _rcPendingFile = null;
 let _rcReceipts = [];
 let _rcUnsub = null;
 
-function rcMoney(n) { return '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function rcMoney(n) { n = Number(n) || 0; return (n < 0 ? '\u2212$' : '$') + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+// RECEIPT_RETURNS_V1: a return/refund is saved as a NEGATIVE amount, so it
+// takes money off the job's materials cost. The iPhone number pad has no
+// minus key, so the Type dropdown does the sign instead of the person.
+function rcIsReturn(prefix) { return (document.getElementById(prefix + 'Type')?.value || 'Purchase') === 'Return'; }
+function rcTypeChanged(prefix) {
+  const ret = rcIsReturn(prefix);
+  const a = document.getElementById(prefix + 'AmountLbl'); if (a) a.textContent = ret ? 'Refund amount ($) *' : 'Total ($) *';
+  const p = document.getElementById(prefix + 'PaidWithLbl'); if (p) p.textContent = ret ? 'Refunded to' : 'Paid with';
+  const b = document.getElementById(prefix + 'SubmitBtn');
+  if (b) b.textContent = ret ? 'Save return' : (prefix === 'cr' ? 'Save company expense' : 'Upload receipt');
+}
+window.rcTypeChanged = rcTypeChanged;
 function rcCanManage() { return typeof canViewJobMoney === 'function' ? canViewJobMoney() : isOwnerOrAdmin(); }
 
 function loadJobReceipts(jobId) {
@@ -25030,6 +25042,7 @@ function rcResetForm() {
   const prev = document.getElementById('rcPreview'); if (prev) { prev.removeAttribute('src'); prev.style.display = 'none'; }
   const lbl = document.getElementById('rcFileLabel'); if (lbl) lbl.textContent = '📷 Take / choose receipt photo';
   const paid = document.getElementById('rcPaidWith'); if (paid) paid.value = 'Company card';
+  const t = document.getElementById('rcType'); if (t) { t.value = 'Purchase'; rcTypeChanged('rc'); }
 }
 
 function onReceiptFileChosen(input) {
@@ -25048,9 +25061,11 @@ function onReceiptFileChosen(input) {
 async function submitReceipt() {
   const jobId = conCurrentJobId;
   if (!jobId) return;
-  if (!_rcPendingFile) { alert('Take or choose a photo of the receipt first.'); return; }
-  const amount = parseFloat(document.getElementById('rcAmount')?.value);
-  if (!amount || amount <= 0) { alert('Enter the receipt total.'); return; }
+  const isReturn = rcIsReturn('rc');
+  if (!_rcPendingFile) { alert(isReturn ? 'Take or choose a photo of the return slip first.' : 'Take or choose a photo of the receipt first.'); return; }
+  const rawAmt = Math.abs(parseFloat(document.getElementById('rcAmount')?.value));
+  if (!rawAmt) { alert(isReturn ? 'Enter the refund amount.' : 'Enter the receipt total.'); return; }
+  const amount = isReturn ? -rawAmt : rawAmt;
   const vendor = (document.getElementById('rcVendor')?.value || '').trim();
   const paidWith = document.getElementById('rcPaidWith')?.value || 'Company card';
   const note = (document.getElementById('rcNote')?.value || '').trim();
@@ -25070,9 +25085,9 @@ async function submitReceipt() {
 
     const job = conJobs.find(j => j.id === jobId);
     const who = conCurrentUser?.displayName || conCurrentUser?.email || 'Unknown';
-    const needsReimburse = paidWith === 'Personal card / cash';
+    const needsReimburse = !isReturn && paidWith === 'Personal card / cash';
     const receipt = {
-      amount, vendor, paidWith, note, photoUrl, photoPath: path,
+      amount, vendor, paidWith, note, photoUrl, photoPath: path, isReturn,
       isPdf: !(file.type || '').startsWith('image/'),
       needsReimbursement: needsReimburse,
       status: 'New',
@@ -25090,7 +25105,7 @@ async function submitReceipt() {
       owner = team.find(m => m.role === 'Owner') || null;
     } catch (e) {}
     const ownerEmail = owner?.email || RECEIPT_ALERT_FALLBACK_EMAIL;
-    const action = needsReimburse ? 'REIMBURSE' : 'Reconcile';
+    const action = isReturn ? 'Return credit' : needsReimburse ? 'REIMBURSE' : 'Reconcile';
     const todoText = `${action} receipt: ${rcMoney(amount)}${vendor ? ' at ' + vendor : ''} — ${who} (${paidWith}) on ${job?.jobNumber || job?.name || 'job'}`;
     try {
       const todoRef = await coll('todos').add({
@@ -25106,7 +25121,7 @@ async function submitReceipt() {
     try {
       const sendEmail = conFunctions.httpsCallable('sendJobspanEmail');
       const lines = [
-        `<p><strong>${esc(who)}</strong> uploaded a receipt on <strong>${esc(job?.jobNumber || '')} ${esc(job?.name && job.name !== job.jobNumber ? '— ' + job.name : '')}</strong>.</p>`,
+        `<p><strong>${esc(who)}</strong> uploaded ${isReturn ? 'a <strong>return / refund</strong>' : 'a receipt'} on <strong>${esc(job?.jobNumber || '')} ${esc(job?.name && job.name !== job.jobNumber ? '— ' + job.name : '')}</strong>.</p>`,
         `<p style="font-size:20px;margin:12px 0"><strong>${rcMoney(amount)}</strong>${vendor ? ' at ' + esc(vendor) : ''}</p>`,
         `<p>Paid with: <strong>${esc(paidWith)}</strong>${needsReimburse ? ' — <strong style="color:#b45309">needs reimbursement</strong>' : ''}</p>`,
         note ? `<p>Note: ${esc(note)}</p>` : '',
@@ -25115,7 +25130,7 @@ async function submitReceipt() {
       ].join('');
       await sendEmail({
         to: ownerEmail, toName: owner?.name || '',
-        subject: `Receipt ${needsReimburse ? 'to REIMBURSE' : 'to reconcile'}: ${rcMoney(amount)}${vendor ? ' — ' + vendor : ''} (${job?.jobNumber || 'job'})`,
+        subject: `${isReturn ? 'Return credit' : 'Receipt ' + (needsReimburse ? 'to REIMBURSE' : 'to reconcile')}: ${rcMoney(amount)}${vendor ? ' — ' + vendor : ''} (${job?.jobNumber || 'job'})`,
         bodyHtml: lines,
         bodyText: `${who} uploaded a receipt: ${rcMoney(amount)}${vendor ? ' at ' + vendor : ''}, paid with ${paidWith}. ${photoUrl}`,
         docType: 'receipt', jobId,
@@ -25123,11 +25138,11 @@ async function submitReceipt() {
     } catch (e) { console.warn('Receipt email alert failed', e); }
 
     rcResetForm();
-    alert('Receipt uploaded. Travis has been notified.');
+    alert((isReturn ? 'Return saved' : 'Receipt uploaded') + '. Travis has been notified.');
   } catch (e) {
     alert('Could not upload receipt: ' + e.message);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Upload receipt'; }
+    if (btn) { btn.disabled = false; rcTypeChanged('rc'); }
   }
 }
 
@@ -25142,7 +25157,7 @@ function renderJobReceipts() {
   if (!_rcReceipts.length) { list.innerHTML = '<div class="small muted">No receipts uploaded for this job yet.</div>'; return; }
   const manage = rcCanManage();
   const badge = s => {
-    const c = { New: '#f59e0b', Logged: '#3b82f6', Reimbursed: '#1dbb87', Reconciled: '#1dbb87' }[s] || '#8ea3c8';
+    const c = { New: '#f59e0b', Logged: '#3b82f6', Reimbursed: '#1dbb87', Reconciled: '#1dbb87', Return: '#1dbb87' }[s] || '#8ea3c8';
     return `<span style="font-size:.7rem;font-weight:700;padding:2px 8px;border-radius:999px;border:1px solid ${c};color:${c}">${esc(s || 'New')}</span>`;
   };
   list.innerHTML = _rcReceipts.map(r => {
@@ -25161,7 +25176,7 @@ function renderJobReceipts() {
       ${thumb}
       <div style="flex:1;min-width:0">
         <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap">
-          <strong>${rcMoney(r.amount)}${r.vendor ? ' · ' + esc(r.vendor) : ''}</strong>${badge(r.status)}
+          <strong style="${r.amount < 0 ? 'color:#1dbb87' : ''}">${rcMoney(r.amount)}${r.vendor ? ' · ' + esc(r.vendor) : ''}</strong><span style="display:flex;gap:4px">${r.amount < 0 ? badge('Return') : ''}${badge(r.status)}</span>
         </div>
         <div class="small muted">${esc(r.uploadedByName || '')} · ${esc(r.paidWith || '')}${r.needsReimbursement ? ' · <span style="color:#f59e0b;font-weight:700">needs reimbursement</span>' : ''}${when ? ' · ' + when : ''}</div>
         ${r.note ? `<div class="small" style="margin-top:2px">${esc(r.note)}</div>` : ''}
@@ -25190,7 +25205,7 @@ async function rcLogAsMaterials(receiptId) {
   const jobId = conCurrentJobId;
   const r = _rcReceipts.find(x => x.id === receiptId);
   if (!r || !rcCanManage()) return;
-  const desc = prompt('Description for the materials purchase:', r.note || 'Materials');
+  const desc = prompt(r.amount < 0 ? 'Description for the return (comes off materials cost):' : 'Description for the materials purchase:', r.amount < 0 ? 'Return' + (r.note ? ' — ' + r.note : '') : (r.note || 'Materials'));
   if (desc === null) return;
   try {
     const job = conJobs.find(j => j.id === jobId);
@@ -25286,6 +25301,7 @@ function crResetForm() {
   const p = document.getElementById('crPreview'); if (p) { p.removeAttribute('src'); p.style.display = 'none'; }
   const l = document.getElementById('crFileLabel'); if (l) l.textContent = '📷 Take / choose receipt photo';
   const d = document.getElementById('crDate'); if (d) d.value = new Date().toISOString().split('T')[0];
+  const t = document.getElementById('crType'); if (t) { t.value = 'Purchase'; rcTypeChanged('cr'); }
 }
 
 async function crUploadFile(file) {
@@ -25302,8 +25318,10 @@ async function crUploadFile(file) {
 
 async function submitCompanyReceipt() {
   if (!canViewFinancialsTab()) return;
-  const amount = parseFloat(document.getElementById('crAmount')?.value);
-  if (!amount || amount <= 0) { alert('Enter the receipt total.'); return; }
+  const isReturn = rcIsReturn('cr');
+  const rawAmt = Math.abs(parseFloat(document.getElementById('crAmount')?.value));
+  if (!rawAmt) { alert(isReturn ? 'Enter the refund amount.' : 'Enter the receipt total.'); return; }
+  const amount = isReturn ? -rawAmt : rawAmt;
   if (!_crPendingFile && !confirm('No photo attached. Save this expense without a receipt photo?')) return;
   const category = document.getElementById('crCategory')?.value || 'Other / one-off';
   const btn = document.getElementById('crSubmitBtn');
@@ -25316,8 +25334,8 @@ async function submitCompanyReceipt() {
       vendor: (document.getElementById('crVendor')?.value || '').trim(),
       note: (document.getElementById('crNote')?.value || '').trim(),
       date: document.getElementById('crDate')?.value || new Date().toISOString().split('T')[0],
-      paidWith, needsReimbursement: paidWith === 'Personal card / cash',
-      status: paidWith === 'Personal card / cash' ? 'Reimburse' : 'Logged',
+      paidWith, needsReimbursement: !isReturn && paidWith === 'Personal card / cash', isReturn,
+      status: !isReturn && paidWith === 'Personal card / cash' ? 'Reimburse' : 'Logged',
       ...photo,
       uploadedBy: conCurrentUser?.email || '', uploadedByName: conCurrentUser?.displayName || conCurrentUser?.email || '',
       companyId: currentCompanyId, scope: 'company',
@@ -25325,7 +25343,7 @@ async function submitCompanyReceipt() {
     });
     crResetForm();
   } catch (e) { alert('Could not save: ' + e.message); }
-  finally { if (btn) { btn.disabled = false; btn.textContent = 'Save company expense'; } }
+  finally { if (btn) { btn.disabled = false; rcTypeChanged('cr'); } }
 }
 
 function crSetMonth(v) { _crMonth = v || new Date().toISOString().slice(0, 7); renderCompanyReceiptsList(); }
@@ -25354,7 +25372,7 @@ function renderCompanyReceiptsList() {
     return `<div style="display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--line)">
       ${thumb}
       <div style="flex:1;min-width:0">
-        <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><strong>${rcMoney(r.amount)}${r.vendor ? ' · ' + esc(r.vendor) : ''}</strong>${badge(r.status)}</div>
+        <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><strong style="${r.amount < 0 ? 'color:#1dbb87' : ''}">${rcMoney(r.amount)}${r.vendor ? ' · ' + esc(r.vendor) : ''}</strong><span>${r.amount < 0 ? '<span style="font-size:.7rem;font-weight:700;padding:2px 8px;border-radius:999px;border:1px solid #1dbb87;color:#1dbb87;margin-right:4px">Return</span>' : ''}${badge(r.status)}</span></div>
         <div class="small muted">${esc(r.date || '')} · ${esc(r.category || '')} → ${esc(r.bucket || crBucketFor(r.category))} · ${esc(r.uploadedByName || '')} · ${esc(r.paidWith || '')}</div>
         ${r.note ? `<div class="small" style="margin-top:2px">${esc(r.note)}</div>` : ''}
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
