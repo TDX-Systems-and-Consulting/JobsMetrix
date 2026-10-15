@@ -3012,7 +3012,7 @@ function paintJobMoney(job, b) {
   put('fbarCostComplete', ready ? fmt(totalCost) : wait, undefined,
     ready ? `Materials ${fmt(tm.materialsCostReal)} + labor ${fmt(tm.realLaborCost)}${info.subFromEstimate ? ' (60% of labor billed — no sub amounts entered yet)' : ''}` : '');
   put('fbarSpentToDate', ready ? fmt(spent) : wait, '#f59e0b',
-    ready ? `Vendor bills paid ${fmt(info.billsPaid || 0)} + receipts ${fmt(info.expenses || 0)} + sub payments ${fmt(info.subPaymentsTotal || 0)}${info.hourlyLabor ? ' + hourly labor ' + fmt(info.hourlyLabor) : ''}` : '');
+    ready ? `Vendor bills paid ${fmt(info.billsPaid || 0)} + receipts & materials purchases ${fmt(info.expenses || 0)} + sub payments ${fmt(info.subPaymentsTotal || 0)}${info.hourlyLabor ? ' + hourly labor ' + fmt(info.hourlyLabor) : ''}` : '');
   put('fbarLeftToSpend', ready ? fmt(left) : wait, undefined, ready ? 'Total Job Cost minus Spent to Date' : '');
   const profit = ready ? tm.retainedEarnings : null;
   const pct = ready ? tm.reOfRevenuePct * 100 : null;
@@ -20951,7 +20951,7 @@ function renderOverviewReport(el, jobs, f) {
 // receipts + vendor bills + sub payments, the full waterfall. Tapping a
 // row opens that job's Financials tab, and a ▸ shows where each number
 // came from right in the report.
-let _pnlToken = 0, _pnlRows = [], _pnlOpen = {};
+let _pnlToken = 0, _pnlRows = [], _pnlOpen = {}, _pnlSort = { key: 'price', dir: -1 };
 function pnlMoney(v) { v = Math.round(Number(v) || 0); return (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString(); }
 async function renderJobsPnLReport(el, jobs) {
   const tok = ++_pnlToken;
@@ -20970,6 +20970,13 @@ async function renderJobsPnLReport(el, jobs) {
   _pnlRows = rows;
   drawJobsPnL(el);
 }
+// JOBS_PNL_SORT_V1: tap any column header to sort; tap again to flip.
+function pnlSortBy(key) {
+  if (_pnlSort.key === key) _pnlSort.dir = -_pnlSort.dir;
+  else _pnlSort = { key, dir: (key === 'job' || key === 'status') ? 1 : -1 };
+  const el = document.getElementById('reportContent'); if (el) drawJobsPnL(el);
+}
+window.pnlSortBy = pnlSortBy;
 function pnlTogglewhy(id, ev) { if (ev) ev.stopPropagation(); _pnlOpen[id] = !_pnlOpen[id]; const el = document.getElementById('reportContent'); if (el) drawJobsPnL(el); }
 function drawJobsPnL(el) {
   const td = 'padding:8px 10px;border-bottom:1px solid var(--line)';
@@ -20985,8 +20992,12 @@ function drawJobsPnL(el) {
   });
   const tot = k => calc.reduce((s, r) => s + (r[k] || 0), 0);
   const tPrice = tot('price'), tRe = tot('re');
-  const head = ['Job', 'Status', 'Price', 'Collected', 'Balance', 'Total job cost', 'Spent to date', 'Retained Earnings', 'RE %'];
-  const body = calc.sort((a, b) => (b.price || 0) - (a.price || 0)).map(r => {
+  const head = [['job', 'Job'], ['status', 'Status'], ['price', 'Price'], ['collected', 'Collected'], ['balance', 'Balance'], ['cost', 'Total job cost'], ['spent', 'Spent to date'], ['re', 'Retained Earnings'], ['pct', 'RE %']];
+  calc.forEach(r => { r.balance = r.price - r.collected; });
+  const k = _pnlSort.key, dir = _pnlSort.dir;
+  const sv = r => k === 'job' ? (r.job.jobNumber || '') : k === 'status' ? (KYTRAC_STATUSES.findIndex(x => x.name === r.job.status)) : (r.tm || ['price', 'collected', 'balance'].includes(k) ? (r[k] || 0) : -Infinity);
+  calc.sort((a, b) => { const x = sv(a), y = sv(b); return (typeof x === 'string' ? x.localeCompare(y, undefined, { numeric: true }) : (x === y ? 0 : x < y ? -1 : 1)) * dir; });
+  const body = calc.map(r => {
     const { job, tm, info } = r;
     const s = KYTRAC_STATUSES.find(x => x.name === job.status) || { color: 'var(--amber)' };
     const stLabel = job.status === 'Inspection Pending' ? 'Occupancy Inspection' : job.status === 'Complete' ? 'Complete – Awaiting Final Payment' : job.status;
@@ -20999,7 +21010,7 @@ function drawJobsPnL(el) {
           <div>Approved change orders: <strong>${pnlMoney(info.coApprovedTotal)}</strong></div>
           <div>Estimate total: <strong>${pnlMoney(info.estTotal)}</strong></div>
           <div>Materials billed / labor billed: <strong>${pnlMoney(tm.materialsPrice)} / ${pnlMoney(tm.laborPrice)}</strong></div>
-          <div>Receipts / materials purchases: <strong>${pnlMoney(info.expenses)}</strong></div>
+          <div>Receipts / materials purchases: <strong>${pnlMoney(info.expenses)}</strong>${info.receiptsUnlogged ? ` <span class="muted">(incl. ${pnlMoney(info.receiptsUnlogged)} not yet logged)</span>` : ''}</div>
           <div>Vendor bills paid: <strong>${pnlMoney(info.billsPaid)}</strong></div>
           <div>Sub payments entered: <strong>${pnlMoney(info.subPaymentsTotal)}</strong></div>
           <div>Sub agreed amounts: <strong>${info.subFromEstimate ? 'none — using 60% of labor' : pnlMoney(info.subCommitted)}</strong></div>
@@ -21022,10 +21033,10 @@ function drawJobsPnL(el) {
   }).join('');
   el.innerHTML = `
     <div class="kt-card">
-      <div class="kt-card-head"><h3>🔧 Job Profit & Loss</h3><span class="small muted">Same numbers as each job's money bar · tap a job to open its Financials · ▸ shows the math</span></div>
+      <div class="kt-card-head"><h3>🔧 Job Profit & Loss</h3><span class="small muted">Same numbers as each job's money bar · tap a column to sort · tap a job to open its Financials · ▸ shows the math</span></div>
       <div style="overflow-x:auto">
         <table class="kt-table" style="min-width:900px">
-          <thead><tr>${head.map((h, i) => `<th style="${i > 1 ? 'text-align:right' : ''}">${h}</th>`).join('')}</tr></thead>
+          <thead><tr>${head.map(([key, h], i) => `<th onclick="pnlSortBy('${key}')" style="cursor:pointer;user-select:none;white-space:nowrap;${i > 1 ? 'text-align:right;' : ''}${_pnlSort.key === key ? 'color:var(--amber)' : ''}" title="Sort">${h}${_pnlSort.key === key ? (_pnlSort.dir < 0 ? ' ▼' : ' ▲') : ' <span style="opacity:.35">↕</span>'}</th>`).join('')}</tr></thead>
           <tbody>${body}</tbody>
           <tfoot><tr style="background:rgba(217,119,6,.06);font-weight:800">
             <td colspan="2" style="padding:10px 12px">TOTALS (${calc.length} jobs)</td>
@@ -23315,12 +23326,13 @@ async function getJobActualInputs(job, est, opts) {
   opts = opts || {};
   const jobId = job.id;
   const jobRef = coll('jobs').doc(jobId);
-  const [expSnap, payDocs, subsSnap, billTotals, hourlyLabor] = await Promise.all([
+  const [expSnap, payDocs, subsSnap, billTotals, hourlyLabor, rcptSnap] = await Promise.all([
     jobRef.collection('expenses').get().catch(() => null),
     jobRef.collection('subcontractorPayments').get().catch(() => null),
     jobRef.collection('subs').get().catch(() => null),
     opts.billsByJob ? Promise.resolve(null) : fetchJobBillTotals(jobId),
     computeJobHourlyLabor(jobId),
+    jobRef.collection('receipts').get().catch(() => null),
   ]);
   const num = v => Number(v) || 0;
   const info = { notes: [] };
@@ -23369,7 +23381,17 @@ async function getJobActualInputs(job, est, opts) {
 
   // Materials / job costs actually spent
   let expenses = 0;
-  if (expSnap) expSnap.forEach(d => { expenses += num(d.data().amount); });
+  const loggedReceiptIds = new Set();
+  if (expSnap) expSnap.forEach(d => { const x = d.data(); expenses += num(x.amount); if (x.receiptId) loggedReceiptIds.add(x.receiptId); });
+  // RECEIPTS_IN_COST_V1 (Travis 10/15/26): receipts uploaded on the job's
+  // Receipts tab are real money spent the moment they're uploaded -- they
+  // used to count only after someone tapped "Log as materials", so Spent to
+  // Date read $0 with every receipt loaded. A receipt already logged as a
+  // materials purchase is counted once (through that purchase).
+  let receiptsUnlogged = 0, receiptsCount = 0;
+  if (rcptSnap) rcptSnap.forEach(d => { const r = d.data(); receiptsCount++; if (!loggedReceiptIds.has(d.id) && !r.expenseId) receiptsUnlogged += num(r.amount); });
+  expenses += receiptsUnlogged;
+  if (receiptsUnlogged) info.notes.push(`Receipts: ${fhMoney(receiptsUnlogged)} uploaded on the Receipts tab and not yet logged as materials — counted in Spent to Date`);
   const billsReady = !!opts.billsByJob || window._fhBillsFor === jobId;
   const bills = opts.billsByJob ? num(opts.billsByJob[jobId]) : billTotals ? billTotals.amount : billsReady ? (_fhBills || []).reduce((s, b) => s + num(b.amount), 0) : 0;
   const billsPaid = billTotals ? billTotals.paid : bills;
@@ -23412,7 +23434,7 @@ async function getJobActualInputs(job, est, opts) {
   // Spent to Date = money actually out: vendor bills paid + receipts/expenses
   // + EVERY sub payment entered (not voided) + hourly labor.
   const spentToDate = billsPaid + expenses + payTotal + hourlyLabor;
-  Object.assign(info, { hourlyLabor, billsPaid, expenses, subPaymentsTotal: payTotal, spentToDate });
+  Object.assign(info, { hourlyLabor, billsPaid, expenses, receiptsUnlogged, receiptsCount, subPaymentsTotal: payTotal, spentToDate });
   return { matPrice, labPrice, matCost: matActual, realLaborCost, info };
 }
 
