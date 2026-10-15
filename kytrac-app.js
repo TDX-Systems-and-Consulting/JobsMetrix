@@ -20918,54 +20918,104 @@ function renderOverviewReport(el, jobs, f) {
 }
 
 // ── JOBS P&L REPORT ──
-function renderJobsPnLReport(el, jobs) {
-  const sorted = [...jobs].sort((a,b) => (b.contractValue||0)-(a.contractValue||0));
+// JOBS_PNL_V2 (Travis 10/15/26): the old report read job.estCost /
+// job.actualCost (stale fields nobody updates) and its rows did nothing
+// when tapped. Now every row runs the SAME calculation as the job's own
+// money bar (getJobMarginBoth): signed price + approved change orders,
+// receipts + vendor bills + sub payments, the full waterfall. Tapping a
+// row opens that job's Financials tab, and a ▸ shows where each number
+// came from right in the report.
+let _pnlToken = 0, _pnlRows = [], _pnlOpen = {};
+function pnlMoney(v) { v = Math.round(Number(v) || 0); return (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString(); }
+async function renderJobsPnLReport(el, jobs) {
+  const tok = ++_pnlToken;
+  const list = jobs.filter(j => { const st = KYTRAC_STATUSES.find(s => s.name === j.status); return st && j.status !== 'Closed Lost' && st.group !== 'estimates'; });
+  if (!list.length) { el.innerHTML = '<div class="kt-card"><div class="kt-card-body muted">No sold jobs in this date range.</div></div>'; return; }
+  el.innerHTML = `<div class="kt-card"><div class="kt-card-body muted" id="pnlProgress">Figuring ${list.length} jobs…</div></div>`;
+  let billsByJob = {};
+  try { billsByJob = await opAllBillsByJob(); } catch (e) {}
+  const rows = [];
+  for (let i = 0; i < list.length; i += 4) {
+    const chunk = await Promise.all(list.slice(i, i + 4).map(j => getJobMarginBoth(j.id, false, { billsByJob }).then(b => ({ job: j, b })).catch(e => ({ job: j, b: null, err: e.message }))));
+    if (tok !== _pnlToken) return;
+    rows.push(...chunk);
+    const pg = document.getElementById('pnlProgress'); if (pg) pg.textContent = `Figuring jobs… ${rows.length} of ${list.length}`;
+  }
+  _pnlRows = rows;
+  drawJobsPnL(el);
+}
+function pnlTogglewhy(id, ev) { if (ev) ev.stopPropagation(); _pnlOpen[id] = !_pnlOpen[id]; const el = document.getElementById('reportContent'); if (el) drawJobsPnL(el); }
+function drawJobsPnL(el) {
+  const td = 'padding:8px 10px;border-bottom:1px solid var(--line)';
+  const num = 'text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap';
+  const calc = _pnlRows.map(({ job, b }) => {
+    const tm = b && b.tmA, info = (b && b.info) || {};
+    const price = tm ? tm.revenue : getJobValueOrEstimate(job);
+    const collected = jobCollectedAmount(job);
+    const cost = tm ? tm.materialsCostReal + tm.realLaborCost : 0;
+    let spent = tm ? (info.spentToDate || 0) : 0;
+    if (tm && !spent && job.actualCost > 0) spent = job.actualCost;
+    return { job, b, tm, info, price, collected, cost, spent, re: tm ? tm.retainedEarnings : 0, pct: tm ? tm.reOfRevenuePct * 100 : 0 };
+  });
+  const tot = k => calc.reduce((s, r) => s + (r[k] || 0), 0);
+  const tPrice = tot('price'), tRe = tot('re');
+  const head = ['Job', 'Status', 'Price', 'Collected', 'Balance', 'Total job cost', 'Spent to date', 'Retained Earnings', 'RE %'];
+  const body = calc.sort((a, b) => (b.price || 0) - (a.price || 0)).map(r => {
+    const { job, tm, info } = r;
+    const s = KYTRAC_STATUSES.find(x => x.name === job.status) || { color: 'var(--amber)' };
+    const stLabel = job.status === 'Inspection Pending' ? 'Occupancy Inspection' : job.status === 'Complete' ? 'Complete – Awaiting Final Payment' : job.status;
+    const pc = !tm ? 'var(--muted)' : r.pct >= 10 ? '#1dbb87' : r.pct >= 5 ? '#f59e0b' : '#ef5350';
+    const problem = !tm ? (r.price ? 'No estimate line items — can’t split materials vs. labor' : 'No price — no signed contract and no estimate')
+      : !r.price ? 'Price is $0' : !info.signed ? 'No signed price entered — using the estimate' : '';
+    const why = _pnlOpen[job.id] ? `<tr><td colspan="9" style="padding:8px 14px 12px;border-bottom:1px solid var(--line);background:rgba(110,145,210,.05)">
+        ${tm ? `<div class="small" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:4px 18px;margin-bottom:6px">
+          <div>Signed price: <strong>${pnlMoney(info.contract)}</strong>${info.signed ? '' : ' (not signed — using the estimate)'}</div>
+          <div>Approved change orders: <strong>${pnlMoney(info.coApprovedTotal)}</strong></div>
+          <div>Estimate total: <strong>${pnlMoney(info.estTotal)}</strong></div>
+          <div>Materials billed / labor billed: <strong>${pnlMoney(tm.materialsPrice)} / ${pnlMoney(tm.laborPrice)}</strong></div>
+          <div>Receipts / materials purchases: <strong>${pnlMoney(info.expenses)}</strong></div>
+          <div>Vendor bills paid: <strong>${pnlMoney(info.billsPaid)}</strong></div>
+          <div>Sub payments entered: <strong>${pnlMoney(info.subPaymentsTotal)}</strong></div>
+          <div>Sub agreed amounts: <strong>${info.subFromEstimate ? 'none — using 60% of labor' : pnlMoney(info.subCommitted)}</strong></div>
+          ${info.hourlyLabor ? `<div>Hourly labor: <strong>${pnlMoney(info.hourlyLabor)}</strong></div>` : ''}
+          <div>Jason (6+2+2): <strong>${pnlMoney(tm.jasonTotal)}</strong></div>
+        </div>
+        <div class="small muted">${(info.notes || []).map(n => '• ' + esc(n)).join('<br>')}</div>` : `<div class="small">${esc(problem)}. Open the job and build the estimate (or enter the signed price) so the P&L can figure it.</div>`}
+      </td></tr>` : '';
+    return `<tr style="cursor:pointer" onclick="openJobDetail('${job.id}','financials')" title="Open this job's Financials">
+      <td style="${td}"><div style="display:flex;gap:8px;align-items:flex-start"><button class="btn" onclick="pnlTogglewhy('${job.id}',event)" style="padding:0 7px;font-size:.75rem;line-height:1.6" title="Show where the numbers come from">${_pnlOpen[job.id] ? '▾' : '▸'}</button><div><div style="font-weight:700">${esc(job.jobNumber || '')}</div><div style="font-size:.72rem;color:var(--amber)">${esc(jobLabelParts(job) || job.name || '')}</div></div></div></td>
+      <td style="${td}"><span style="font-size:.72rem;font-weight:700;color:${s.color}">${esc(stLabel || '')}</span>${problem ? `<div style="font-size:.7rem;color:#ef5350;margin-top:2px">${esc(problem)}</div>` : ''}</td>
+      <td style="${td};${num};font-weight:700">${pnlMoney(r.price)}</td>
+      <td style="${td};${num};color:#60a5fa">${pnlMoney(r.collected)}</td>
+      <td style="${td};${num};color:var(--amber)">${pnlMoney(r.price - r.collected)}</td>
+      <td style="${td};${num};color:var(--muted)">${tm ? pnlMoney(r.cost) : '—'}</td>
+      <td style="${td};${num};color:#f59e0b">${tm ? pnlMoney(r.spent) : '—'}</td>
+      <td style="${td};${num};font-weight:800;color:${pc}">${tm ? pnlMoney(r.re) : '—'}</td>
+      <td style="${td};${num};font-weight:800;color:${pc}">${tm ? r.pct.toFixed(1) + '%' : '—'}</td>
+    </tr>${why}`;
+  }).join('');
   el.innerHTML = `
     <div class="kt-card">
-      <div class="kt-card-head"><h3>🔧 Job Profit & Loss</h3></div>
+      <div class="kt-card-head"><h3>🔧 Job Profit & Loss</h3><span class="small muted">Same numbers as each job's money bar · tap a job to open its Financials · ▸ shows the math</span></div>
       <div style="overflow-x:auto">
-        <table class="kt-table">
-          <thead><tr>
-            <th>Job</th><th>Status</th><th style="text-align:right">Contract</th>
-            <th style="text-align:right">Est. Cost</th><th style="text-align:right">Actual Cost</th>
-            <th style="text-align:right">Est. Margin</th><th style="text-align:right">Act. Margin</th>
-            <th style="text-align:right">Margin %</th>
-          </tr></thead>
-          <tbody>
-            ${sorted.map(j => {
-              const contract = getJobValue(j);
-              const estCost = j.estCost||0;
-              const actual = j.actualCost||0;
-              const estMargin = contract - estCost;
-              const actMargin = contract - actual;
-              const marginPct = contract ? Math.round(actMargin/contract*100) : 0;
-              const pctColor = marginPct >= 20 ? '#1dbb87' : marginPct >= 10 ? '#f59e0b' : '#ef5350';
-              const s = KYTRAC_STATUSES.find(x=>x.name===j.status)||{color:'var(--amber)'};
-              return `<tr>
-                <td><div style="font-weight:700">${esc(j.name)}</div><div style="font-size:.72rem;color:var(--amber)">${esc(j.jobNumber||'')}</div></td>
-                <td><span style="font-size:.72rem;font-weight:700;color:${s.color}">${j.status}</span></td>
-                <td style="text-align:right;font-weight:700">$${Math.round(contract).toLocaleString()}</td>
-                <td style="text-align:right;color:var(--muted)">$${Math.round(estCost).toLocaleString()}</td>
-                <td style="text-align:right;color:var(--muted)">$${Math.round(actual).toLocaleString()}</td>
-                <td style="text-align:right;color:#f59e0b">$${Math.round(estMargin).toLocaleString()}</td>
-                <td style="text-align:right;color:${actMargin>=0?'#1dbb87':'#ef5350'}">$${Math.round(actMargin).toLocaleString()}</td>
-                <td style="text-align:right;font-weight:800;color:${pctColor}">${marginPct}%</td>
-              </tr>`;
-            }).join('')}
-          </tbody>
+        <table class="kt-table" style="min-width:900px">
+          <thead><tr>${head.map((h, i) => `<th style="${i > 1 ? 'text-align:right' : ''}">${h}</th>`).join('')}</tr></thead>
+          <tbody>${body}</tbody>
           <tfoot><tr style="background:rgba(217,119,6,.06);font-weight:800">
-            <td colspan="2" style="padding:10px 12px">TOTALS (${sorted.length} jobs)</td>
-            <td style="text-align:right;padding:10px 12px">$${Math.round(sorted.reduce((s,j)=>s+getJobValue(j),0)).toLocaleString()}</td>
-            <td style="text-align:right;padding:10px 12px">$${Math.round(sorted.reduce((s,j)=>s+(j.estCost||0),0)).toLocaleString()}</td>
-            <td style="text-align:right;padding:10px 12px">$${Math.round(sorted.reduce((s,j)=>s+(j.actualCost||0),0)).toLocaleString()}</td>
-            <td style="text-align:right;padding:10px 12px;color:#f59e0b">$${Math.round(sorted.reduce((s,j)=>s+getJobValue(j)-(j.estCost||0),0)).toLocaleString()}</td>
-            <td style="text-align:right;padding:10px 12px;color:#1dbb87">$${Math.round(sorted.reduce((s,j)=>s+getJobValue(j)-(j.actualCost||0),0)).toLocaleString()}</td>
-            <td style="text-align:right;padding:10px 12px"></td>
+            <td colspan="2" style="padding:10px 12px">TOTALS (${calc.length} jobs)</td>
+            <td style="text-align:right;padding:10px 12px">${pnlMoney(tPrice)}</td>
+            <td style="text-align:right;padding:10px 12px">${pnlMoney(tot('collected'))}</td>
+            <td style="text-align:right;padding:10px 12px">${pnlMoney(tPrice - tot('collected'))}</td>
+            <td style="text-align:right;padding:10px 12px">${pnlMoney(tot('cost'))}</td>
+            <td style="text-align:right;padding:10px 12px">${pnlMoney(tot('spent'))}</td>
+            <td style="text-align:right;padding:10px 12px;color:#1dbb87">${pnlMoney(tRe)}</td>
+            <td style="text-align:right;padding:10px 12px">${tPrice ? (tRe / tPrice * 100).toFixed(1) + '%' : ''}</td>
           </tr></tfoot>
         </table>
       </div>
     </div>`;
 }
+window.pnlTogglewhy = pnlTogglewhy;
 
 // ── PIPELINE REPORT ──
 function renderPipelineReport(el) {
