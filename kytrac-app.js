@@ -8367,11 +8367,15 @@ function renderCOList() {
     if (status === 'Customer Approved' && canPrice) {
       actions += `<button class="btn btn-amber" style="padding:4px 10px;font-size:.76rem" onclick="createInvoiceFromCO('${co.id}')">🧾 Create Invoice</button>`;
     }
+    // CO_MARK_PAID_V1: invoiced in QuickBooks (or paid by check) -> mark it Paid right here.
+    if ((status === 'Priced' || status === 'Customer Approved' || status === 'Invoiced') && canPrice) {
+      actions += `<button class="btn btn-green" style="padding:4px 10px;font-size:.76rem" onclick="markCOPaid('${co.id}')">💵 Mark Paid</button>`;
+    }
     if (status === 'Invoiced') {
-      actions += `<span class="small muted" style="align-self:center">Waiting on payment — mark the linked invoice Paid to apply this to the job.</span>`;
+      actions += `<span class="small muted" style="align-self:center">Waiting on payment — tap Mark Paid once QuickBooks shows it paid.</span>`;
     }
     if (status === 'Paid') {
-      actions += `<span class="small" style="align-self:center;color:#1dbb87;font-weight:700">✓ Applied to estimate &amp; punch list</span>`;
+      actions += `<span class="small" style="align-self:center;color:#1dbb87;font-weight:700">✓ Paid${co.paidVia ? ' (' + esc(co.paidVia) + (co.paidAt ? ', ' + esc(co.paidAt) : '') + ')' : ''} · applied to estimate &amp; punch list</span>`;
     }
 
     return `<div class="co-card">
@@ -8791,6 +8795,72 @@ function createInvoiceFromCO(coId) {
 }
 window.createInvoiceFromCO = createInvoiceFromCO;
 window.quickApproveCO = markCOCustomerApproved; // legacy alias, in case anything still calls the old name
+
+// CO_MARK_PAID_V1: shared by "invoice marked Paid" and the CO's own
+// "Mark Paid" button (Travis invoices change orders in QuickBooks, so the
+// in-app invoice step never happens). Pushes the CO's line items into a
+// new estimate group (its own Punch List page) once, then marks it Paid.
+async function applyCOToEstimate(jobId, coId, extra) {
+  const coRef = coll('jobs').doc(jobId).collection('changeorders').doc(coId);
+  const coSnap = await coRef.get();
+  if (!coSnap.exists) return;
+  const co = coSnap.data();
+  if (!co.appliedToEstimate) {
+    const groupsSnap = await coll('jobs').doc(jobId).collection('estimateGroups').get();
+    const groupRef = await coll('jobs').doc(jobId).collection('estimateGroups').add({
+      name: 'CO: ' + (co.title || 'Change Order'),
+      order: groupsSnap.size,
+      sprintEnabled: true,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    const subRef = await coll('jobs').doc(jobId).collection('estimateGroups')
+      .doc(groupRef.id).collection('subgroups').add({
+        name: co.title || 'Change Order Work',
+        order: 0,
+        status: 'not-started',
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    await Promise.all((co.lineItems || []).map((li, i) =>
+      coll('jobs').doc(jobId).collection('estimateGroups').doc(groupRef.id)
+        .collection('subgroups').doc(subRef.id).collection('items').add({
+          desc: li.desc || '',
+          qty: li.qty || 1,
+          unit: li.unit || 'ea',
+          costType: li.costType || 'Materials',
+          unitCost: li.unitCost || 0,
+          unitPrice: li.unitPrice || 0,
+          markup: li.unitCost > 0 ? Math.round((li.unitPrice / li.unitCost - 1) * 100) : 0,
+          taskStatus: 'todo',
+          order: i,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        })));
+  }
+  await coRef.update({
+    status: 'Paid', appliedToEstimate: true, ...(extra || {}),
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
+  if (conCurrentJobId === jobId && typeof loadEstimate === 'function') loadEstimate(jobId);
+}
+
+async function markCOPaid(coId) {
+  if (!isOwnerOrAdmin()) { alert('Only Owner/PM can mark a change order paid.'); return; }
+  const co = conCOs.find(c => c.id === coId); if (!co) return;
+  const amt = Number(co.amount || 0);
+  const how = prompt(`Mark "${co.title || 'Change order'}" (${amt < 0 ? 'credit ' : ''}$${Math.abs(amt).toLocaleString()}) as PAID?\n\nHow was it paid? (e.g. QuickBooks, check #1234, cash)`, 'QuickBooks');
+  if (how === null) return;
+  try {
+    await applyCOToEstimate(conCurrentJobId, coId, {
+      paidVia: how.trim() || 'QuickBooks',
+      paidAt: new Date().toISOString().split('T')[0],
+      paidMarkedBy: conCurrentUser ? (conCurrentUser.displayName || conCurrentUser.email) : 'Unknown',
+    });
+    if (typeof logInvoiceActivity === 'function') logInvoiceActivity(conCurrentJobId, 'co_paid', `Change order paid (${how.trim() || 'QuickBooks'}) — ${co.title || ''}: $${Math.abs(amt).toLocaleString()}`);
+    const job = conJobs.find(j => j.id === conCurrentJobId);
+    if (job && typeof refreshJobFinancials === 'function') refreshJobFinancials(job);
+  } catch (e) { alert('Could not mark paid: ' + e.message); }
+}
+window.markCOPaid = markCOPaid;
+window.applyCOToEstimate = applyCOToEstimate;
 
 // ════════════════════════════════════════════════════
 // ── PHASE 2: SUBS & VENDORS ──
@@ -12911,51 +12981,7 @@ async function commitMarkPaid(jobId, invId, total) {
     // 3b. If this invoice was for an approved Change Order, push its line
     // items into a brand new estimate group — its own Epic, which means its
     // own fresh page the next time the Punch List gets printed.
-    if (linkedCOId) {
-      const coSnap = await coll('jobs').doc(jobId).collection('changeorders').doc(linkedCOId).get();
-      if (coSnap.exists) {
-        const co = coSnap.data();
-        if (!co.appliedToEstimate) {
-          const groupRef = await coll('jobs').doc(jobId).collection('estimateGroups').add({
-            name: 'CO: ' + (co.title || 'Change Order'),
-            order: groupsSnap.size,
-            sprintEnabled: true,
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-          });
-          const subRef = await coll('jobs').doc(jobId).collection('estimateGroups')
-            .doc(groupRef.id).collection('subgroups').add({
-              name: co.title || 'Change Order Work',
-              order: 0,
-              status: 'not-started',
-              createdAt: firebase.firestore.FieldValue.serverTimestamp()
-            });
-          const coItemWrites = (co.lineItems || []).map((li, i) =>
-            coll('jobs').doc(jobId).collection('estimateGroups').doc(groupRef.id)
-              .collection('subgroups').doc(subRef.id).collection('items').add({
-                desc: li.desc || '',
-                qty: li.qty || 1,
-                unit: li.unit || 'ea',
-                costType: li.costType || 'Materials',
-                unitCost: li.unitCost || 0,
-                unitPrice: li.unitPrice || 0,
-                markup: li.unitCost > 0 ? Math.round((li.unitPrice / li.unitCost - 1) * 100) : 0,
-                taskStatus: 'todo',
-                order: i,
-                createdAt: firebase.firestore.FieldValue.serverTimestamp()
-              })
-          );
-          await Promise.all(coItemWrites);
-
-          await coll('jobs').doc(jobId).collection('changeorders').doc(linkedCOId).update({
-            status: 'Paid',
-            appliedToEstimate: true,
-            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-          });
-
-          if (conCurrentJobId === jobId && typeof loadEstimate === 'function') loadEstimate(jobId);
-        }
-      }
-    }
+    if (linkedCOId) await applyCOToEstimate(jobId, linkedCOId);
 
     // 4. Jump straight to the Kanban Board / Schedule tab, ready to schedule
     if (conCurrentJobId === jobId) {
@@ -20984,7 +21010,7 @@ function drawJobsPnL(el) {
       </td></tr>` : '';
     return `<tr style="cursor:pointer" onclick="openJobDetail('${job.id}','financials')" title="Open this job's Financials">
       <td style="${td}"><div style="display:flex;gap:8px;align-items:flex-start"><button class="btn" onclick="pnlTogglewhy('${job.id}',event)" style="padding:0 7px;font-size:.75rem;line-height:1.6" title="Show where the numbers come from">${_pnlOpen[job.id] ? '▾' : '▸'}</button><div><div style="font-weight:700">${esc(job.jobNumber || '')}</div><div style="font-size:.72rem;color:var(--amber)">${esc(jobLabelParts(job) || job.name || '')}</div></div></div></td>
-      <td style="${td}"><span style="font-size:.72rem;font-weight:700;color:${s.color}">${esc(stLabel || '')}</span>${problem ? `<div style="font-size:.7rem;color:#ef5350;margin-top:2px">${esc(problem)}</div>` : ''}</td>
+      <td style="${td}"><span style="font-size:.72rem;font-weight:700;color:${s.color}">${esc(stLabel || '')}</span>${problem ? `<div style="font-size:.7rem;color:#ef5350;margin-top:2px">${esc(problem)}</div>` : ''}${tm && !info.signed && canViewFinancialsTab() ? `<button class="btn btn-amber" onclick="pnlSetSigned('${job.id}',event)" style="margin-top:4px;padding:2px 8px;font-size:.7rem">Enter signed price</button>` : ''}</td>
       <td style="${td};${num};font-weight:700">${pnlMoney(r.price)}</td>
       <td style="${td};${num};color:#60a5fa">${pnlMoney(r.collected)}</td>
       <td style="${td};${num};color:var(--amber)">${pnlMoney(r.price - r.collected)}</td>
@@ -21016,6 +21042,26 @@ function drawJobsPnL(el) {
     </div>`;
 }
 window.pnlTogglewhy = pnlTogglewhy;
+// The customer signed (on paper, by email, in QuickBooks) but no proposal
+// was marked Approved here, so the job has no contract price. Enter it once.
+async function pnlSetSigned(jobId, ev) {
+  if (ev) ev.stopPropagation();
+  if (!canViewFinancialsTab()) return;
+  const r = _pnlRows.find(x => x.job.id === jobId); if (!r) return;
+  const est = r.b && r.b.info ? Math.round((r.b.info.estTotal || 0) * 100) / 100 : '';
+  const v = prompt(`Signed contract price for ${r.job.jobNumber || ''} (don't include change orders — those come from the CO tab):`, est);
+  if (v === null) return;
+  const amt = parseFloat(String(v).replace(/[$,]/g, ''));
+  if (!(amt > 0)) { alert('Enter the signed price.'); return; }
+  try {
+    await coll('jobs').doc(jobId).update({ contractValue: amt, signedPriceSetAt: firebase.firestore.FieldValue.serverTimestamp(), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+    r.job.contractValue = amt;
+    const j = conJobs.find(x => x.id === jobId); if (j) j.contractValue = amt;
+    r.b = await getJobMarginBoth(jobId, true, { billsByJob: await opAllBillsByJob().catch(() => ({})) }).catch(() => r.b);
+    const el = document.getElementById('reportContent'); if (el) drawJobsPnL(el);
+  } catch (e) { alert('Could not save: ' + e.message); }
+}
+window.pnlSetSigned = pnlSetSigned;
 
 // ── PIPELINE REPORT ──
 function renderPipelineReport(el) {
