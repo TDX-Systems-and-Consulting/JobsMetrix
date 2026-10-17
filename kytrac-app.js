@@ -9259,6 +9259,16 @@ window.saveLog = async function() {
   const date = document.getElementById('logDate').value;
   if (!date) { alert('Date is required.'); return; }
 
+  // CLOCKOUT_PHOTO_V1: clocking out needs a photo and a Daily Log.
+  const clockingOut = !!(_pendingClockOut && _pendingClockOut.entry?.jobId === conCurrentJobId);
+  if (clockingOut) {
+    const missing = [];
+    const notesTxt = document.getElementById('logNotes').value.trim();
+    if (!_pendingClockOut.hasLog && !notesTxt) missing.push('a Daily Log (fill in Work Performed)');
+    if (!_logPhotoPending.length) missing.push('a clock-out photo');
+    if (missing.length) { alert('Cannot clock out without ' + missing.join(' and ') + '.'); return; }
+  }
+
   _savingLog = true;
   const saveBtn = document.querySelector('#addLogModal .btn-amber');
   const originalBtnText = saveBtn ? saveBtn.textContent : null;
@@ -9269,9 +9279,10 @@ window.saveLog = async function() {
       date,
       weather: document.getElementById('logWeather').value,
       crew: document.getElementById('logCrew').value.trim(),
-      notes: document.getElementById('logNotes').value.trim(),
+      notes: document.getElementById('logNotes').value.trim() || (clockingOut ? 'Clock-out photo' : ''),
       issues: document.getElementById('logIssues').value.trim(),
       photos: [], // filled in afterward -- see below
+      ...(clockingOut ? { clockOutLog: true, photoCount: _logPhotoPending.length } : {}),
       createdBy: conCurrentUser ? conCurrentUser.email : 'unknown',
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
     };
@@ -9293,7 +9304,8 @@ window.saveLog = async function() {
     if (_pendingClockOut && _pendingClockOut.entry?.jobId === conCurrentJobId) {
       const entry = _pendingClockOut.entry;
       _pendingClockOut = null;
-      await performClockOut(entry);
+      setLogClockOutMode(false);
+      await performClockOut(entry, { clockOutLogId: logRef.id, clockOutPhotos: pendingPhotos.length });
     } else {
       switchDetailTab('logs', null);
     }
@@ -9316,6 +9328,7 @@ window.saveLog = async function() {
   } finally {
     _savingLog = false;
     if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = originalBtnText; saveBtn.style.opacity = ''; }
+    if (!_pendingClockOut) setLogClockOutMode(false);
   }
 };
 
@@ -9324,6 +9337,7 @@ window.saveLog = async function() {
 // was lost), and a later, unrelated log save elsewhere shouldn't complete
 // a clock-out this action never confirmed.
 function cancelAddLogModal() {
+  if (_pendingClockOut) setLogClockOutMode(false);
   _pendingClockOut = null;
   kClose('addLogModal');
 }
@@ -16343,6 +16357,16 @@ async function clockOut() {
   const alreadyLogged = await hasTodayDailyLog(jobId, dateStr);
   if (clockBtn) { clockBtn.disabled = false; clockBtn.style.opacity = ''; }
 
+  // CLOCKOUT_PHOTO_V1 (Travis 10/17/26): a clock-out photo is now required
+  // every time, and so is a Daily Log (unless one was already saved for this
+  // job today). Both are collected in the Daily Log window; Save refuses to
+  // clock out and names whatever is missing.
+  conCurrentJobId = jobId;
+  _pendingClockOut = { entry: _clockedInEntry, hasLog: alreadyLogged };
+  openAddLogModal();
+  setLogClockOutMode(true, alreadyLogged);
+  return;
+
   if (!alreadyLogged) {
     // Required, not optional -- per Travis's spec, clocking out is blocked
     // until today's Daily Log (with the option to attach photos) is saved.
@@ -16364,10 +16388,29 @@ async function clockOut() {
   await performClockOut(_clockedInEntry);
 }
 
+// Turns the Daily Log window into the clock-out checklist (title + what's
+// required), or back to a plain Daily Log.
+function setLogClockOutMode(on, hasLog) {
+  const h = document.querySelector('#addLogModal .modal-head h3');
+  if (h) h.textContent = on ? 'Clock Out \u2014 Daily Log & Photo' : 'Daily Log';
+  const hint = document.getElementById('logClockOutHint');
+  if (hint) {
+    hint.style.display = on ? 'block' : 'none';
+    hint.innerHTML = on ? (hasLog
+      ? 'To clock out, add a <strong>clock-out photo</strong> of today\'s work. Today\'s Daily Log is already in; add notes if anything changed.'
+      : 'To clock out, fill in <strong>Work Performed</strong> and add a <strong>clock-out photo</strong> of today\'s work.') : '';
+  }
+  const pl = document.getElementById('logPhotoLabel');
+  if (pl) pl.textContent = on ? '\ud83d\udcf8 Clock-out photo (required)' : '\ud83d\udcf8 Photos';
+  const btn = document.querySelector('#addLogModal .btn-amber');
+  if (btn) btn.textContent = on ? 'Save Log & Clock Out' : 'Save Log';
+}
+window.setLogClockOutMode = setLogClockOutMode;
+
 // The actual clock-out write, split out from clockOut() so both the normal
 // path and the "resume after the required Daily Log was saved" path in
 // saveLog() can call the same completion logic.
-async function performClockOut(entry) {
+async function performClockOut(entry, extra) {
   if (!entry || !conDb) return;
   const now = new Date();
   const clockInTime = entry.clockInISO ? new Date(entry.clockInISO) : new Date(now - 3600000);
@@ -16414,6 +16457,7 @@ async function performClockOut(entry) {
       distanceFtOut,
       hours,
       notes: notesValue,
+      ...(extra || {}),
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     });
     stopClockTicker();

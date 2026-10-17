@@ -3569,6 +3569,7 @@
     <div class="modal-box" style="max-width:560px">
       <div class="modal-head"><h3 style="margin:0">Daily Log</h3><button class="btn" onclick="cancelAddLogModal()">Close</button></div>
       <div class="modal-body">
+        <div id="logClockOutHint" style="display:none;margin-bottom:12px;padding:10px 12px;border:1px solid rgba(217,119,6,.4);border-radius:10px;background:rgba(217,119,6,.08);font-size:.85rem"></div>
         <div class="form-grid">
           <div><label class="small muted">Date</label><input id="logDate" type="date" /></div>
           <div><label class="small muted">Weather</label>
@@ -3581,7 +3582,7 @@
           <div class="full"><label class="small muted">Work Performed</label><textarea id="logNotes" rows="4" placeholder="Describe work completed today..."></textarea></div>
           <div class="full"><label class="small muted">Issues / Delays</label><textarea id="logIssues" rows="2" placeholder="Any problems, delays, or safety concerns..."></textarea></div>
           <div class="full">
-            <label class="small muted" style="display:block;margin-bottom:8px">📸 Photos</label>
+            <label class="small muted" id="logPhotoLabel" style="display:block;margin-bottom:8px">📸 Photos</label>
             <div id="logPhotoGrid" class="photo-grid">
               <label class="photo-upload-btn" style="aspect-ratio:1;min-height:80px">
                 <span style="font-size:1.5rem">📷</span>
@@ -5299,7 +5300,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202610171130"></script>
+<script src="kytrac-app.js?v=202610171145"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW
