@@ -22942,6 +22942,9 @@ function renderGroupHTML(group) {
       </div>
     </div>
     ${isCollapsed ? '' : `<div>
+      <div style="padding:6px 12px 2px" onclick="event.stopPropagation()">
+        <textarea rows="${(group.scopeNotes||'').split('\n').length > 1 ? 3 : 1}" placeholder="📝 Scope note for the whole ${esc(group.name)} (prints on the proposal and punch list)" onchange="saveGroupScopeNote('${group.id}', this.value)" style="width:100%;box-sizing:border-box;padding:6px 8px;font-size:.8rem;font-style:italic;resize:vertical;border:1px dashed rgba(217,119,6,.35);border-radius:8px;background:transparent;color:inherit">${esc(group.scopeNotes||'')}</textarea>
+      </div>
       ${(group.subgroups||[]).map(sub => renderSubgroupHTML(group.id, sub)).join('')}
       ${(group.directItems||[]).map(item => renderItemRowHTML(item, group.id, null)).join('')}
       ${(group.directItems||[]).length > 0 || (group.subgroups||[]).length === 0 ? `
@@ -27175,7 +27178,7 @@ function computeProposalData(job, itemized, showCategoryPricing) {
     // Only skip the group if it has no pricing AND no scope notes at all
     const hasContent = catBlocks.some(c => c.price > 0 || c.scopeNotes) || directBlocks.length;
     if (!hasContent) return;
-    rooms.push({ name: group.name, catBlocks, directBlocks });
+    rooms.push({ name: group.name, scopeNotes: group.scopeNotes || '', catBlocks, directBlocks });
   });
 
   return {
@@ -27249,6 +27252,7 @@ function renderProposalDocumentHtml(data, job, co, autoPrint) {
     }).join('');
     return `<div class="room-section">
       <div class="room-heading">${esc(room.name)}</div>
+      ${room.scopeNotes ? `<div class="cat-scope" style="margin:0 0 10px;white-space:pre-line">${esc(room.scopeNotes)}</div>` : ''}
       ${catHtml}${directHtml}
     </div>`;
   }).join('');
@@ -28409,6 +28413,7 @@ function printEstimate() {
     const pricingSubCount = (group.subgroups||[]).filter(s => calcGroupTotals(s.items||[]).price > 0).length;
     const showGroupTotal = pricingSubCount !== 1 || (group.directItems||[]).length > 0;
 
+    const roomNoteRow = group.scopeNotes ? `<tr><td colspan="4" style="padding:4px 8px 8px;font-size:.82rem;color:#374151;font-style:italic;white-space:pre-line">${esc(group.scopeNotes)}</td></tr>` : '';
     return `${showGroupTotal ? `<tr style="background:#e5e7eb">
       <td style="padding:8px;font-weight:900;font-size:.95rem">${esc(group.name)}</td>
       <td></td>
@@ -28416,7 +28421,7 @@ function printEstimate() {
       <td style="text-align:right;font-weight:700;color:#d97706">$${totals.price.toFixed(2)}</td>
     </tr>` : `<tr style="background:#e5e7eb">
       <td colspan="4" style="padding:8px;font-weight:900;font-size:.95rem">${esc(group.name)}</td>
-    </tr>`}${subRows}${directRows}`;
+    </tr>`}${roomNoteRow}${subRows}${directRows}`;
   }).join('');
 
   const profit = allPrice - allCost;
@@ -28681,6 +28686,7 @@ function printPunchList() {
       punchPages.push({
         title: customerSafeLabel(sub),
         parent: group.name || '',
+        roomNote: group.scopeNotes || '',
         rows
       });
     });
@@ -28699,7 +28705,7 @@ function printPunchList() {
 
     // Legacy estimates can have items directly on a group with no subgroup.
     // Preserve those on their own page rather than dropping them.
-    if (directRows) punchPages.push({ title: group.name || 'General', parent: '', rows: directRows });
+    if (directRows) punchPages.push({ title: group.name || 'General', parent: '', roomNote: group.scopeNotes || '', rows: directRows });
   });
 
   const punchPageHeader = `
@@ -28725,6 +28731,7 @@ function printPunchList() {
         <div style="font-size:1.1rem;font-weight:900">${esc(page.title)}</div>
         ${page.parent ? `<div style="font-size:.75rem;font-weight:700;opacity:.85;margin-top:2px">${esc(page.parent)}</div>` : ''}
       </div>
+      ${page.roomNote ? `<div style="padding:8px 14px;background:#fffbeb;border-bottom:1px solid #fde68a;font-size:.88rem;color:#111;white-space:pre-line"><strong>Room scope:</strong> ${esc(page.roomNote)}</div>` : ''}
       <table style="width:100%;border-collapse:collapse">
         <thead><tr style="background:#f3f4f6">
           <th style="padding:7px 8px;text-align:left;font-size:.75rem;color:#6b7280;font-weight:700">✓</th>
@@ -31057,13 +31064,66 @@ function wizardSelectRoom(room) {
 
   wizardSetStep(3);
   updateWizardBreadcrumb();
+  // ROOM_SCOPE_V1: show this room's existing whole-room scope note.
+  const ta = document.getElementById('wizardRoomScope');
+  if (ta) { const g = estGroups.find(x => (x.name || '').toLowerCase() === String(room).toLowerCase()); ta.value = (g && g.scopeNotes) || ''; }
+  const msg = document.getElementById('wizardRoomScopeMsg'); if (msg) msg.textContent = '';
+  _wizardRoomScopeDirty = false;
 }
+
+// ROOM_SCOPE_V1 (Travis 10/17/26): a scope note for the WHOLE room, saved
+// on the room's estimate group (estimateGroups/{id}.scopeNotes) -- one level
+// above the per-trade subgroup notes. Prints under the room heading on the
+// proposal, the internal estimate and every punch-list page for that room.
+let _wizardRoomScopeDirty = false;
+async function wizardEnsureRoomGroup(roomName) {
+  let group = estGroups.find(g => (g.name || '').toLowerCase() === roomName.toLowerCase());
+  if (!group) {
+    const ref = await coll('jobs').doc(conCurrentJobId).collection('estimateGroups').add({
+      name: roomName, order: estGroups.length,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    group = { id: ref.id, name: roomName, order: estGroups.length, subgroups: [], directItems: [] };
+    estGroups.push(group);
+  }
+  return group;
+}
+async function wizardSaveRoomScope(silent) {
+  if (!conDb || !conCurrentJobId) return;
+  const roomName = _wizardRoom || _wizardCategory;
+  const ta = document.getElementById('wizardRoomScope');
+  const msg = document.getElementById('wizardRoomScopeMsg');
+  if (!roomName || !ta) return;
+  const text = ta.value.trim();
+  const existing = estGroups.find(g => (g.name || '').toLowerCase() === roomName.toLowerCase());
+  if (!existing && !text) { if (msg && !silent) msg.textContent = 'Nothing to save.'; return; }
+  try {
+    const group = await wizardEnsureRoomGroup(roomName);
+    await coll('jobs').doc(conCurrentJobId).collection('estimateGroups').doc(group.id).update({ scopeNotes: text });
+    group.scopeNotes = text;
+    _wizardRoomScopeDirty = false;
+    if (msg) { msg.textContent = '✓ Saved to ' + roomName; msg.style.color = '#1dbb87'; }
+    if (typeof renderEstimateTree === 'function') renderEstimateTree();
+  } catch (e) { if (msg) { msg.textContent = 'Could not save: ' + e.message; msg.style.color = '#ef5350'; } }
+}
+window.wizardSaveRoomScope = wizardSaveRoomScope;
+// Same note, edited right on the Estimate tab under the room heading.
+async function saveGroupScopeNote(groupId, text) {
+  if (!conDb || !conCurrentJobId) return;
+  const g = estGroups.find(x => x.id === groupId);
+  try {
+    await coll('jobs').doc(conCurrentJobId).collection('estimateGroups').doc(groupId).update({ scopeNotes: (text || '').trim() });
+    if (g) g.scopeNotes = (text || '').trim();
+  } catch (e) { alert('Could not save room note: ' + e.message); }
+}
+window.saveGroupScopeNote = saveGroupScopeNote;
 
 // Wraps wizardSelectTrade() to also remember the exact phase label
 // (e.g. "Electrical: rough" vs "Electrical: final") separately from the
 // underlying catalog trade code, since two phases in the same room can
 // share a trade code but need distinct breadcrumb/subgroup naming.
 function wizardSelectPhase(label, trade) {
+  if (_wizardRoomScopeDirty) wizardSaveRoomScope(true);
   try {
     _wizardPhaseLabel = label;
     wizardSelectTrade(trade);
@@ -31978,18 +32038,8 @@ async function wizardAddToEstimate() {
   const roomName = _wizardRoom || _wizardCategory;
   const tradeName = _wizardPhaseLabel || (_wizardTrade || '').split(' ').slice(1).join(' ') || 'General';
 
-  // Find existing group matching room name
-  let group = estGroups.find(g => g.name.toLowerCase() === roomName.toLowerCase());
-
-  if (!group) {
-    // Create new group for this room
-    const ref = await coll('jobs').doc(conCurrentJobId).collection('estimateGroups').add({
-      name: roomName, order: estGroups.length,
-      createdAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
-    group = { id: ref.id, name: roomName, order: estGroups.length, subgroups: [], directItems: [] };
-    estGroups.push(group);
-  }
+  // Find (or create) the group for this room
+  const group = await wizardEnsureRoomGroup(roomName);
   groupId = group.id;
 
   // Create subgroup for the trade
