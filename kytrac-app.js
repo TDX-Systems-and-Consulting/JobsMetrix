@@ -57,7 +57,16 @@ function jobLabelParts(job) {
   const sameHouse = custom && street && custom.split(/\s+/)[0] === street.split(/\s+/)[0];
   return [street, sameHouse ? '' : custom].filter(Boolean).join(' \u00b7 ');
 }
-window.jobStreet = jobStreet; window.jobLabelParts = jobLabelParts;
+// JOBNUM_STREET_V1 (Travis 10/17/26): every job number is shown with its
+// street after it -- "JOB-2026-759 · 22 Belmont Dr". Display only: the stored
+// jobNumber is unchanged, so invoice numbering, search and matching still work.
+function jobNumSt(job) {
+  const num = (job && job.jobNumber) || '';
+  const st = jobStreet(job);
+  if (!num) return st;
+  return st && !num.toLowerCase().includes(st.toLowerCase()) ? num + ' \u00b7 ' + st : num;
+}
+window.jobStreet = jobStreet; window.jobLabelParts = jobLabelParts; window.jobNumSt = jobNumSt;
 const esc = s => ((s==null?'':s)).toString().replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 // For embedding a value as a JS string-literal ARGUMENT inside an
 // onclick="..." HTML attribute -- a genuinely different job from esc()
@@ -604,8 +613,7 @@ function renderJobsBoard() {
         return suffixMatch ? suffixMatch[1] : beforeComma;
       })();
       card.innerHTML = `
-        <div class="kt-job-num" style="color:${col.color}">${esc(job.jobNumber||job.name||'')}</div>
-        ${streetOnly?`<div class="kt-job-addr">${esc(streetOnly)}</div>`:''}
+        <div class="kt-job-num" style="color:${col.color}">${esc(jobNumSt(job)||job.name||'')}</div>
         ${statusBadge}
         ${job.client?`<div class="kt-job-meta">Customer: ${esc(job.client)}</div>`:''}
         ${job.superintendent||job.teamLead||job.pm?`<div class="kt-job-meta">Team Lead: ${esc(job.superintendent||job.teamLead||job.pm)}</div>`:''}
@@ -1329,7 +1337,7 @@ function conRenderBoard() {
         ? `<div class="job-card-meta" style="color:${col.color};font-weight:700;font-size:.68rem">${job.status}</div>`
         : '';
       card.innerHTML = `
-        <div class="job-card-num" style="color:${col.color}">${job.jobNumber || ''}</div>
+        <div class="job-card-num" style="color:${col.color}">${esc(jobNumSt(job))}</div>
         <div class="job-card-name">${job.name}</div>
         ${statusBadge}
         ${job.client ? `<div class="job-card-meta">👤 ${job.client}</div>` : ''}
@@ -1423,7 +1431,7 @@ function conRenderList() {
     tr.onclick = () => openJobDetail(job.id);
     const val = getJobValue(job) ? '$' + Math.round(getJobValue(job)).toLocaleString() : '—';
     tr.innerHTML = `
-      <td style="color:var(--amber);font-weight:700;white-space:nowrap">${job.jobNumber || '—'}</td>
+      <td style="color:var(--amber);font-weight:700;white-space:nowrap">${esc(jobNumSt(job)) || '—'}</td>
       <td style="font-weight:600">${esc(job.name)}</td>
       <td class="hide-mobile">${esc(job.client)}</td>
       <td><span style="background:var(--amber-light);color:var(--amber);padding:3px 8px;border-radius:8px;font-size:.78rem;white-space:nowrap">${esc(job.status)}</span></td>
@@ -3373,7 +3381,7 @@ function openJobDetail(jobId, defaultTab) {
   const fmt = v => '$' + Number(v||0).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0});
 
   // Header
-  document.getElementById('detailJobNum').textContent = '#' + (job.jobNumber || '');
+  document.getElementById('detailJobNum').textContent = '#' + jobNumSt(job);
   document.getElementById('detailJobName').textContent = jobLabelParts(job) || job.name; // JOB_STREET_V1: street address instead of repeating the job number
   document.getElementById('detailJobClient').textContent = '👤 ' + job.client + (job.phone ? ' · ' + job.phone : '') + (job.email ? ' · ' + job.email : '');
   document.getElementById('detailStatusBadge').value = job.status || 'New Lead';
@@ -6172,7 +6180,7 @@ function renderJCDTable() {
     return `<tr onclick="openJCDJobDetail('${j.id}')">
       <td>
         <div style="font-weight:700">${esc(j.name)}</div>
-        <div style="font-size:.75rem;color:var(--amber)">${j.jobNumber||''}</div>
+        <div style="font-size:.75rem;color:var(--amber)">${esc(jobNumSt(j))}</div>
         <div style="font-size:.75rem;color:var(--muted)">${esc(j.client||'')}</div>
       </td>
       <td><span style="font-size:.75rem;background:var(--amber-light);color:var(--amber);padding:2px 8px;border-radius:999px">${j.status}</span></td>
@@ -10885,7 +10893,7 @@ function renderHomeDashboard() {
           : '<span style="color:var(--muted);font-size:.7rem">✓</span>';
 
         return `<tr onclick="openJobDetail('${job.id}')" style="cursor:pointer">
-          <td><div style="font-weight:700;font-size:.86rem">${esc(job.name)}</div><div style="font-size:.72rem;color:var(--amber)">${job.jobNumber||''}</div></td>
+          <td><div style="font-weight:700;font-size:.86rem">${esc(job.name)}</div><div style="font-size:.72rem;color:var(--amber)">${esc(jobNumSt(job))}</div></td>
           <td style="font-size:.84rem">${esc(job.client||'—')}</td>
           <td><span style="background:${s.color}22;color:${s.color};padding:2px 8px;border-radius:999px;font-size:.72rem;font-weight:700;white-space:nowrap">${job.status}</span></td>
           <td style="font-size:.82rem;color:var(--muted)">${esc(job.superintendent || job.teamLead || '—')}</td>
@@ -13894,7 +13902,7 @@ async function printSubAgreement(jobId, subId) {
         <div class="co-name">${esc(companyName)}</div>
         <div class="co-contact">${esc(co.phone || '')}${co.email ? ' · ' + esc(co.email) : ''}${co.address ? ' · ' + esc(co.address) : ''}</div>
       </div>
-      <div><h1>SUBCONTRACTOR AGREEMENT</h1><div class="co-contact" style="text-align:right">${esc(job.jobNumber || '')}</div></div>
+      <div><h1>SUBCONTRACTOR AGREEMENT</h1><div class="co-contact" style="text-align:right">${esc(jobNumSt(job))}</div></div>
     </div>
     ${paras}
     <div class="sigs">
@@ -14604,7 +14612,7 @@ function renderInvoiceDocumentHtml(inv, job, otherInvoices, forPrint) {
     '<div style="margin-bottom:5px"><span class="label">Invoice Date: </span>' + (inv.date||'') + '</div>' +
     '<div style="margin-bottom:5px"><span class="label">Due Date: </span><strong>' + (inv.dueDate||'') + '</strong></div>' +
     '<div><span class="label">Type: </span>' + (inv.type||'') + '</div>' +
-    (job?.jobNumber ? '<div style="margin-top:5px"><span class="label">Job #: </span>' + esc(job.jobNumber) + '</div>' : '') +
+    (job?.jobNumber ? '<div style="margin-top:5px"><span class="label">Job #: </span>' + esc(jobNumSt(job)) + '</div>' : '') +
     '</div></div>' +
 
     // Project summary (for deposit/progress invoices)
@@ -15744,7 +15752,7 @@ function renderCustomers() {
       'style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;background:rgba(217,119,6,.08);border:1px solid rgba(217,119,6,.15);border-radius:7px;margin-bottom:4px;cursor:pointer" ' +
       'onmouseover="this.style.background=\'rgba(217,119,6,.15)\'" onmouseout="this.style.background=\'rgba(217,119,6,.08)\'">' +
       '<div><div style="font-size:.8rem;font-weight:700;color:#eaf0fb">' + esc(j.name) + '</div>' +
-      '<div style="font-size:.7rem;color:var(--muted)">#' + (j.jobNumber||'') + ' · ' + esc(j.status) + '</div></div>' +
+      '<div style="font-size:.7rem;color:var(--muted)">#' + esc(jobNumSt(j)) + ' · ' + esc(j.status) + '</div></div>' +
       '<div style="font-size:.72rem;color:var(--amber);font-weight:700">→ Open</div></div>'
     ).join('');
     return '<div class="customer-card">' +
@@ -16630,7 +16638,7 @@ function populateTimeFilters() {
   if (jobSel) {
     const cur = jobSel.value;
     jobSel.innerHTML = '<option value="">Select a job...</option>' +
-      activeJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(j.jobNumber?'#'+j.jobNumber+' ':'')}${esc(j.name)}</option>`).join('');
+      activeJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(j.jobNumber?'#'+jobNumSt(j)+' ':'')}${esc(j.name)}</option>`).join('');
   }
 
   // Manual entry job selector
@@ -16638,7 +16646,7 @@ function populateTimeFilters() {
   if (manualJobSel) {
     const cur = manualJobSel.value;
     manualJobSel.innerHTML = '<option value="">Select job...</option>' +
-      conJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(j.jobNumber?'#'+j.jobNumber+' ':'')}${esc(j.name)}</option>`).join('');
+      conJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(j.jobNumber?'#'+jobNumSt(j)+' ':'')}${esc(j.name)}</option>`).join('');
   }
 
   // Manual entry crew selector -- real team roster instead of free
@@ -17302,7 +17310,7 @@ function openVendorRequestModal() {
   document.getElementById('vrqVendorEmail').textContent = v.email;
   const jobSelect = document.getElementById('vrqJobSelect');
   jobSelect.innerHTML = '<option value="">— No specific job —</option>' +
-    conJobs.map(j => `<option value="${j.id}">${esc(j.jobNumber || j.name)} — ${esc(j.name)}</option>`).join('');
+    conJobs.map(j => `<option value="${j.id}">${esc(jobNumSt(j) || j.name)} — ${esc(j.name)}</option>`).join('');
   document.getElementById('vrqSubject').value = `Request from ${companyProfile?.companyName || 'JTXD Contracting'}`;
   document.getElementById('vrqMessage').value = '';
   kOpen('vendorRequestModal');
@@ -17320,7 +17328,7 @@ async function sendVendorRequestEmail() {
 
   const bodyHtml = `<p>Hi ${esc(v.contact || v.name)},</p>` +
     `<p>${esc(message).replace(/\n/g, '<br>')}</p>` +
-    (job ? `<p style="color:#888;font-size:.85rem">Regarding: ${esc(job.jobNumber||job.name)} — ${esc(job.name)}${job.address?' ('+esc(job.address)+')':''}</p>` : '');
+    (job ? `<p style="color:#888;font-size:.85rem">Regarding: ${esc(jobNumSt(job)||job.name)} — ${esc(job.name)}${job.address?' ('+esc(job.address)+')':''}</p>` : '');
 
   const btn = document.getElementById('vrqSendBtn');
   btn.disabled = true; btn.textContent = 'Sending...';
@@ -17382,7 +17390,7 @@ function openVendorDetail(id) {
       jobListEl.innerHTML = linked.map(j => {
         const s = KYTRAC_STATUSES.find(x => x.name === j.status) || {color:'var(--amber)'};
         return `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid rgba(110,145,210,.07);cursor:pointer" onclick="kClose('vendorDetailModal');openJobDetail('${j.id}')">
-          <div><div style="font-weight:700">${esc(j.name)}</div><div style="font-size:.76rem;color:var(--amber)">${esc(j.jobNumber||'')}</div></div>
+          <div><div style="font-weight:700">${esc(j.name)}</div><div style="font-size:.76rem;color:var(--amber)">${esc(jobNumSt(j))}</div></div>
           <span style="background:${s.color}22;color:${s.color};padding:2px 8px;border-radius:999px;font-size:.72rem;font-weight:700">${j.status}</span>
         </div>`;
       }).join('');
@@ -18427,7 +18435,7 @@ function showJobPickerForLog() {
           return `<button onclick="pickJobForLog('${j.id}')" style="background:rgba(8,18,36,.8);border:1px solid var(--amber-border);border-radius:10px;padding:12px 14px;text-align:left;cursor:pointer;transition:border-color .12s;width:100%" onmouseover="this.style.borderColor='var(--amber)'" onmouseout="this.style.borderColor='var(--amber-border)'">
             <div style="font-weight:700;color:#eaf0fb">${esc(j.name)}</div>
             <div style="font-size:.76rem;display:flex;gap:8px;margin-top:3px">
-              <span style="color:var(--amber)">${esc(j.jobNumber||'')}</span>
+              <span style="color:var(--amber)">${esc(jobNumSt(j))}</span>
               <span style="color:${s.color};font-weight:700">${j.status}</span>
               ${j.client?`<span style="color:var(--muted)">${esc(j.client)}</span>`:''}
             </div>
@@ -18600,7 +18608,7 @@ function getCalEvents(dateISO) {
       const color = member.email ? (_teamColors[member.email] || '#0d9488') : '#0d9488';
       events.push({
         type: 'phase',
-        label: `${esc(job.jobNumber)} — ${esc(member.name || member.email || 'Unassigned')}`,
+        label: `${esc(jobNumSt(job))} — ${esc(member.name || member.email || 'Unassigned')}`,
         color,
         id: job.id,
         jobId: job.jobId
@@ -23617,7 +23625,7 @@ async function printJobMarginCalculator(btn) {
   const html = `<!DOCTYPE html><html><head><title>Job Margin Calculator — ${esc(job.name||'')}</title>
   <style>body{font-family:Arial,sans-serif;max-width:900px;margin:20px auto;padding:0 16px;color:#111}@media print{@page{margin:.5in}}</style></head><body>
   <h2 style="margin-bottom:2px">${esc(co.companyName||'JTXD Contracting')} — Job Margin Calculator</h2>
-  <div style="color:#666;margin-bottom:8px">${esc(job.jobNumber||job.name||'')} — ${esc(job.name||'')}${job.address?' · '+esc(job.address):''}</div>
+  <div style="color:#666;margin-bottom:8px">${esc(jobNumSt(job)||job.name||'')} — ${esc(job.name||'')}${job.address?' · '+esc(job.address):''}</div>
   ${buildJobMarginHtml(job, b.tmE, true, b.tmA, b.info)}
   <div style="margin-top:16px;text-align:center;color:#9ca3af;font-size:.75rem">${esc(co.companyName||'')} Job Margin Calculator · ${esc(job.name||'')} · Printed ${new Date().toLocaleString()}</div>
   </body></html>`;
@@ -25227,7 +25235,7 @@ async function submitReceipt() {
     } catch (e) {}
     const ownerEmail = owner?.email || RECEIPT_ALERT_FALLBACK_EMAIL;
     const action = isReturn ? 'Return credit' : needsReimburse ? 'REIMBURSE' : 'Reconcile';
-    const todoText = `${action} receipt: ${rcMoney(amount)}${vendor ? ' at ' + vendor : ''} — ${who} (${paidWith}) on ${job?.jobNumber || job?.name || 'job'}`;
+    const todoText = `${action} receipt: ${rcMoney(amount)}${vendor ? ' at ' + vendor : ''} — ${who} (${paidWith}) on ${jobNumSt(job) || job?.name || 'job'}`;
     try {
       const todoRef = await coll('todos').add({
         text: todoText, priority: 'high', category: 'Receipt',
@@ -25242,7 +25250,7 @@ async function submitReceipt() {
     try {
       const sendEmail = conFunctions.httpsCallable('sendJobspanEmail');
       const lines = [
-        `<p><strong>${esc(who)}</strong> uploaded ${isReturn ? 'a <strong>return / refund</strong>' : 'a receipt'} on <strong>${esc(job?.jobNumber || '')} ${esc(job?.name && job.name !== job.jobNumber ? '— ' + job.name : '')}</strong>.</p>`,
+        `<p><strong>${esc(who)}</strong> uploaded ${isReturn ? 'a <strong>return / refund</strong>' : 'a receipt'} on <strong>${esc(jobNumSt(job))} ${esc(job?.name && job.name !== job.jobNumber ? '— ' + job.name : '')}</strong>.</p>`,
         `<p style="font-size:20px;margin:12px 0"><strong>${rcMoney(amount)}</strong>${vendor ? ' at ' + esc(vendor) : ''}</p>`,
         `<p>Paid with: <strong>${esc(paidWith)}</strong>${needsReimburse ? ' — <strong style="color:#b45309">needs reimbursement</strong>' : ''}</p>`,
         note ? `<p>Note: ${esc(note)}</p>` : '',
@@ -25251,7 +25259,7 @@ async function submitReceipt() {
       ].join('');
       await sendEmail({
         to: ownerEmail, toName: owner?.name || '',
-        subject: `${isReturn ? 'Return credit' : 'Receipt ' + (needsReimburse ? 'to REIMBURSE' : 'to reconcile')}: ${rcMoney(amount)}${vendor ? ' — ' + vendor : ''} (${job?.jobNumber || 'job'})`,
+        subject: `${isReturn ? 'Return credit' : 'Receipt ' + (needsReimburse ? 'to REIMBURSE' : 'to reconcile')}: ${rcMoney(amount)}${vendor ? ' — ' + vendor : ''} (${jobNumSt(job) || 'job'})`,
         bodyHtml: lines,
         bodyText: `${who} uploaded a receipt: ${rcMoney(amount)}${vendor ? ' at ' + vendor : ''}, paid with ${paidWith}. ${photoUrl}`,
         docType: 'receipt', jobId,
@@ -26385,7 +26393,7 @@ function printRangeProposal() {
     </div>
     <div>
       <div class="doc-title">BUDGET RANGE PROPOSAL</div>
-      <div class="doc-meta">${esc(job?.jobNumber || '')}</div>
+      <div class="doc-meta">${esc(jobNumSt(job))}</div>
       <div class="doc-meta">${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</div>
     </div>
   </div>
@@ -26442,7 +26450,7 @@ async function emailRangeProposal() {
   }).join('');
   const bodyHtml = `
     <p>Hi ${esc(toName || 'there')},</p>
-    <p>Here is the budget range proposal from ${esc(co)}${where}${job.jobNumber ? ' (' + esc(job.jobNumber) + ')' : ''}.</p>
+    <p>Here is the budget range proposal from ${esc(co)}${where}${job.jobNumber ? ' (' + esc(jobNumSt(job)) + ')' : ''}.</p>
     ${_reData.intro ? `<p style="color:#4b5563;white-space:pre-line">${esc(_reData.intro)}</p>` : ''}
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #e5e7eb;margin:18px 0;font-size:15px">
       <tr><th align="left" style="background:#1f2937;color:#fff;padding:10px 14px;font-size:13px;letter-spacing:.04em">AREA &amp; SCOPE</th><th align="right" style="background:#1f2937;color:#fff;padding:10px 14px;font-size:13px;letter-spacing:.04em">RANGE</th></tr>
@@ -27339,7 +27347,7 @@ function renderProposalDocumentHtml(data, job, co, autoPrint) {
     </div>
     <div>
       <div class="doc-title">${itemized ? 'ITEMIZED PROPOSAL' : 'PROPOSAL'}</div>
-      <div class="doc-meta">${esc(job?.jobNumber||'')}</div>
+      <div class="doc-meta">${esc(jobNumSt(job))}</div>
       <div class="doc-meta">${new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'})}</div>
     </div>
   </div>
@@ -27564,7 +27572,7 @@ async function resendProposalEmail(proposalId) {
 
   const toName = job.client || job.name || 'Valued Customer';
   const co = companyProfile?.companyName || 'JTXD Contracting';
-  const jobNum = job.jobNumber || '';
+  const jobNum = jobNumSt(job);
   const isRevised = status === 'draft';
   const subject = isRevised
     ? `Revised Proposal from ${co}${jobNum ? ' — Job ' + jobNum : ''}`
@@ -27937,7 +27945,7 @@ function sendProposalViaEmail(btn) {
 
   const proceed = (portalUrl) => {
     const toName = job.client || job.name || 'Valued Customer';
-    const jobNum = job.jobNumber || '';
+    const jobNum = jobNumSt(job);
     const prop = conProposals && conProposals[0];
     const total = prop?.snapshot?.grandTotal || 0;
     const co = companyProfile?.companyName || 'JTXD Contracting';
@@ -28046,7 +28054,7 @@ function confirmSendProposalEmail() {
   const pending = _pendingProposalEmail;
   if (!pending) { kClose('emailPreviewModal'); return; }
   const { job, toName, subject, bodyHtml, prop, btn, proposalData } = pending;
-  const jobNum = job.jobNumber || '';
+  const jobNum = jobNumSt(job);
 
   const confirmBtn = document.getElementById('emailPreviewConfirmBtn');
   if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = 'Sending…'; }
@@ -28174,7 +28182,7 @@ function renderChangeOrderDocumentHtml(co, job, comp, autoPrint) {
     </div>
     <div>
       <div class="doc-title">CHANGE ORDER</div>
-      <div class="doc-meta">${esc(co.coNumber||'')}${job?.jobNumber ? ' · Job ' + esc(job.jobNumber) : ''}</div>
+      <div class="doc-meta">${esc(co.coNumber||'')}${job?.jobNumber ? ' · Job ' + esc(jobNumSt(job)) : ''}</div>
       <div class="doc-meta">${co.date ? new Date(co.date+'T00:00:00').toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'}) : new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'})}</div>
     </div>
   </div>
@@ -28279,7 +28287,7 @@ async function emailChangeOrderToCustomer(coId) {
   // receipt) is billed on a normal invoice with the QuickBooks Pay Now link.
   const stripePayLink = '';
   const toName = job.client || job.name || 'Valued Customer';
-  const jobNum = job.jobNumber || '';
+  const jobNum = jobNumSt(job);
   const amt = Number(co.amount || 0);
   const amtDisplay = (amt < 0 ? '-$' + Math.abs(amt).toLocaleString() : '$' + amt.toLocaleString());
   const subject = `Change Order from ${companyProfile?.companyName || 'JTXD Contracting'}${jobNum ? ' — Job ' + jobNum : ''}`;
