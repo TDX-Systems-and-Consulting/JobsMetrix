@@ -27132,11 +27132,14 @@ function computeProposalData(job, itemized, showCategoryPricing) {
   estGroups.forEach(group => {
     const allItems = getAllItemsInGroup(group);
     const totals = calcGroupTotals(allItems);
-    if (totals.price <= 0) return;
+    // ROOM_SCOPE_V2: a room with only a whole-room scope note (e.g.
+    // "Everything in this room is under Global") still prints, with no price.
+    const roomNote = (group.scopeNotes || '').trim();
+    if (totals.price <= 0 && !roomNote) return;
     // Price always counts toward the total, whether or not this scope is
     // shown to the customer — hiding a room/category only hides its
     // description, it doesn't mean the work (and its cost) isn't happening.
-    grandTotal += totals.price;
+    if (totals.price > 0) grandTotal += totals.price;
     if (group.visibleToCustomer === false) return;
 
     const catBlocks = (group.subgroups || []).map(sub => {
@@ -27174,9 +27177,9 @@ function computeProposalData(job, itemized, showCategoryPricing) {
       return { label, price, notes: item.notes || '' };
     }).filter(Boolean);
 
-    if (!catBlocks.length && !directBlocks.length) return;
+    if (!catBlocks.length && !directBlocks.length && !roomNote) return;
     // Only skip the group if it has no pricing AND no scope notes at all
-    const hasContent = catBlocks.some(c => c.price > 0 || c.scopeNotes) || directBlocks.length;
+    const hasContent = catBlocks.some(c => c.price > 0 || c.scopeNotes) || directBlocks.length || roomNote;
     if (!hasContent) return;
     rooms.push({ name: group.name, scopeNotes: group.scopeNotes || '', catBlocks, directBlocks });
   });
