@@ -35,9 +35,10 @@ const JTXD_LOCKED_RATES = {
   ownerW2Share: 0.50,         // accountant: 50% of owner pay as W-2 salary, 50% as owner draw
   employerPayrollTaxPct: 0.09, // 2026-10-11 per Travis: 7.65% FICA match + ~0.95% federal/Missouri unemployment, rounded up to a flat 9% of the W-2 half, paid from Retained Earnings
   materialsMarkupPct: 0.15,   // fallback only when real materials cost is unknown; markup + Flex = operating Checking
-  // STRIPE_FEES_V1 (2026-10-19 per Travis): "if I invoice 10,000 I don't make 10,000." Card processing
-  // comes off the top of the Pool like Jason's sales commission. Estimate = 2.9% of the whole price;
-  // Actual = the real Stripe fees recorded by the webhook + 2.9% of whatever is still unpaid.
+  // STRIPE_FEES_V1/V2 (2026-10-19 per Travis): "if I invoice 10,000 I don't make 10,000." The 15%
+  // markup already has 5% set aside for Stripe fees + 10% for overages, so the fee is paid OUT OF the
+  // markup money in operating Checking -- never taken from the Pool (that would count it twice).
+  // Estimate = 2.9% of the whole price; Actual = real Stripe fees recorded + 2.9% of what's unpaid.
   processingFeePct: 0.029,
 };
 
@@ -23289,12 +23290,12 @@ function calcTrueMargin(allItems, preAggregated) {
   // JTXD Actual = Labor Billed minus Real Labor Cost minus Jason's
   // commission, direct. Both are real costs taken off Labor Billed
   // before the pool that funds Overhead/Marketing/Flex/Taxes exists.
-  // STRIPE_FEES_V1: card processing is charged on the WHOLE price (materials
-  // too), and is a real cost of collecting the money -- off the top before
-  // the Pool, same tier as Jason's sales commission.
+  // STRIPE_FEES_V2: card processing is charged on the WHOLE price, but it is
+  // funded by the markup (5% of the 15% is set aside for it), so it comes out
+  // of operating Checking below -- the Pool is untouched.
   const processingFees = (preAggregated && preAggregated.processingFees != null)
     ? preAggregated.processingFees : revenue * JTXD_LOCKED_RATES.processingFeePct;
-  const jtxdActual = laborBilled - realLaborCost - jasonCommission - processingFees;
+  const jtxdActual = laborBilled - realLaborCost - jasonCommission;
 
   const overhead = jtxdActual * JTXD_LOCKED_RATES.overhead;
 
@@ -23343,7 +23344,7 @@ function calcTrueMargin(allItems, preAggregated) {
   const materialsCostReal = (materialsCost > 0) // LIVE_PL_V1: real cost may exceed price (overrun eats Checking)
     ? materialsCost : materialsPrice / (1 + JTXD_LOCKED_RATES.materialsMarkupPct);
   const materialsMarkup = materialsPrice - materialsCostReal;
-  const checking = materialsMarkup + flex;
+  const checking = materialsMarkup + flex - processingFees; // STRIPE_FEES_V2: fees paid from the markup float
   const overheadNet = overhead - superintendentPay - consultantPay;
   const jasonTotal = jasonCommission + superintendentPay + consultantPay;
   const laborShare = revenue > 0 ? laborBilled / revenue : 0;
@@ -23613,14 +23614,14 @@ function buildJobMarginRows(tm) {
     ['Total job price (what the customer pays)', tm.revenue, 'Materials billed + labor billed (+ approved change orders in Actual)', 'total', 'up'],
     ['Materials billed', tm.materialsPrice, '', ''],
     ['Materials cost (paid to suppliers)', tm.materialsCostReal, 'Estimate: from the line items · Actual: receipts + vendor bills', 'minus indent', 'down'],
-    ['Materials markup', tm.materialsMarkup, 'Overrun float, goes to operating Checking', 'indent', 'up'],
+    ['Materials markup', tm.materialsMarkup, 'Overrun float + card-fee money, goes to operating Checking', 'indent', 'up'],
+    ['Card processing (Stripe), paid from markup', tm.processingFees || 0, 'Estimate: ' + pct(R.processingFeePct) + ' of the total price · Actual: real Stripe fees + ' + pct(R.processingFeePct) + ' of what\'s still unpaid', 'minus indent', 'down'],
     ['Labor billed', tm.laborPrice, 'Labor is ' + p(tm.laborShare) + ' of the price', ''],
 
     ['Off the top of labor billed', null, '', 'sec'],
     ['Real labor cost (subs)', tm.realLaborCost, 'Estimate: ' + pct(R.realLaborCostPct) + ' of labor billed · Actual: agreed sub amounts', 'minus', 'down'],
     ['Jason, sales', tm.jasonCommission, pct(R.jasonCommissionPct) + ' of labor billed, before the Pool', 'minus'],
-    ['Card processing (Stripe)', tm.processingFees || 0, 'Estimate: ' + pct(R.processingFeePct) + ' of the total price · Actual: real Stripe fees + ' + pct(R.processingFeePct) + ' of what\'s still unpaid', 'minus', 'down'],
-    ['JTXD Pool', tm.jtxdActual, 'Labor billed − real labor − Jason sales − card fees', 'total', 'up'],
+    ['JTXD Pool', tm.jtxdActual, 'Labor billed − real labor − Jason sales', 'total', 'up'],
 
     ['The Pool waterfall', null, '', 'sec'],
     ['Overhead', tm.overhead, pct(R.overhead) + ' of the Pool', 'minus'],
@@ -23639,7 +23640,7 @@ function buildJobMarginRows(tm) {
     ['Owner draw (' + pct(1 - R.ownerW2Share) + ')', tm.ownerDraw, '', 'indent'],
     ['Employer payroll tax on the W-2', tm.employerPayrollTax, pct(R.employerPayrollTaxPct) + ' of W-2, paid by the company', 'minus'],
     ['Stays in Savings', tm.savings, 'Retained Earnings after Travis\'s pay and employer tax', 'total hl', 'up'],
-    ['Operating Checking', tm.checking, 'Materials markup + Flex', 'total', 'up'],
+    ['Operating Checking', tm.checking, 'Materials markup + Flex − card fees', 'total', 'up'],
 
     ['Jason, all three pieces', null, '', 'sec'],
     ['Sales + superintendent + consultant', tm.jasonTotal, p(tm.laborPrice ? tm.jasonTotal / tm.laborPrice : 0) + ' of labor billed', ''],
@@ -23662,7 +23663,7 @@ function buildJobMarginBuckets(tm) {
     ['Travis W-2 salary', 'Payroll', tm.ownerW2, '#e07a1f'],
     ['Employer tax on W-2', 'Payroll', tm.employerPayrollTax, '#f2b36b'],
     ['Travis owner draw', '', tm.ownerDraw, '#c2410c'],
-    ['Operating Checking', 'Materials markup ' + fhMoney(tm.materialsMarkup) + ' + Flex ' + fhMoney(tm.flex), tm.checking, '#1dbb87'],
+    ['Operating Checking', 'Markup ' + fhMoney(tm.materialsMarkup) + ' + Flex ' + fhMoney(tm.flex) + ' − card fees ' + fhMoney(tm.processingFees || 0), tm.checking, '#1dbb87'],
     ['Savings', 'Retained Earnings after Travis\'s pay', tm.savings, '#0f766e'],
   ];
 }
