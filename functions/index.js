@@ -3018,6 +3018,26 @@ async function runSLATriggers(db, companyId) {
     .filter(d => ['Owner', 'Full Access'].includes(d.data().role))
     .map(d => ({ email: d.data().email, name: d.data().name || d.data().email }));
 
+  // NOTIFY_ROUTING_V1: both partners stay Owner, but SLA to-dos route by
+  // seat (settings/notifyRouting = { sales, ops } emails, set in
+  // Settings > Who Gets Alerts). Sales = estimate follow-ups; everything
+  // else = ops. Unset or unknown email = old behavior (every Owner).
+  let salesOwners = owners, opsOwners = owners;
+  try {
+    const rd = await db.collection('companies').doc(companyId)
+      .collection('settings').doc('notifyRouting').get();
+    if (rd.exists) {
+      const r = rd.data() || {};
+      const pick = em => {
+        if (!em) return null;
+        const m = teamSnap.docs.map(d => d.data()).find(x => (x.email || '').toLowerCase() === String(em).toLowerCase());
+        return [{ email: em, name: (m && m.name) || em }];
+      };
+      salesOwners = pick(r.sales) || owners;
+      opsOwners = pick(r.ops) || owners;
+    }
+  } catch (e) { console.warn('notifyRouting read failed:', e.message); }
+
   // PlannerXD ownerUid — same lookup the client-side pulse/notification
   // bridges use. If it's not set, we just skip the PlannerXD push and
   // still create the JOBSMETRIX todo as before — this is additive,
@@ -3111,11 +3131,11 @@ async function runSLATriggers(db, companyId) {
       if (days >= 7) {
         await createTodo(jobId, jobName,
           `Estimate at risk of going cold — ${jobName} (${days} days)`,
-          'high', owners, `${jobId}_estimate_cold`);
+          'high', salesOwners, `${jobId}_estimate_cold`);
       } else if (days >= 3) {
         await createTodo(jobId, jobName,
           `Follow up on ${jobName} estimate — sent ${days} days ago`,
-          'med', owners, `${jobId}_estimate_followup`);
+          'med', salesOwners, `${jobId}_estimate_followup`);
       }
     }
 
@@ -3126,11 +3146,11 @@ async function runSLATriggers(db, companyId) {
       if (days >= 10) {
         await createTodo(jobId, jobName,
           `URGENT: ${jobName} still unscheduled after ${days} days`,
-          'high', owners, `${jobId}_schedule_escalation`);
+          'high', opsOwners, `${jobId}_schedule_escalation`);
       } else if (days >= 5) {
         await createTodo(jobId, jobName,
           `Schedule crew for ${jobName} — ${days} days since approval`,
-          'med', owners, `${jobId}_schedule_crew`);
+          'med', opsOwners, `${jobId}_schedule_crew`);
       }
     }
 
@@ -3141,11 +3161,11 @@ async function runSLATriggers(db, companyId) {
       if (days >= 5) {
         await createTodo(jobId, jobName,
           `URGENT: Inspection pending ${days} days on ${jobName}`,
-          'high', owners, `${jobId}_inspection_escalation`);
+          'high', opsOwners, `${jobId}_inspection_escalation`);
       } else if (days >= 2) {
         await createTodo(jobId, jobName,
           `Follow up on inspection for ${jobName} — ${days} days pending`,
-          'med', owners, `${jobId}_inspection_followup`);
+          'med', opsOwners, `${jobId}_inspection_followup`);
       }
     }
 
@@ -3156,15 +3176,15 @@ async function runSLATriggers(db, companyId) {
       if (days >= 45) {
         await createTodo(jobId, jobName,
           `Invoice 15 days past due — ${jobName} (${days} days since completion)`,
-          'high', owners, `${jobId}_invoice_pastdue15`);
+          'high', opsOwners, `${jobId}_invoice_pastdue15`);
       } else if (days >= 30) {
         await createTodo(jobId, jobName,
           `Invoice overdue — ${jobName} (${days} days since completion)`,
-          'high', owners, `${jobId}_invoice_overdue`);
+          'high', opsOwners, `${jobId}_invoice_overdue`);
       } else if (days >= 25) {
         await createTodo(jobId, jobName,
           `Invoice due in 5 days — ${jobName}`,
-          'med', owners, `${jobId}_invoice_due5`);
+          'med', opsOwners, `${jobId}_invoice_due5`);
       }
     }
 
@@ -3176,7 +3196,7 @@ async function runSLATriggers(db, companyId) {
       if (logDays !== null && logDays >= 3) {
         await createTodo(jobId, jobName,
           `No daily log on ${jobName} in ${logDays} days`,
-          'high', owners, `${jobId}_no_log_${todayStr}`);
+          'high', opsOwners, `${jobId}_no_log_${todayStr}`);
       }
     }
 
@@ -3201,7 +3221,7 @@ async function runSLATriggers(db, companyId) {
     if (unprocessedCOCount >= 3) {
       await createTodo(companyId, 'Company-wide',
         `${unprocessedCOCount} change orders awaiting your review`,
-        'high', owners, `${companyId}_unprocessed_cos_${todayStr}`);
+        'high', opsOwners, `${companyId}_unprocessed_cos_${todayStr}`);
     }
   } catch(e) {}
 
@@ -3210,7 +3230,7 @@ async function runSLATriggers(db, companyId) {
   if (outstandingInvoiceTotal >= 10000) {
     await createTodo(companyId, 'Company-wide',
       `Outstanding invoices total $${Math.round(outstandingInvoiceTotal).toLocaleString()} — above your $10k threshold`,
-      'high', owners, `${companyId}_outstanding_threshold_${todayStr}`);
+      'high', opsOwners, `${companyId}_outstanding_threshold_${todayStr}`);
   }
 
   console.log(`SLA triggers complete for ${companyId}`);

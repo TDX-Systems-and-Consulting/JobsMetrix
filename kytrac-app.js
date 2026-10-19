@@ -2525,10 +2525,67 @@ function parseMentions(text, teamMembers) {
   });
 }
 
+// NOTIFY_ROUTING_V1: both partners stay Owner; system to-dos/alerts route
+// by seat. settings/notifyRouting = { sales: email, ops: email }. Unset =
+// old behavior (first Owner). Cached in window._notifyRouting.
+window._notifyRouting = window._notifyRouting || null;
+async function loadNotifyRouting(force) {
+  if (!conDb || !currentCompanyId) return null;
+  if (window._notifyRouting && !force) return window._notifyRouting;
+  try {
+    const d = await coll('settings').doc('notifyRouting').get();
+    window._notifyRouting = d.exists ? (d.data() || {}) : {};
+  } catch (e) { window._notifyRouting = window._notifyRouting || {}; }
+  return window._notifyRouting;
+}
+window.loadNotifyRouting = loadNotifyRouting;
+function routedOwner(teamMembers, seat) {
+  const em = ((window._notifyRouting || {})[seat] || '').toLowerCase();
+  if (em) {
+    const m = (teamMembers || []).find(x => (x.email || '').toLowerCase() === em);
+    if (m) return m;
+  }
+  return (teamMembers || []).find(m => m.role === 'Owner') || null;
+}
+window.routedOwner = routedOwner;
+function renderNotifyRouting() {
+  const sec = document.getElementById('notifyRoutingSection');
+  if (!sec) return;
+  if (currentUserRole !== 'Owner') { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  const team = (_lastTeamMemberList || []).filter(m => m.email);
+  const r = window._notifyRouting || {};
+  const owners = team.filter(m => ['Owner', 'Full Access'].includes(m.role) || m.fullAccessOverride);
+  const findBy = word => (owners.find(m => (m.name || '').toLowerCase().includes(word)) || {}).email || '';
+  const salesDefault = r.sales || findBy('jason') || (owners[0] || {}).email || '';
+  const opsDefault = r.ops || findBy('travis') || (owners[0] || {}).email || '';
+  const opts = sel => team.map(m => `<option value="${esc(m.email)}" ${m.email === sel ? 'selected' : ''}>${esc(m.name || m.email)} — ${esc(m.role || '')}</option>`).join('');
+  const sEl = document.getElementById('routeSalesSelect');
+  const oEl = document.getElementById('routeOpsSelect');
+  if (sEl) sEl.innerHTML = opts(salesDefault);
+  if (oEl) oEl.innerHTML = opts(opsDefault);
+  const st = document.getElementById('routeStatus');
+  if (st) st.textContent = (r.sales || r.ops) ? 'Saved routing is active.' : 'Not saved yet — alerts still go to every Owner. Check the picks and press Save.';
+}
+window.renderNotifyRouting = renderNotifyRouting;
+async function saveNotifyRouting() {
+  if (currentUserRole !== 'Owner') { alert('Only an Owner can change this.'); return; }
+  const sales = document.getElementById('routeSalesSelect')?.value || '';
+  const ops = document.getElementById('routeOpsSelect')?.value || '';
+  if (!sales || !ops) { alert('Pick a person for both.'); return; }
+  try {
+    await coll('settings').doc('notifyRouting').set({ sales, ops, updatedAt: firebase.firestore.FieldValue.serverTimestamp(), updatedBy: conCurrentUser?.email || '' }, { merge: true });
+    window._notifyRouting = { sales, ops };
+    const st = document.getElementById('routeStatus');
+    if (st) st.textContent = 'Saved. New alerts route by seat starting now.';
+  } catch (e) { alert('Could not save: ' + e.message); }
+}
+window.saveNotifyRouting = saveNotifyRouting;
+
 function computeNotifyTargets(text, teamMembers, opts) {
   opts = opts || {};
   const mentioned = parseMentions(text, teamMembers);
-  const owner = teamMembers.find(m => m.role === 'Owner');
+  const owner = routedOwner(teamMembers, 'ops');
 
   // Always notify the Owner on every message — no message gets missed.
   // @mentioned team members are added on top of that.
@@ -2705,7 +2762,7 @@ function sendJobMessage() {
 
   const job = conJobs.find(j => j.id === conCurrentJobId);
 
-  fetchTeamMembersFlat(conDb, currentCompanyId).then(teamMembers => {
+  Promise.all([fetchTeamMembersFlat(conDb, currentCompanyId), loadNotifyRouting().catch(() => null)]).then(([teamMembers]) => {
     let notifyTargets = computeNotifyTargets(text, teamMembers, { fromCustomer: false, senderEmail: conCurrentUser?.email || '' });
     // If this is a reply to the customer, also notify (text) the customer
     // directly at the phone number on file for this job - separate from
@@ -7928,7 +7985,8 @@ async function autoCreateCOTodo(jobId, coId, coTitle, coAmount) {
   // Find Team Lead assigned to this job
   const teamMembers = await fetchTeamMembersFlat(conDb, currentCompanyId);
   const teamLead = teamMembers.find(m => m.role === 'Team Lead' || m.role === 'Superintendent');
-  const owner = teamMembers.find(m => m.role === 'Owner');
+  await loadNotifyRouting();
+  const owner = routedOwner(teamMembers, 'ops');
 
   const todoText = `Process Change Order: ${coTitle || 'Change Order'}${coAmount ? ' — $' + Number(coAmount).toLocaleString() : ''} on ${job?.name || 'job'}`;
 
@@ -15023,6 +15081,7 @@ function loadTeamMembers() {
         return lb - la;
       });
       renderTeamMemberList();
+      loadNotifyRouting(true).then(renderNotifyRouting).catch(() => {});
     })
     .catch(() => {
       if (list) list.innerHTML = '<div class="small muted">Could not load team members.</div>';
@@ -19273,7 +19332,11 @@ function sendPortalMessage() {
   if (!text || !_portalDb || !_portalJobId || !_portalColl) return;
   input.value = '';
 
-  fetchTeamMembersFlat(_portalDb, _portalCompanyId).then(teamMembers => {
+  Promise.all([
+    fetchTeamMembersFlat(_portalDb, _portalCompanyId),
+    _portalDb.collection('companies').doc(_portalCompanyId).collection('settings').doc('notifyRouting').get()
+      .then(d => { if (d.exists) window._notifyRouting = d.data() || {}; }).catch(() => {})
+  ]).then(([teamMembers]) => {
     const notifyTargets = computeNotifyTargets(text, teamMembers, { fromCustomer: true, senderEmail: '' });
     const data = {
       text,
@@ -25287,7 +25350,8 @@ async function submitReceipt() {
     let owner = null;
     try {
       const team = await fetchTeamMembersFlat(conDb, currentCompanyId);
-      owner = team.find(m => m.role === 'Owner') || null;
+      await loadNotifyRouting();
+      owner = routedOwner(team, 'ops');
     } catch (e) {}
     const ownerEmail = owner?.email || RECEIPT_ALERT_FALLBACK_EMAIL;
     const action = isReturn ? 'Return credit' : needsReimburse ? 'REIMBURSE' : 'Reconcile';
