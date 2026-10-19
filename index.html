@@ -2823,8 +2823,8 @@
       </div>
       <div style="margin-top:14px">
         <label class="small muted" style="display:block;margin-bottom:5px">💳 Payment Link (optional override)</label>
-        <input id="invPaymentLink" placeholder="Leave blank to auto-use Stripe (or QuickBooks if Stripe isn't connected)" style="width:100%;font-size:.84rem" />
-        <div style="font-size:.72rem;color:var(--muted);margin-top:4px">Appears as a Pay Now button on the invoice and customer portal. If left blank, Stripe's hosted payment link is used automatically once connected; QuickBooks' link is used as a fallback only if Stripe isn't set up. Only fill this in if you want to override both with a different link.</div>
+        <input id="invPaymentLink" placeholder="Leave blank to auto-use Stripe" style="width:100%;font-size:.84rem" />
+        <div style="font-size:.72rem;color:var(--muted);margin-top:4px">Appears as a Pay Now button on the invoice and customer portal. If left blank, a fresh Stripe payment link is created automatically each time you email the invoice. Only fill this in to override it with a different link.</div>
         <div id="invQbPaymentLinkHint" style="display:none;font-size:.72rem;color:#1dbb87;margin-top:4px">✓ A payment link is already set for this invoice — it's being used automatically.</div>
       </div>
     </div>
@@ -5301,7 +5301,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202610191200"></script>
+<script src="kytrac-app.js?v=202610191430"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
   // loading. Registered after the main app script so a slow/failed SW
