@@ -15456,6 +15456,8 @@ function applyRolePermissions() {
   }
   if (menuBtn) menuBtn.style.display = isFT ? 'none' : '';
   if (ftHomeBtn) ftHomeBtn.style.display = isFT ? '' : 'none';
+  const ftOutBtn = document.getElementById('ktFieldTechSignOutBtn');
+  if (ftOutBtn) ftOutBtn.style.display = isFT ? '' : 'none';
   if (isFT) {
     // Land a Field Tech on their simplified home instead of the normal
     // (still-default-active-in-the-static-HTML) full dashboard.
@@ -16530,6 +16532,7 @@ async function loadManualPhases(jobId) {
 }
 
 function saveManualTimeEntry() {
+  if (isFieldTechRestricted()) { alert('Field Technicians clock in and out from the Time page. Ask the office to add or fix hours.'); return; }
   const jobId = document.getElementById('manualJobSelect')?.value;
   const hours = parseFloat(document.getElementById('manualHours')?.value);
   const date = document.getElementById('manualDate')?.value;
@@ -16633,9 +16636,28 @@ function updateClockUI() {
   }
 }
 
+// FT_TIME_LOCK_V1: Field Technicians only see and act on their own time.
+// No team list, no manual entry (for anyone), no overtime/cost table, no
+// edit/delete/force clock-out -- clocking out goes through the required
+// Daily Log + photo flow only.
+function ftOwnTime(entries) {
+  if (typeof isFieldTechRestricted !== 'function' || !isFieldTechRestricted()) return entries;
+  const uid = conCurrentUser?.uid, em = (conCurrentUser?.email || '').toLowerCase();
+  return entries.filter(e => (uid && e.userId === uid) || (em && (e.userEmail || '').toLowerCase() === em));
+}
+function applyTimeRoleView() {
+  const isFT = typeof isFieldTechRestricted === 'function' && isFieldTechRestricted();
+  ['timeTeamTile', 'timeManualCard', 'timeOtCard'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.style.display = isFT ? 'none' : '';
+  });
+  const uf = document.getElementById('timeFilterUser');
+  if (uf) { if (isFT) uf.value = ''; uf.style.display = isFT ? 'none' : ''; }
+}
+window.applyTimeRoleView = applyTimeRoleView;
+
 function renderTodaySummary() {
   const today = new Date().toISOString().split('T')[0];
-  const todayEntries = allTimeEntries.filter(e => e.date === today);
+  const todayEntries = ftOwnTime(allTimeEntries).filter(e => e.date === today);
   const myEntries = todayEntries.filter(e => e.userId === conCurrentUser?.uid);
   const myHours = myEntries.reduce((s,e) => s + (e.hours||0), 0);
   const teamOnSite = [...new Set(todayEntries.filter(e => !e.clockOut).map(e => e.userId))].length;
@@ -16781,7 +16803,7 @@ function renderWeeklyOvertime() {
 
   const jobFilter = document.getElementById('timeFilterJob')?.value || '';
   const userFilter = document.getElementById('timeFilterUser')?.value || '';
-  let entries = (typeof allTimeEntries !== 'undefined') ? allTimeEntries : [];
+  let entries = (typeof allTimeEntries !== 'undefined') ? ftOwnTime(allTimeEntries) : [];
   if (jobFilter) entries = entries.filter(e => e.jobId === jobFilter);
   if (userFilter) entries = entries.filter(e => e.userId === userFilter || e.userEmail === userFilter);
 
@@ -16819,7 +16841,8 @@ function renderTimeLog() {
   const jobFilter = document.getElementById('timeFilterJob')?.value || '';
   const userFilter = document.getElementById('timeFilterUser')?.value || '';
 
-  let entries = allTimeEntries;
+  applyTimeRoleView();
+  let entries = ftOwnTime(allTimeEntries);
   if (jobFilter) entries = entries.filter(e => e.jobId === jobFilter);
   if (userFilter) entries = entries.filter(e => e.userId === userFilter || e.userEmail === userFilter);
 
@@ -16852,6 +16875,7 @@ function renderTimeLog() {
           const canManage = currentUserRole === 'Owner' || currentUserTeamData?.fullAccessOverride;
           const isOwnLiveEntry = !e.clockOut && e.userId === conCurrentUser?.uid;
           const buttons = [];
+          if (isFieldTechRestricted()) return !e.clockOut ? '<span class="small muted">Use Clock Out above</span>' : '';
           if (!e.clockOut && (isOwnLiveEntry || canManage)) {
             buttons.push(`<button class="btn btn-danger" onclick="forceClockOut('${e.id}')" style="padding:3px 8px;font-size:.74rem">Clock Out</button>`);
           }
@@ -16959,6 +16983,7 @@ function saveEditTimeEntry() {
 window.saveEditTimeEntry = saveEditTimeEntry;
 
 function forceClockOut(entryId) {
+  if (isFieldTechRestricted()) { alert('Use the Clock Out button above — it needs your Daily Log and photo.'); return; }
   const entry = allTimeEntries.find(e => e.id === entryId);
   if (!entry) return;
   const now = new Date();
@@ -16972,6 +16997,7 @@ function forceClockOut(entryId) {
 }
 
 function deleteTimeEntry(id) {
+  if (isFieldTechRestricted()) { alert('Only the office can delete time entries.'); return; }
   if (!confirm('Delete this time entry?')) return;
   coll('timeentries').doc(id).delete().catch(e => alert('Error: ' + e.message));
 }
