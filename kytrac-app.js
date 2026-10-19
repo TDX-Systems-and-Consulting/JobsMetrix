@@ -35,6 +35,10 @@ const JTXD_LOCKED_RATES = {
   ownerW2Share: 0.50,         // accountant: 50% of owner pay as W-2 salary, 50% as owner draw
   employerPayrollTaxPct: 0.09, // 2026-10-11 per Travis: 7.65% FICA match + ~0.95% federal/Missouri unemployment, rounded up to a flat 9% of the W-2 half, paid from Retained Earnings
   materialsMarkupPct: 0.15,   // fallback only when real materials cost is unknown; markup + Flex = operating Checking
+  // STRIPE_FEES_V1 (2026-10-19 per Travis): "if I invoice 10,000 I don't make 10,000." Card processing
+  // comes off the top of the Pool like Jason's sales commission. Estimate = 2.9% of the whole price;
+  // Actual = the real Stripe fees recorded by the webhook + 2.9% of whatever is still unpaid.
+  processingFeePct: 0.029,
 };
 
 // JOB_STREET_V1 (2026-10-10): street-only address for labels ("707 Karon Drive"),
@@ -23285,7 +23289,12 @@ function calcTrueMargin(allItems, preAggregated) {
   // JTXD Actual = Labor Billed minus Real Labor Cost minus Jason's
   // commission, direct. Both are real costs taken off Labor Billed
   // before the pool that funds Overhead/Marketing/Flex/Taxes exists.
-  const jtxdActual = laborBilled - realLaborCost - jasonCommission;
+  // STRIPE_FEES_V1: card processing is charged on the WHOLE price (materials
+  // too), and is a real cost of collecting the money -- off the top before
+  // the Pool, same tier as Jason's sales commission.
+  const processingFees = (preAggregated && preAggregated.processingFees != null)
+    ? preAggregated.processingFees : revenue * JTXD_LOCKED_RATES.processingFeePct;
+  const jtxdActual = laborBilled - realLaborCost - jasonCommission - processingFees;
 
   const overhead = jtxdActual * JTXD_LOCKED_RATES.overhead;
 
@@ -23343,7 +23352,7 @@ function calcTrueMargin(allItems, preAggregated) {
 
   return {
     materialsCost, materialsPrice, laborCost, laborPrice, revenue,
-    realLaborCost, jasonCommission, superintendentPay, consultantPay,
+    realLaborCost, jasonCommission, processingFees, superintendentPay, consultantPay,
     estimatedHours, billedHours, efficiencyHours,
     billedDays, efficiencyDays, jtxdActual,
     overhead, marketing, flex, taxes,
@@ -23464,6 +23473,7 @@ async function getJobActualInputs(job, est, opts) {
     computeJobHourlyLabor(jobId),
     jobRef.collection('receipts').get().catch(() => null),
   ]);
+  const invSnapFees = await jobRef.collection('invoices').get().catch(() => null);
   const num = v => Number(v) || 0;
   const info = { notes: [] };
 
@@ -23565,7 +23575,18 @@ async function getJobActualInputs(job, est, opts) {
   // + EVERY sub payment entered (not voided) + hourly labor.
   const spentToDate = billsPaid + expenses + payTotal + hourlyLabor;
   Object.assign(info, { hourlyLabor, billsPaid, expenses, receiptsUnlogged, receiptsCount, subPaymentsTotal: payTotal, spentToDate });
-  return { matPrice, labPrice, matCost: matActual, realLaborCost, info };
+
+  // STRIPE_FEES_V1: real Stripe fees already taken (written by the webhook on
+  // each paid invoice) + 2.9% of whatever hasn't been collected yet. Money
+  // collected by check/cash/ACH outside Stripe carries no fee.
+  let feesRecorded = 0, collected = 0;
+  if (invSnapFees) invSnapFees.forEach(d => { const x = d.data(); feesRecorded += num(x.stripeFeeTotal); collected += num(x.amtPaid); });
+  const revenueA = matPrice + labPrice;
+  const uncollected = Math.max(0, revenueA - collected);
+  const processingFees = feesRecorded + uncollected * JTXD_LOCKED_RATES.processingFeePct;
+  Object.assign(info, { stripeFeesRecorded: feesRecorded, collectedForFees: collected });
+  info.notes.push(`Card fees: ${fhMoney(feesRecorded)} real Stripe fees taken so far + ${fhMoney(uncollected * JTXD_LOCKED_RATES.processingFeePct)} (2.9%) on the ${fhMoney(uncollected)} not yet collected`);
+  return { matPrice, labPrice, matCost: matActual, realLaborCost, processingFees, info };
 }
 
 async function getJobMarginBoth(jobId, fresh, opts) {
@@ -23575,7 +23596,7 @@ async function getJobMarginBoth(jobId, fresh, opts) {
   if (!est.matPrice && !est.labPrice) return null;
   const tmE = calcTrueMargin(null, { materialsPrice: est.matPrice, laborPrice: est.labPrice, materialsCost: est.matCost });
   const a = await getJobActualInputs(job, est, opts || {});
-  const tmA = calcTrueMargin(null, { materialsPrice: a.matPrice, laborPrice: a.labPrice, materialsCost: a.matCost, realLaborCost: a.realLaborCost });
+  const tmA = calcTrueMargin(null, { materialsPrice: a.matPrice, laborPrice: a.labPrice, materialsCost: a.matCost, realLaborCost: a.realLaborCost, processingFees: a.processingFees });
   return { job, tmE, tmA, info: a.info };
 }
 // back-compat: Estimate-only
@@ -23598,7 +23619,8 @@ function buildJobMarginRows(tm) {
     ['Off the top of labor billed', null, '', 'sec'],
     ['Real labor cost (subs)', tm.realLaborCost, 'Estimate: ' + pct(R.realLaborCostPct) + ' of labor billed · Actual: agreed sub amounts', 'minus', 'down'],
     ['Jason, sales', tm.jasonCommission, pct(R.jasonCommissionPct) + ' of labor billed, before the Pool', 'minus'],
-    ['JTXD Pool', tm.jtxdActual, 'Labor billed − real labor − Jason sales', 'total', 'up'],
+    ['Card processing (Stripe)', tm.processingFees || 0, 'Estimate: ' + pct(R.processingFeePct) + ' of the total price · Actual: real Stripe fees + ' + pct(R.processingFeePct) + ' of what\'s still unpaid', 'minus', 'down'],
+    ['JTXD Pool', tm.jtxdActual, 'Labor billed − real labor − Jason sales − card fees', 'total', 'up'],
 
     ['The Pool waterfall', null, '', 'sec'],
     ['Overhead', tm.overhead, pct(R.overhead) + ' of the Pool', 'minus'],
@@ -23633,6 +23655,7 @@ function buildJobMarginBuckets(tm) {
     ['Materials suppliers', 'Paid out', tm.materialsCostReal, '#8b93a7'],
     ['Subcontractors', 'Paid out', tm.realLaborCost, '#4f6db8'],
     ['Jason', 'Sales + superintendent + consultant', tm.jasonTotal, '#7a5ab8'],
+    ['Stripe', 'Card processing fees', tm.processingFees || 0, '#635bff'],
     ['Overhead account', 'Rent, utilities, insurance, software', tm.overheadNet, '#2f8f9d'],
     ['Marketing account', '', tm.marketing, '#d0498a'],
     ['Taxes account', '', tm.taxes, '#6b7280'],
