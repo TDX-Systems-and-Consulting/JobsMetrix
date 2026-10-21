@@ -44,7 +44,7 @@ self.addEventListener('fetch', event => {
   // ?v=YYYYMMDDHHMM query string in index.html specifically so browsers
   // (and this worker) fetch a fresh copy whenever that stamp changes.
   // Caching it here would undermine that mechanism.
-  if (url.pathname === '/kytrac-app.js') return;
+  if (url.pathname === '/kytrac-app.js' || url.pathname === '/kytlead.js') return;
 
   // The app shell itself (index.html / navigations): network-first,
   // not cache-first. This was the actual bug behind "I hard-refreshed

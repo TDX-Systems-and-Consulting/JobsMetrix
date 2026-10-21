@@ -3765,3 +3765,120 @@ exports.ghlWebhookReceiver = functions.https.onRequest(async (req, res) => {
 
 // Retest: transient 'Failed to list functions' error, retrying 2026-09-28
 
+
+// ============================================================================
+// KYTLEAD_V1 (Travis 10/21/26) — web lead capture + morning follow-up email
+// ============================================================================
+
+// Public form endpoint used by jobsmetrix.com/lead-form.html?c=<companyId>
+// (shareable link or iframe on the company website). Creates a New Lead,
+// assigned to whoever gets Sales alerts (settings/notifyRouting.sales).
+exports.kytleadCapture = functions.https.onRequest(async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.status(204).send('');
+  if (req.method !== 'POST') return res.status(405).send('POST only');
+  const b = req.body || {};
+  const s = (v, n) => String(v == null ? '' : v).trim().slice(0, n);
+  // Honeypot: real people never fill the hidden "website" field.
+  if (s(b.website, 200)) return res.status(200).json({ ok: true });
+  const companyId = s(b.c, 60);
+  const name = s(b.name, 120), phone = s(b.phone, 40);
+  if (!companyId || !name || !phone) return res.status(400).json({ error: 'Name and phone are required.' });
+  const db = admin.firestore();
+  try {
+    const co = await db.collection('companies').doc(companyId).get();
+    if (!co.exists) return res.status(404).json({ error: 'Unknown company.' });
+    // Light abuse guard: max 30 web leads per company per hour.
+    const hourAgo = Date.now() - 3600e3;
+    const recent = await db.collection('companies').doc(companyId).collection('leads')
+      .where('createdMs', '>=', hourAgo).get();
+    const webCount = recent.docs.filter(d => d.data().source === 'Website').length;
+    if (webCount >= 30) return res.status(429).json({ error: 'Too many requests. Please call us.' });
+    let owner = '';
+    try {
+      const r = await db.collection('companies').doc(companyId).collection('settings').doc('notifyRouting').get();
+      owner = r.exists ? (r.data().sales || '') : '';
+    } catch (e) {}
+    // Next business day (skip Sat/Sun), Central time.
+    const ct = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+    const due = new Date(ct); due.setDate(due.getDate() + 1);
+    while (due.getDay() === 0 || due.getDay() === 6) due.setDate(due.getDate() + 1);
+    const dueStr = `${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, '0')}-${String(due.getDate()).padStart(2, '0')}`;
+    const heard = s(b.heard, 40);
+    const message = s(b.message, 2000);
+    await db.collection('companies').doc(companyId).collection('leads').add({
+      companyId, name, phone, email: s(b.email, 160), address: s(b.address, 240),
+      type: s(b.type, 40), source: 'Website', heardFrom: heard,
+      notes: [message, heard && heard !== 'Website' ? 'Heard about us: ' + heard : ''].filter(Boolean).join('\n'),
+      stage: 'new', stageChangedAt: Date.now(), owner,
+      nextStep: 'Call within 1 business day', nextDue: dueStr, value: 0,
+      createdMs: Date.now(), createdBy: 'web-form', formPage: s(b.page, 300),
+      activity: [{ type: 'note', note: 'Web form submitted' + (message ? ': ' + message.slice(0, 200) : ''), at: Date.now(), by: 'web-form' }],
+    });
+    return res.status(200).json({ ok: true });
+  } catch (e) {
+    console.error('kytleadCapture failed:', e.message);
+    return res.status(500).json({ error: 'Could not save. Please call us.' });
+  }
+});
+
+// Morning follow-up email, Mon–Sat 6:45am Central: each lead owner gets the
+// open leads whose next step is due today or overdue, plus open leads with
+// no next step. Sent through the same Gmail account as estimates and
+// proposals (GMAIL_SERVICE_ACCOUNT_KEY / EMAIL_SEND_AS).
+exports.kytleadMorningDigest = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCOUNT_KEY'] }).pubsub
+  .schedule('45 6 * * 1-6')
+  .timeZone('America/Chicago')
+  .onRun(async () => {
+    let gmail;
+    try { gmail = await getGmailClient(); }
+    catch (e) { console.error('kytleadMorningDigest: Gmail setup failed', e.message); return null; }
+    const db = admin.firestore();
+    const ct = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+    const today = `${ct.getFullYear()}-${String(ct.getMonth() + 1).padStart(2, '0')}-${String(ct.getDate()).padStart(2, '0')}`;
+    const OPEN = ['new', 'contacted', 'appt', 'estimating', 'sent', 'followup'];
+    const label = { new: 'New Lead', contacted: 'Contacted', appt: 'Appointment Set', estimating: 'Estimating', sent: 'Estimate Sent', followup: 'Follow-up' };
+    const esc = v => String(v == null ? '' : v).replace(/[&<>"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
+    const companies = await db.collection('companies').get();
+    for (const co of companies.docs) {
+      const leadsSnap = await co.ref.collection('leads').get();
+      if (leadsSnap.empty) continue;
+      const byOwner = {};
+      leadsSnap.forEach(d => {
+        const l = d.data();
+        if (l.isActivityLog || !OPEN.includes(l.stage)) return;
+        if (!l.nextDue && l.jobId) return; // converted: the job carries the next step
+        const bucket = !l.nextDue ? 'none' : l.nextDue < today ? 'overdue' : l.nextDue === today ? 'today' : null;
+        if (!bucket) return;
+        const owner = (l.owner || (co.data().ownerEmail || '')).toLowerCase();
+        if (!owner) return;
+        (byOwner[owner] = byOwner[owner] || { overdue: [], today: [], none: [] })[bucket].push(l);
+      });
+      const companyName = co.data().name || 'JTXD Contracting';
+      for (const [email, g] of Object.entries(byOwner)) {
+        const total = g.overdue.length + g.today.length + g.none.length;
+        if (!total) continue;
+        const list = (title, color, arr) => arr.length ? `<h3 style="color:${color};margin:18px 0 6px">${title} (${arr.length})</h3>` + arr.map(l =>
+          `<div style="padding:8px 0;border-bottom:1px solid #eee"><strong>${esc(l.name)}</strong> <span style="color:#888">· ${esc(label[l.stage] || l.stage)}</span><br>
+           ${l.nextStep ? '→ ' + esc(l.nextStep) : '<em>No next step set</em>'}${l.nextDue && l.nextDue < today ? ' <span style="color:#b91c1c">(due ' + esc(l.nextDue) + ')</span>' : ''}<br>
+           <span style="color:#555">${esc(l.phone || '')}${l.email ? ' · ' + esc(l.email) : ''}</span></div>`).join('') : '';
+        const html = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#1a1a1a">
+          <h2 style="color:#d97706;margin-bottom:4px">Today's follow-ups</h2>
+          <div style="color:#666">${total} lead${total === 1 ? '' : 's'} need you today.</div>
+          ${list('🔴 Overdue', '#b91c1c', g.overdue)}${list('🟠 Due today', '#d97706', g.today)}${list('⚠ No next step', '#b91c1c', g.none)}
+          <p style="margin-top:20px"><a href="https://jobsmetrix.com/" style="background:#d97706;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none">Open Leads in JobsMetrix</a></p>
+          <p style="font-size:12px;color:#999">${esc(companyName)} · KYTLEAD morning follow-ups</p></div>`;
+        try {
+          const raw = buildRawMessage({
+            to: email, fromName: companyName + ' Leads',
+            subject: `Today's follow-ups: ${g.overdue.length} overdue, ${g.today.length} due today`,
+            bodyHtml: html, bodyText: `${total} leads need follow-up today. Open JobsMetrix → Leads → Today.`,
+          });
+          await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
+        } catch (e) { console.warn('kytleadMorningDigest send failed for', email, e.message); }
+      }
+    }
+    return null;
+  });
