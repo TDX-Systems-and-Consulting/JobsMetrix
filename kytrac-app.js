@@ -578,12 +578,64 @@ function colTotalsHtml(jobs, color, colLabel) {
   </div>`;
 }
 
+// JOB_SECTIONS_V1 (Travis 10/21/26): the Jobs board is split into three
+// sections -- Sales (New Lead through Submitted), Operations (To Be
+// Scheduled through Complete – Awaiting Final Payment) and Finance (the
+// closed lanes). Superintendent and above can switch each section on/off to
+// cut clutter (remembered on this device); everyone else sees the old
+// layout with the sections labeled.
+const JOB_BOARD_SECTIONS = [
+  { key: 'sales',   label: 'Sales',      color: '#f97316', statuses: ['New Lead', 'Appointment Set', 'Building Estimate', 'Submitted'] },
+  { key: 'ops',     label: 'Operations', color: '#3b82f6', statuses: ['To Be Scheduled', 'Permitting', 'Scheduled', 'In Progress', 'Customer Inspection', 'Inspection Pending', 'Complete'] },
+  { key: 'finance', label: 'Finance',    color: '#7c3aed', statuses: ['Closed Completed', 'Closed Lost'] },
+];
+function canToggleBoardSections() {
+  if (currentUserTeamData?.fullAccessOverride) return true;
+  if (currentUserRole === 'Owner') return true;
+  const role = KYTRAC_ROLES[currentUserRole];
+  return !!role && role.level >= KYTRAC_ROLES['Superintendent'].level;
+}
+let _boardSections = (() => {
+  try { const v = JSON.parse(localStorage.getItem('jmBoardSections') || 'null'); if (v && typeof v === 'object') return v; } catch (e) {}
+  return { sales: true, ops: true, finance: false };
+})();
+function toggleBoardSection(key) {
+  const next = { ..._boardSections, [key]: !_boardSections[key] };
+  if (!JOB_BOARD_SECTIONS.some(sec => next[sec.key])) return; // keep at least one section on
+  _boardSections = next;
+  try { localStorage.setItem('jmBoardSections', JSON.stringify(_boardSections)); } catch (e) {}
+  renderJobsBoard();
+}
+window.toggleBoardSection = toggleBoardSection;
+function boardSectionOf(col) { return JOB_BOARD_SECTIONS.find(sec => sec.statuses.includes(col.dropStatus)) || JOB_BOARD_SECTIONS[1]; }
+
 function renderJobsBoard() {
   const board = document.getElementById('jobsBoard');
   if (!board) return;
   board.innerHTML = '';
 
-  const colsToShow = _showClosedLanes ? KANBAN_COLUMNS : KANBAN_COLUMNS.filter(c => !c.hidden);
+  const sectionToggles = canToggleBoardSections();
+  const colsToShow = sectionToggles
+    ? KANBAN_COLUMNS.filter(c => _boardSections[boardSectionOf(c).key])
+    : (_showClosedLanes ? KANBAN_COLUMNS : KANBAN_COLUMNS.filter(c => !c.hidden));
+  const sectionEls = {};
+  const sectionCounts = {};
+  const sectionHost = col => {
+    const sec = boardSectionOf(col);
+    if (!sectionEls[sec.key]) {
+      const wrap = document.createElement('div');
+      wrap.className = 'kt-board-section';
+      wrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;flex-shrink:0;padding-right:6px;margin-right:4px;border-right:1px dashed rgba(110,145,210,.18)';
+      wrap.innerHTML = `<div class="kt-board-section-head" style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:9px;background:${sec.color}18;border:1px solid ${sec.color}44;font-weight:800;font-size:.8rem;letter-spacing:.04em;text-transform:uppercase;color:${sec.color}"><span>${sec.label}</span><span class="kt-board-section-count" style="font-size:.72rem;font-weight:700;opacity:.85"></span></div>`;
+      const cols = document.createElement('div');
+      cols.style.cssText = 'display:flex;gap:10px;align-items:flex-start';
+      wrap.appendChild(cols);
+      board.appendChild(wrap);
+      sectionEls[sec.key] = { wrap, cols };
+      sectionCounts[sec.key] = 0;
+    }
+    return sectionEls[sec.key];
+  };
   // Field Techs only ever see jobs they're actually on (crew member,
   // superintendent, or PM) -- this board previously showed every job in
   // the company to every role with zero filtering, the same gap as the
@@ -640,7 +692,13 @@ function renderJobsBoard() {
       empty.textContent = 'No jobs';
       el.appendChild(empty);
     }
-    board.appendChild(el);
+    const host = sectionHost(col);
+    host.cols.appendChild(el);
+    sectionCounts[boardSectionOf(col).key] += jobs.length;
+  });
+  Object.entries(sectionEls).forEach(([k, v]) => {
+    const c = v.wrap.querySelector('.kt-board-section-count');
+    if (c) c.textContent = sectionCounts[k] + ' job' + (sectionCounts[k] === 1 ? '' : 's');
   });
 
   // Toggle button for closed lanes
@@ -662,6 +720,23 @@ function renderJobsBoard() {
     toggleBtn.insertAdjacentElement('afterend', totalsBtn);
   }
   totalsBtn.textContent = _showColTotals ? '▲ Hide Column Totals' : '▼ Column Totals';
+  // JOB_SECTIONS_V1: Superintendent and above get Sales / Operations /
+  // Finance on-off chips (Finance replaces "Show Closed" for them).
+  toggleBtn.style.display = sectionToggles ? 'none' : '';
+  let secBar = document.getElementById('jobsSectionToggles');
+  if (!secBar) {
+    secBar = document.createElement('span');
+    secBar.id = 'jobsSectionToggles';
+    secBar.style.cssText = 'display:inline-flex;gap:6px;margin:8px 0 0 10px;flex-wrap:wrap;vertical-align:top';
+    totalsBtn.insertAdjacentElement('afterend', secBar);
+  }
+  secBar.style.display = sectionToggles ? 'inline-flex' : 'none';
+  if (sectionToggles) {
+    secBar.innerHTML = '<span style="font-size:.72rem;color:var(--muted);align-self:center">Show:</span>' + JOB_BOARD_SECTIONS.map(sec => {
+      const on = !!_boardSections[sec.key];
+      return `<button onclick="toggleBoardSection('${sec.key}')" title="${on ? 'Hide' : 'Show'} the ${sec.label} columns" style="padding:4px 12px;font-size:.75rem;border-radius:999px;cursor:pointer;font-weight:700;border:1px solid ${sec.color}${on ? '' : '55'};background:${on ? sec.color + '26' : 'transparent'};color:${on ? sec.color : 'var(--muted)'}">${on ? '✓ ' : ''}${sec.label}</button>`;
+    }).join('');
+  }
 
   // Init drag and drop after render
   setTimeout(() => initDragDrop('jobsBoard'), 50);
@@ -6678,6 +6753,7 @@ const FINANCIALS_TAB_ALLOWED_EMAILS = new Set([
   'jason@7pillarsgroup.org',
 ]);
 function canViewFinancialsTab() {
+  if (window._viewAsRole && window._viewAsRole !== 'Owner') return false; // VIEW_AS_V1 preview
   return FINANCIALS_TAB_ALLOWED_EMAILS.has((conCurrentUser?.email || '').toLowerCase());
 }
 
@@ -15598,7 +15674,89 @@ function applyRolePermissions() {
       ktNav('fieldtechhome', null);
     }
   }
+  if (typeof viewAsMountControl === 'function') viewAsMountControl(); // VIEW_AS_V1
 }
+
+// VIEW_AS_V1 (Travis 10/21/26): an Owner (or full-access) user can preview
+// JobsMetrix as any position -- Field Tech, Team Lead, Superintendent,
+// Sales, etc. -- while building things out. Only what the APP shows
+// changes; the database still knows it's you, so anything saved during a
+// preview is saved as you. A reload always returns to your real view.
+let _viewAsReal = null; // { role, teamData } while previewing
+window._viewAsRole = null;
+const VIEW_AS_ROLES = ['Owner', 'Project Manager', 'Office Manager', 'Accounting', 'Superintendent', 'Sales', 'Team Lead', 'Marketing/Office Staff', 'Field Technician'];
+function canUseViewAs() {
+  const role = _viewAsReal ? _viewAsReal.role : currentUserRole;
+  const td = _viewAsReal ? _viewAsReal.teamData : currentUserTeamData;
+  return role === 'Owner' || !!(td && td.fullAccessOverride);
+}
+let _viewAsNavBaseline = null;
+function viewAsRestoreNav() {
+  if (!_viewAsNavBaseline) return;
+  document.querySelectorAll('.kt-nav-item, .kt-nav-section').forEach((el, i) => { if (_viewAsNavBaseline[i] !== undefined) el.style.display = _viewAsNavBaseline[i]; });
+}
+function setViewAsRole(role) {
+  if (!canUseViewAs()) return;
+  if (!_viewAsReal) {
+    _viewAsReal = { role: currentUserRole, teamData: currentUserTeamData };
+    _viewAsNavBaseline = Array.from(document.querySelectorAll('.kt-nav-item, .kt-nav-section')).map(el => el.style.display);
+  }
+  viewAsRestoreNav();
+  if (!role) {
+    currentUserRole = _viewAsReal.role;
+    currentUserTeamData = _viewAsReal.teamData;
+    _viewAsReal = null;
+    window._viewAsRole = null;
+  } else {
+    currentUserRole = role;
+    currentUserTeamData = { ...(_viewAsReal.teamData || {}), role, fullAccessOverride: false };
+    window._viewAsRole = role;
+  }
+  applyRolePermissions();
+  const leadsNav = document.querySelector('.kt-nav-item[onclick*="\'leads\'"]');
+  if (leadsNav && typeof canSeeLeads === 'function') leadsNav.style.display = canSeeLeads() ? '' : 'none';
+  const roleEl = document.getElementById('ktUserRole');
+  if (roleEl) {
+    const rd = KYTRAC_ROLES[currentUserRole] || {};
+    roleEl.textContent = (window._viewAsRole ? '👁 ' : '') + (currentUserRole || 'Member');
+    roleEl.style.color = rd.color || 'var(--muted)';
+  }
+  viewAsRenderBanner();
+  if (isFieldTechRestricted()) ktNav('fieldtechhome', null);
+  else ktNav('dashboard', document.querySelector('.kt-nav-item'));
+}
+window.setViewAsRole = setViewAsRole;
+function viewAsOptions(cur) {
+  return '<option value="">My real view</option>' + VIEW_AS_ROLES.map(r => `<option value="${esc(r)}" ${r === cur ? 'selected' : ''}>${esc((KYTRAC_ROLES[r] && KYTRAC_ROLES[r].label) || r)}</option>`).join('');
+}
+function viewAsRenderBanner() {
+  let b = document.getElementById('ktViewAsBanner');
+  if (!window._viewAsRole) { if (b) b.remove(); viewAsMountControl(); return; }
+  if (!b) {
+    b = document.createElement('div');
+    b.id = 'ktViewAsBanner';
+    b.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:calc(14px + env(safe-area-inset-bottom, 0px));z-index:99999;display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center;padding:8px 12px;border-radius:12px;background:#7c3aed;color:#fff;box-shadow:0 8px 24px rgba(0,0,0,.35);font-size:.82rem;font-weight:700;width:max-content;max-width:calc(100vw - 24px)';
+    document.body.appendChild(b);
+  }
+  b.innerHTML = `<span>👁 Viewing as</span>
+    <select onchange="setViewAsRole(this.value)" style="width:auto;max-width:200px;font-size:.8rem;padding:4px 8px;border-radius:8px;border:0;font-weight:700;background:#fff;color:#1c1b19">${viewAsOptions(window._viewAsRole)}</select>
+    <button onclick="setViewAsRole('')" style="padding:5px 12px;border-radius:8px;border:0;background:#fff;color:#7c3aed;font-weight:800;cursor:pointer">Exit preview</button>
+    <span style="font-weight:500;font-size:.72rem;opacity:.9;flex-basis:100%;text-align:center">Preview only — anything you save is still saved as you.</span>`;
+  viewAsMountControl();
+}
+function viewAsMountControl() {
+  const info = document.querySelector('.kt-user-info');
+  let w = document.getElementById('ktViewAsWrap');
+  if (!info || !canUseViewAs()) { if (w) w.remove(); return; }
+  if (!w) {
+    w = document.createElement('div');
+    w.id = 'ktViewAsWrap';
+    w.style.cssText = 'margin-top:4px';
+    info.appendChild(w);
+  }
+  w.innerHTML = `<select onchange="setViewAsRole(this.value)" title="Preview JobsMetrix as another position" style="width:auto;font-size:.7rem;padding:2px 4px;max-width:150px;border-radius:6px">${viewAsOptions(window._viewAsRole).replace('My real view', '👁 View as…')}</select>`;
+}
+window.viewAsMountControl = viewAsMountControl;
 
 // Expose team functions
 window.addTeamMember = addTeamMember;
