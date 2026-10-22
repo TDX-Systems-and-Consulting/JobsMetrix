@@ -8620,6 +8620,7 @@ function renderCOList() {
       actions += `<button class="btn btn-green" style="padding:4px 10px;font-size:.76rem" onclick="markCOPaid('${co.id}')">💵 Mark Paid</button>`;
     }
     if (status === 'Invoiced') {
+      actions += `<button class="btn" style="padding:4px 10px;font-size:.76rem;background:rgba(99,179,237,.12);color:#63b3ed;border-color:rgba(99,179,237,.35)" onclick="switchDetailTab('invoices',null)">🧾 Go to its invoice</button>`;
       actions += `<span class="small muted" style="align-self:center">Waiting on payment — marks Paid on its own when its invoice is paid.</span>`;
     }
     if (status === 'Paid') {
@@ -9001,7 +9002,7 @@ function deleteCO() {
 
 // Team lead or owner relays the customer's verbal decision on a priced CO.
 function markCOCustomerApproved(id) {
-  if (!confirm('Confirm: the customer said YES to this change order price?')) return;
+  if (!confirm('Confirm: the customer said YES to this change order price?\n\nIts invoice is created automatically' + ((typeof xeroReady === 'function' && xeroReady()) ? ' and sent to Xero' : '') + ' — then just Email it from the Invoices tab.')) return;
   coll('jobs').doc(conCurrentJobId).collection('changeorders').doc(id).update({
     status: 'Customer Approved',
     customerDecisionBy: conCurrentUser ? (conCurrentUser.displayName || conCurrentUser.email) : 'Unknown',

@@ -2001,6 +2001,14 @@ function xeroInvoiceLines(inv, job, settings, tracking) {
   src.forEach(l => {
     const amt = round2((Number(l.qty) || 0) * (Number(l.rate) || 0));
     const desc = String(l.desc || l.description || 'Work').slice(0, 3900);
+    // Lines that say what they are (change order lines carry costType) go
+    // straight to the matching income account -- no split needed.
+    if (l.costType) {
+      const isLabor = /labor|labour|sub/i.test(String(l.costType));
+      const a = isLabor ? acc.laborIncome : acc.materialsIncome;
+      lines.push({ Description: desc, Quantity: 1, UnitAmount: amt, AccountCode: a && a.code, Tracking: tracking });
+      return;
+    }
     if (!hasShare) {
       lines.push({ Description: desc, Quantity: 1, UnitAmount: amt, AccountCode: acc.laborIncome && acc.laborIncome.code, Tracking: tracking });
       return;
@@ -2228,6 +2236,72 @@ exports.xeroPaymentPullScheduled = functions.runWith({ secrets: XERO_SECRETS, ti
         if (r.updated.length) console.log('Xero payments pulled', c.id, r.updated.length);
       } catch (e) { console.error('Xero scheduled pull failed for', c.id, e.message); }
     }
+    return null;
+  });
+
+// XERO_V1: a change order the customer approves (in the app, from the
+// Change Orders page, or by signing in the portal) gets its own invoice right
+// away -- same lines, its own number -- and that invoice goes to Xero.
+// Credits (negative change orders) are left for the owner to handle.
+const CO_APPROVED = ['Customer Approved', 'Approved'];
+exports.changeOrderAutoInvoice = functions.runWith({ secrets: ['XERO_CLIENT_ID', 'XERO_CLIENT_SECRET'], timeoutSeconds: 120 }).firestore
+  .document('companies/{companyId}/jobs/{jobId}/changeorders/{coId}')
+  .onWrite(async (change, context) => {
+    const { companyId, jobId, coId } = context.params;
+    if (!change.after.exists) return null;
+    const before = change.before.exists ? change.before.data() : {};
+    const after = change.after.data();
+    if (!CO_APPROVED.includes(after.status) || CO_APPROVED.includes(before.status)) return null;
+    if (after.invoiceId || after.appliedToEstimate || after.autoInvoiceStartedAt) return null;
+    const amount = round2(after.amount);
+    if (!(amount > 0)) return null;
+    const db = admin.firestore();
+    const jobRef = db.collection('companies').doc(companyId).collection('jobs').doc(jobId);
+    const coRef = change.after.ref;
+    // Claim it once, so a retry or a second write can't make two invoices.
+    const claimed = await db.runTransaction(async tx => {
+      const s = await tx.get(coRef);
+      const d = s.data() || {};
+      if (d.invoiceId || d.autoInvoiceStartedAt) return false;
+      tx.update(coRef, { autoInvoiceStartedAt: Date.now() });
+      return true;
+    });
+    if (!claimed) return null;
+    const jobDoc = await jobRef.get();
+    const job = jobDoc.exists ? jobDoc.data() : {};
+    const invSnap = await jobRef.collection('invoices').get();
+    const used = new Set(invSnap.docs.map(d => String(d.data().number || '')));
+    const base = String(job.jobNumber || 'INV');
+    let n = invSnap.docs.length + 1, number;
+    do { number = base + '-' + String(n).padStart(3, '0'); n++; } while (used.has(number));
+    const items = (Array.isArray(after.lineItems) && after.lineItems.length)
+      ? after.lineItems.map(li => ({ desc: li.desc || after.title || 'Change order', qty: Number(li.qty) || 1, rate: Number(li.unitPrice) || 0, costType: li.costType || '' }))
+      : [{ desc: 'Change Order: ' + (after.title || ''), qty: 1, rate: amount }];
+    const sum = round2(items.reduce((s, l) => s + l.qty * l.rate, 0));
+    const lineItems = Math.abs(sum - amount) <= 0.01 ? items : [{ desc: 'Change Order: ' + (after.title || ''), qty: 1, rate: amount }];
+    const today = new Date().toISOString().split('T')[0];
+    const due = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
+    const invRef = await jobRef.collection('invoices').add({
+      number, type: 'Change Order', date: today, dueDate: due, status: 'Draft',
+      lineItems, subtotal: amount, taxRate: 0, taxAmt: 0, total: amount, amtPaid: 0,
+      paidDate: '', payMethod: '', paymentLink: '',
+      notes: 'Change Order: ' + (after.title || '') + (after.reason ? ' — ' + after.reason : ''),
+      changeOrderId: coId, companyId, autoCreated: true,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(), createdBy: 'Change order approval (auto)',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    await coRef.update({ status: 'Invoiced', invoiceId: invRef.id, approvedStatus: after.status, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    const amtStr = amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    let xeroNote = '';
+    try {
+      const s = await xeroGetSettings(companyId);
+      if (s.connected && s.setupDone) { const r = await syncInvoiceToXero(companyId, jobId, invRef.id); xeroNote = ' and sent to Xero' + (r && r.number ? ' (' + r.number + ')' : ''); }
+    } catch (e) { xeroNote = ' — could not send to Xero: ' + e.message; console.error('CO auto-invoice Xero push failed:', e.message); }
+    await jobRef.collection('logs').add({
+      date: today, type: 'invoice_created', userName: 'Change order (auto)', companyId,
+      notes: `Change order approved — invoice ${number} created for $${amtStr}${xeroNote}. Email it from the Invoices tab.`,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    }).catch(() => {});
     return null;
   });
 
