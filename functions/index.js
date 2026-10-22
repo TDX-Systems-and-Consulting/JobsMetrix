@@ -1659,6 +1659,7 @@ const XERO_SCOPES_LEGACY = 'offline_access openid profile email accounting.trans
 // The accounts JOBSMETRIX books to. Found by name first; created with the
 // first free code at or after `code` if missing.
 const XERO_ACCOUNTS = [
+  { key: 'jobIncome', name: 'Job Income', type: 'REVENUE', code: '4000' },
   { key: 'laborIncome', name: 'Labor Income', type: 'REVENUE', code: '4010' },
   { key: 'materialsIncome', name: 'Materials Income', type: 'REVENUE', code: '4020' },
   { key: 'materialsCost', name: 'Materials Cost', type: 'DIRECTCOSTS', code: '5010' },
@@ -1991,6 +1992,18 @@ async function xeroEnsureContact(companyId, jobRef, job) {
 // header bar uses). Lines always add up to the invoice total exactly.
 function xeroInvoiceLines(inv, job, settings, tracking) {
   const acc = settings.accounts || {};
+  // Default: the customer sees the invoice exactly as written in JOBSMETRIX,
+  // one Xero line per invoice line, all to Job Income. The labor/materials
+  // split stays in JOBSMETRIX (Job Margin Sheet). Splitting in Xero is an
+  // opt-in setting (settings/xero.splitLines).
+  if (!settings.splitLines) {
+    const total0 = round2(inv.total);
+    let src0 = Array.isArray(inv.lineItems) ? inv.lineItems.filter(l => l && (Number(l.qty) || 0) * (Number(l.rate) || 0) !== 0) : [];
+    const sum0 = round2(src0.reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.rate) || 0), 0));
+    if (!src0.length || Math.abs(sum0 - total0) > 0.01) src0 = [{ desc: inv.type ? (inv.type + ' — ' + (job.address || job.name || '')) : (job.address || job.name || 'Invoice'), qty: 1, rate: total0 }];
+    const code = (acc.jobIncome || acc.laborIncome || {}).code;
+    return src0.map(l => ({ Description: String(l.desc || l.description || 'Work').slice(0, 3900), Quantity: Number(l.qty) || 1, UnitAmount: round2(Number(l.rate) || 0), AccountCode: code, Tracking: tracking }));
+  }
   const share = Math.max(0, Math.min(1, Number(job.xeroLaborShare)));
   const hasShare = isFinite(Number(job.xeroLaborShare)) && job.xeroLaborShare !== null && job.xeroLaborShare !== undefined && job.xeroLaborShare !== '';
   const total = round2(inv.total);
@@ -2038,6 +2051,18 @@ async function syncInvoiceToXero(companyId, jobId, invoiceId) {
   if (inv.status === 'Void') return { skipped: 'void' };
   if (!(Number(inv.total) > 0)) throw new Error('Invoice total is $0.');
 
+  // Job Income account (added after first setup) -- make it on first use.
+  if (!settings.splitLines && !(settings.accounts && settings.accounts.jobIncome)) {
+    const existing = (await xeroFetch(companyId, 'GET', 'Accounts')).Accounts || [];
+    let a = existing.find(x => String(x.Name || '').trim().toLowerCase() === 'job income' && x.Status !== 'ARCHIVED');
+    if (!a) {
+      const used = new Set(existing.map(x => String(x.Code || '')));
+      let code = 4000; while (used.has(String(code))) code++;
+      a = ((await xeroFetch(companyId, 'PUT', 'Accounts', { Code: String(code), Name: 'Job Income', Type: 'REVENUE' })).Accounts || [])[0];
+    }
+    settings.accounts = { ...(settings.accounts || {}), jobIncome: { id: a.AccountID, code: a.Code, name: a.Name } };
+    await xeroStatusRef(companyId).set({ accounts: settings.accounts }, { merge: true });
+  }
   const contactId = await xeroEnsureContact(companyId, jobRef, job);
   const tracking = await xeroJobTracking(companyId, settings, jobRef, job);
   const lines = xeroInvoiceLines(inv, job, settings, tracking);

@@ -14613,7 +14613,7 @@ function renderXeroCard() {
     ${s.lastError ? `<div class="small" style="color:#fca5a5;margin-top:4px">${esc(s.lastError)}</div>` : ''}
     ${_xeroSetupMsg ? `<div class="small" style="margin-top:6px">${esc(_xeroSetupMsg)}</div>` : ''}
     ${s.setupDone ? `<div class="small muted" style="margin-top:6px;line-height:1.6">
-      Invoices book to <b>${esc((acc.laborIncome || {}).name || '')}</b> + <b>${esc((acc.materialsIncome || {}).name || '')}</b>, tagged with the job under tracking category <b>${esc((s.tracking || {}).name || 'Job')}</b>.
+      Invoices go to Xero exactly as written here${s.splitLines ? `, split into <b>${esc((acc.laborIncome || {}).name || 'Labor Income')}</b> + <b>${esc((acc.materialsIncome || {}).name || 'Materials Income')}</b> lines` : ` (one total, booked to <b>${esc((acc.jobIncome || {}).name || 'Job Income')}</b>)`}, tagged with the job under tracking category <b>${esc((s.tracking || {}).name || 'Job')}</b>.
       Card payments land in the <b>${esc((acc.stripeBank || {}).name || 'Stripe')}</b> bank account; fees go to <b>${esc((acc.cardFees || {}).name || '')}</b>.
       <br>Last payment check: ${esc(when)}</div>` : `<div class="small" style="margin-top:6px;color:#fde68a">One more step: click <b>Set up accounts</b>.</div>`}`;
   act.innerHTML = `
@@ -14633,8 +14633,18 @@ function renderXeroCard() {
         <input type="checkbox" ${s.usePayPage ? 'checked' : ''} onchange="xeroSetPayPage(this.checked)" style="width:auto;margin-top:2px">
         <span>Use Xero's pay page in invoice emails (instead of the Stripe link). Turn this on after connecting Stripe inside Xero: <i>Xero → Settings → Online payments → Stripe</i>. Payments made there come back here automatically.</span>
       </label>
+      <label class="small" style="display:flex;gap:8px;align-items:flex-start;max-width:560px">
+        <input type="checkbox" ${s.splitLines ? 'checked' : ''} onchange="xeroSetSplit(this.checked)" style="width:auto;margin-top:2px">
+        <span>Split each invoice line into labor and materials in Xero (the customer sees both lines). Off = the customer sees just your line and total.</span>
+      </label>
     </div>` : ''}`;
 }
+async function xeroSetSplit(on) {
+  try { await coll('settings').doc('xero').set({ splitLines: !!on }, { merge: true }); }
+  catch (e) { alert('Could not save: ' + e.message); }
+  checkXeroStatus();
+}
+window.xeroSetSplit = xeroSetSplit;
 
 // Labor share of the price, from the same margin formula as the header bar.
 async function xeroLaborShare(jobId) {
