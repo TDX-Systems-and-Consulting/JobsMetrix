@@ -1627,6 +1627,620 @@ exports.qbCreateInvoice = functions.runWith({ secrets: ['QBO_CLIENT_ID', 'QBO_CL
 });
 
 // ════════════════════════════════════════════════════
+// ── Xero (XERO_V1, 2026-10-22) ───────────────────────
+// ════════════════════════════════════════════════════
+// Xero replaces QuickBooks as the books. Same shape as the QuickBooks
+// connection above: one company-wide connection, tokens encrypted at rest
+// (same AES-256-GCM key) in companies/{id}/xeroTokens/connection which the
+// security rules never let a client read, and a plain status doc at
+// settings/xero the client reads to show "Connected".
+//
+// What it does:
+//  - Set up (one click): makes the income/cost accounts JOBSMETRIX books to,
+//    a "Stripe" bank account for card payments, and a "Job" tracking
+//    category so every Xero line carries the job number.
+//  - Invoices: each JOBSMETRIX invoice goes to Xero with the SAME number,
+//    the job number as Reference, each line split into labor and materials
+//    by the job's labor share, tagged to the job.
+//  - Payments both ways: a payment JOBSMETRIX records (Stripe link, check,
+//    cash) is applied to the Xero invoice; a payment made on Xero's own pay
+//    page is read back into JOBSMETRIX (every 30 min, and on demand), which
+//    also moves a deposit-waiting job to To Be Scheduled.
+const XERO_AUTH_URL = 'https://login.xero.com/identity/connect/authorize';
+const XERO_TOKEN_URL = 'https://identity.xero.com/connect/token';
+const XERO_REVOKE_URL = 'https://identity.xero.com/connect/revocation';
+const XERO_CONNECTIONS_URL = 'https://api.xero.com/connections';
+const XERO_API = 'https://api.xero.com/api.xro/2.0';
+const XERO_REDIRECT_URI = 'https://us-central1-kytrac-72d91.cloudfunctions.net/xeroOAuthCallback';
+const XERO_SECRETS = ['XERO_CLIENT_ID', 'XERO_CLIENT_SECRET', 'QBO_TOKEN_ENCRYPTION_KEY'];
+// Apps created after 2 March 2026 must ask for Xero's granular scopes.
+const XERO_SCOPES = 'offline_access openid profile email accounting.invoices accounting.payments accounting.banktransactions accounting.contacts accounting.settings accounting.attachments';
+const XERO_SCOPES_LEGACY = 'offline_access openid profile email accounting.transactions accounting.contacts accounting.settings accounting.attachments';
+// The accounts JOBSMETRIX books to. Found by name first; created with the
+// first free code at or after `code` if missing.
+const XERO_ACCOUNTS = [
+  { key: 'laborIncome', name: 'Labor Income', type: 'REVENUE', code: '4010' },
+  { key: 'materialsIncome', name: 'Materials Income', type: 'REVENUE', code: '4020' },
+  { key: 'materialsCost', name: 'Materials Cost', type: 'DIRECTCOSTS', code: '5010' },
+  { key: 'subLabor', name: 'Subcontractor Labor', type: 'DIRECTCOSTS', code: '5020' },
+  { key: 'permits', name: 'Permits & Dumpsters', type: 'DIRECTCOSTS', code: '5030' },
+  { key: 'cardFees', name: 'Card Processing Fees', type: 'EXPENSE', code: '6010' },
+];
+
+function getXeroConfig() {
+  const clientId = process.env.XERO_CLIENT_ID;
+  const clientSecret = process.env.XERO_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return null;
+  return { clientId, clientSecret, redirectUri: XERO_REDIRECT_URI };
+}
+function xeroBasicAuth(cfg) {
+  return 'Basic ' + Buffer.from(cfg.clientId + ':' + cfg.clientSecret).toString('base64');
+}
+function xeroRef(companyId) {
+  return admin.firestore().collection('companies').doc(companyId).collection('xeroTokens').doc('connection');
+}
+function xeroStatusRef(companyId) {
+  return admin.firestore().collection('companies').doc(companyId).collection('settings').doc('xero');
+}
+function xeroPage(title, msg, ok) {
+  return `<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font-family:sans-serif;text-align:center;padding:60px 20px"><h2>${ok ? '✅' : '⚠️'} ${title}</h2><p>${msg}</p><p style="color:#666">You can close this tab and go back to JOBSMETRIX.</p></body></html>`;
+}
+
+exports.xeroOAuthStart = functions.runWith({ secrets: XERO_SECRETS }).https.onRequest(async (req, res) => {
+  const cfg = getXeroConfig();
+  if (!cfg) { res.status(500).send(xeroPage('Xero is not set up yet', 'XERO_CLIENT_ID / XERO_CLIENT_SECRET are missing from Secret Manager.', false)); return; }
+  const idToken = req.query.token;
+  const companyId = req.query.companyId;
+  if (!idToken || !companyId) { res.status(400).send('Missing token or companyId'); return; }
+  let decoded;
+  try { decoded = await admin.auth().verifyIdToken(String(idToken)); }
+  catch (e) { res.status(401).send(xeroPage('Session expired', 'Reload JOBSMETRIX and try again.', false)); return; }
+  if (decoded.companyId !== companyId) { res.status(403).send('You are not a member of this company.'); return; }
+  if (!isQboFullAccess(decoded)) { res.status(403).send(xeroPage('Not allowed', 'Only Owner, Project Manager, or Accounting can connect Xero.', false)); return; }
+  const legacy = req.query.legacy === '1';
+  const nonce = crypto.randomBytes(12).toString('hex');
+  await xeroStatusRef(companyId).set({ pendingNonce: nonce, pendingAt: Date.now() }, { merge: true });
+  const state = Buffer.from(JSON.stringify({ companyId, uid: decoded.uid, nonce, legacy })).toString('base64url');
+  res.redirect(XERO_AUTH_URL + '?' + new URLSearchParams({
+    response_type: 'code',
+    client_id: cfg.clientId,
+    redirect_uri: cfg.redirectUri,
+    scope: legacy ? XERO_SCOPES_LEGACY : XERO_SCOPES,
+    state,
+  }).toString());
+});
+
+exports.xeroOAuthCallback = functions.runWith({ secrets: XERO_SECRETS }).https.onRequest(async (req, res) => {
+  const cfg = getXeroConfig();
+  if (!cfg) { res.status(500).send('Xero is not configured.'); return; }
+  const { code, state, error, error_description } = req.query;
+  if (error) {
+    // Older Xero apps reject the granular scopes -- retry once with the old ones.
+    let st = {};
+    try { st = JSON.parse(Buffer.from(String(state || ''), 'base64url').toString('utf8')); } catch (e) {}
+    if (String(error) === 'invalid_scope' && !st.legacy) {
+      res.send(xeroPage('One more step', 'Xero asked for the older permission names. Close this tab and click Connect Xero again — it will use them automatically.', false));
+      await xeroStatusRef(st.companyId || '_').set({ useLegacyScopes: true }, { merge: true }).catch(() => {});
+      return;
+    }
+    res.status(400).send(xeroPage('Xero did not connect', esc0(String(error_description || error)), false));
+    return;
+  }
+  if (!code || !state) { res.status(400).send('Missing code/state from Xero.'); return; }
+  let parsed;
+  try { parsed = JSON.parse(Buffer.from(String(state), 'base64url').toString('utf8')); }
+  catch (e) { res.status(400).send('Invalid state.'); return; }
+  const { companyId, uid, nonce } = parsed;
+  try {
+    const st = await xeroStatusRef(companyId).get();
+    if (!st.exists || st.data().pendingNonce !== nonce) { res.status(400).send(xeroPage('Link expired', 'Start again from Settings → Xero.', false)); return; }
+    const tokenResp = await fetch(XERO_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Authorization': xeroBasicAuth(cfg), 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+      body: new URLSearchParams({ grant_type: 'authorization_code', code: String(code), redirect_uri: cfg.redirectUri }).toString(),
+    });
+    const tokens = await tokenResp.json();
+    if (!tokenResp.ok || !tokens.refresh_token) {
+      console.error('xeroOAuthCallback token exchange failed:', tokens);
+      res.status(500).send(xeroPage('Xero did not return a connection', 'Close this tab and try again.', false));
+      return;
+    }
+    const connResp = await fetch(XERO_CONNECTIONS_URL, { headers: { 'Authorization': 'Bearer ' + tokens.access_token, 'Accept': 'application/json' } });
+    const conns = await connResp.json();
+    const orgs = (Array.isArray(conns) ? conns : []).filter(c => c.tenantType === 'ORGANISATION');
+    if (!orgs.length) { res.status(400).send(xeroPage('No Xero organisation', 'Pick your organisation on the Xero screen when connecting.', false)); return; }
+    // Most recently authorised organisation wins (the one just picked).
+    orgs.sort((a, b) => String(b.updatedDateUtc || '').localeCompare(String(a.updatedDateUtc || '')));
+    const org = orgs[0];
+    await xeroRef(companyId).set({
+      accessToken: tokens.access_token,
+      refreshTokenEncrypted: encryptSecret(tokens.refresh_token),
+      expiresAt: Date.now() + (tokens.expires_in * 1000),
+      tenantId: org.tenantId,
+      tenantName: org.tenantName || '',
+      connectedByUid: uid,
+      connectedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    await xeroStatusRef(companyId).set({
+      connected: true,
+      tenantName: org.tenantName || '',
+      connectedAt: admin.firestore.FieldValue.serverTimestamp(),
+      pendingNonce: admin.firestore.FieldValue.delete(),
+      lastError: admin.firestore.FieldValue.delete(),
+    }, { merge: true });
+    res.send(xeroPage('Xero connected', 'Connected to <b>' + esc0(org.tenantName || 'your organisation') + '</b>. Back in JOBSMETRIX, click <b>Set up accounts</b> once.', true));
+  } catch (e) {
+    console.error('xeroOAuthCallback error:', e.message);
+    res.status(500).send(xeroPage('Error connecting Xero', esc0(e.message), false));
+  }
+});
+function esc0(s) { return String(s || '').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])); }
+
+function xeroCallableGuard(data, context, needFull) {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be signed in.');
+  const companyId = data && data.companyId;
+  if (!companyId || context.auth.token.companyId !== companyId) throw new functions.https.HttpsError('permission-denied', 'Not a member of this company.');
+  if (needFull && !isQboFullAccess(context.auth.token)) throw new functions.https.HttpsError('permission-denied', 'Only Owner, Project Manager, or Accounting can do this.');
+  return companyId;
+}
+
+exports.xeroDisconnect = functions.runWith({ secrets: XERO_SECRETS }).https.onCall(async (data, context) => {
+  const companyId = xeroCallableGuard(data, context, true);
+  const cfg = getXeroConfig();
+  const doc = await xeroRef(companyId).get();
+  if (cfg && doc.exists && doc.data().refreshTokenEncrypted) {
+    try {
+      await fetch(XERO_REVOKE_URL, {
+        method: 'POST',
+        headers: { 'Authorization': xeroBasicAuth(cfg), 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ token: decryptSecret(doc.data().refreshTokenEncrypted) }).toString(),
+      });
+    } catch (e) { console.warn('Xero revoke failed (continuing):', e.message); }
+  }
+  await xeroRef(companyId).delete();
+  await xeroStatusRef(companyId).set({ connected: false }, { merge: true });
+  return { disconnected: true };
+});
+
+// Access tokens last 30 minutes; refresh tokens rotate on every use, so the
+// new one is always saved (a transaction keeps two refreshes from racing).
+async function ensureXeroAccessToken(companyId) {
+  const cfg = getXeroConfig();
+  if (!cfg) throw new Error('Xero is not configured (XERO_CLIENT_ID / XERO_CLIENT_SECRET missing).');
+  const ref = xeroRef(companyId);
+  const doc = await ref.get();
+  if (!doc.exists) throw new Error('Xero is not connected yet — connect it in Settings first.');
+  const d = doc.data();
+  if (d.expiresAt && d.expiresAt - Date.now() > 2 * 60 * 1000) return { accessToken: d.accessToken, tenantId: d.tenantId };
+  const resp = await fetch(XERO_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Authorization': xeroBasicAuth(cfg), 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+    body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: decryptSecret(d.refreshTokenEncrypted) }).toString(),
+  });
+  const tokens = await resp.json().catch(() => ({}));
+  if (!resp.ok || !tokens.access_token) {
+    // Another call may have just refreshed it -- re-read once before failing.
+    const again = (await ref.get()).data() || {};
+    if (again.expiresAt && again.expiresAt - Date.now() > 2 * 60 * 1000) return { accessToken: again.accessToken, tenantId: again.tenantId };
+    console.error('Xero token refresh failed:', tokens);
+    await xeroStatusRef(companyId).set({ lastError: 'Connection expired — reconnect Xero in Settings.' }, { merge: true }).catch(() => {});
+    throw new Error('The Xero connection has expired or was removed — reconnect it in Settings.');
+  }
+  await ref.update({
+    accessToken: tokens.access_token,
+    refreshTokenEncrypted: tokens.refresh_token ? encryptSecret(tokens.refresh_token) : d.refreshTokenEncrypted,
+    expiresAt: Date.now() + (tokens.expires_in * 1000),
+  });
+  return { accessToken: tokens.access_token, tenantId: d.tenantId };
+}
+
+async function xeroFetch(companyId, method, path, body) {
+  const { accessToken, tenantId } = await ensureXeroAccessToken(companyId);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const resp = await fetch(XERO_API + '/' + path, {
+      method,
+      headers: { 'Authorization': 'Bearer ' + accessToken, 'xero-tenant-id': tenantId, 'Accept': 'application/json', 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (resp.status === 429 && attempt < 2) {
+      const wait = Math.min(10, Number(resp.headers.get('retry-after')) || 2);
+      await new Promise(r => setTimeout(r, wait * 1000));
+      continue;
+    }
+    const json = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const ve = (json.Elements || []).flatMap(e => (e.ValidationErrors || []).map(v => v.Message));
+      const msg = ve.length ? ve.join('; ') : (json.Message || json.Detail || json.title || resp.statusText);
+      console.error('Xero API error', { companyId, path, status: resp.status, msg });
+      throw new Error('Xero: ' + msg);
+    }
+    return json;
+  }
+}
+function xeroWhereStr(s) { return String(s || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"'); }
+function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+function xeroDate(d) { return (d && /^\d{4}-\d{2}-\d{2}/.test(d)) ? String(d).slice(0, 10) : new Date().toISOString().slice(0, 10); }
+
+async function xeroGetSettings(companyId) {
+  const s = await xeroStatusRef(companyId).get();
+  return s.exists ? s.data() : {};
+}
+
+// One-click setup: accounts, Stripe bank account, Job tracking category.
+async function xeroRunSetup(companyId) {
+  const existing = (await xeroFetch(companyId, 'GET', 'Accounts')).Accounts || [];
+  const usedCodes = new Set(existing.map(a => String(a.Code || '')).filter(Boolean));
+  const accounts = {};
+  const created = [];
+  for (const spec of XERO_ACCOUNTS) {
+    let a = existing.find(x => String(x.Name || '').trim().toLowerCase() === spec.name.toLowerCase() && x.Status !== 'ARCHIVED');
+    if (!a) {
+      let code = Number(spec.code);
+      while (usedCodes.has(String(code))) code++;
+      const r = await xeroFetch(companyId, 'PUT', 'Accounts', { Code: String(code), Name: spec.name, Type: spec.type });
+      a = (r.Accounts || [])[0];
+      usedCodes.add(String(code));
+      created.push(spec.name + ' (' + code + ')');
+    }
+    accounts[spec.key] = { id: a.AccountID, code: a.Code, name: a.Name };
+  }
+  // Card payments land in a "Stripe" bank account; Stripe's payouts to the
+  // real bank are then a transfer, and its fees an expense -- the standard
+  // way to keep card money matching to the cent.
+  let stripeBank = existing.find(x => x.Type === 'BANK' && /stripe/i.test(x.Name || '') && x.Status !== 'ARCHIVED');
+  if (!stripeBank) {
+    try {
+      const r = await xeroFetch(companyId, 'PUT', 'Accounts', { Name: 'Stripe', Type: 'BANK', BankAccountNumber: 'STRIPE', CurrencyCode: 'USD' });
+      stripeBank = (r.Accounts || [])[0];
+      created.push('Stripe (bank account)');
+    } catch (e) {
+      const r = await xeroFetch(companyId, 'PUT', 'Accounts', { Name: 'Stripe', Type: 'BANK', BankAccountNumber: 'STRIPE' });
+      stripeBank = (r.Accounts || [])[0];
+      created.push('Stripe (bank account)');
+    }
+  }
+  accounts.stripeBank = { id: stripeBank.AccountID, code: stripeBank.Code || '', name: stripeBank.Name };
+  const banks = existing.filter(x => x.Type === 'BANK' && x.Status !== 'ARCHIVED' && x.AccountID !== stripeBank.AccountID)
+    .map(x => ({ id: x.AccountID, name: x.Name, code: x.Code || '' }));
+  const cur = await xeroGetSettings(companyId);
+  const depositBank = (cur.depositBank && banks.find(b => b.id === cur.depositBank.id)) || banks[0] || null;
+
+  const tcs = (await xeroFetch(companyId, 'GET', 'TrackingCategories')).TrackingCategories || [];
+  let tc = tcs.find(t => String(t.Name).toLowerCase() === 'job');
+  if (!tc) {
+    if (tcs.length >= 2) throw new Error('Xero allows 2 tracking categories and both are used — rename one to "Job" in Xero, then run Set up again.');
+    const r = await xeroFetch(companyId, 'PUT', 'TrackingCategories', { Name: 'Job' });
+    tc = (r.TrackingCategories || [])[0];
+    created.push('Job tracking category');
+  }
+  await xeroStatusRef(companyId).set({
+    setupDone: true, setupAt: Date.now(), accounts, banks, depositBank,
+    tracking: { id: tc.TrackingCategoryID, name: tc.Name },
+  }, { merge: true });
+  return { created, accounts, banks, depositBank };
+}
+
+exports.xeroSetup = functions.runWith({ secrets: XERO_SECRETS, timeoutSeconds: 120 }).https.onCall(async (data, context) => {
+  const companyId = xeroCallableGuard(data, context, true);
+  try {
+    if (data.depositBankId) {
+      const s = await xeroGetSettings(companyId);
+      const b = (s.banks || []).find(x => x.id === data.depositBankId);
+      if (!b) throw new Error('That bank account is not in Xero.');
+      await xeroStatusRef(companyId).set({ depositBank: b }, { merge: true });
+      return { depositBank: b };
+    }
+    return await xeroRunSetup(companyId);
+  } catch (e) {
+    console.error('xeroSetup failed:', e.message);
+    throw new functions.https.HttpsError('internal', e.message);
+  }
+});
+
+function xeroJobLabel(job, jobId) {
+  const num = String(job.jobNumber || '').trim();
+  const street = String(job.address || '').split(',')[0].trim();
+  let label = num || street || String(job.name || jobId);
+  if (num && street && !num.toLowerCase().includes(street.toLowerCase())) label = num + ' ' + street;
+  return label.slice(0, 100);
+}
+
+// Makes sure the job has an active option under the "Job" tracking
+// category; returns the tracking array for invoice/expense lines.
+async function xeroJobTracking(companyId, settings, jobRef, job) {
+  if (!settings.tracking || !settings.tracking.id) return [];
+  if (job.xeroTrackingOption && job.xeroTrackingCategoryId === settings.tracking.id) {
+    return [{ Name: settings.tracking.name, Option: job.xeroTrackingOption }];
+  }
+  const label = xeroJobLabel(job, jobRef.id);
+  const r = await xeroFetch(companyId, 'GET', 'TrackingCategories/' + settings.tracking.id + '?includeArchived=true');
+  const tc = (r.TrackingCategories || [])[0] || {};
+  let opt = (tc.Options || []).find(o => String(o.Name).toLowerCase() === label.toLowerCase());
+  if (!opt) {
+    const c = await xeroFetch(companyId, 'PUT', 'TrackingCategories/' + settings.tracking.id + '/Options', { Name: label });
+    opt = (c.Options || [])[0];
+  } else if (opt.Status === 'ARCHIVED') {
+    await xeroFetch(companyId, 'POST', 'TrackingCategories/' + settings.tracking.id + '/Options/' + opt.TrackingOptionID, { Name: opt.Name, Status: 'ACTIVE' }).catch(() => {});
+  }
+  await jobRef.update({ xeroTrackingOption: opt.Name, xeroTrackingCategoryId: settings.tracking.id }).catch(() => {});
+  return [{ Name: settings.tracking.name, Option: opt.Name }];
+}
+
+async function xeroEnsureContact(companyId, jobRef, job) {
+  if (job.xeroContactId) return job.xeroContactId;
+  const name = String(job.client || job.name || 'Customer').trim();
+  const email = String(job.email || job.clientEmail || '').trim();
+  const found = await xeroFetch(companyId, 'GET', 'Contacts?where=' + encodeURIComponent(`Name=="${xeroWhereStr(name)}"`));
+  let c = (found.Contacts || []).find(x => x.ContactStatus !== 'ARCHIVED');
+  if (!c) {
+    const body = { Name: name };
+    if (email) body.EmailAddress = email;
+    if (job.phone) body.Phones = [{ PhoneType: 'MOBILE', PhoneNumber: String(job.phone) }];
+    if (job.address) body.Addresses = [{ AddressType: 'STREET', AddressLine1: String(job.address).slice(0, 500) }];
+    const r = await xeroFetch(companyId, 'PUT', 'Contacts', body);
+    c = (r.Contacts || [])[0];
+  }
+  await jobRef.update({ xeroContactId: c.ContactID }).catch(() => {});
+  return c.ContactID;
+}
+
+// Splits each invoice line into labor and materials by the job's labor
+// share (saved on the job by the app from the same margin formula the
+// header bar uses). Lines always add up to the invoice total exactly.
+function xeroInvoiceLines(inv, job, settings, tracking) {
+  const acc = settings.accounts || {};
+  const share = Math.max(0, Math.min(1, Number(job.xeroLaborShare)));
+  const hasShare = isFinite(Number(job.xeroLaborShare)) && job.xeroLaborShare !== null && job.xeroLaborShare !== undefined && job.xeroLaborShare !== '';
+  const total = round2(inv.total);
+  let src = Array.isArray(inv.lineItems) ? inv.lineItems.filter(l => l && (Number(l.qty) || 0) * (Number(l.rate) || 0) !== 0) : [];
+  const srcSum = round2(src.reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.rate) || 0), 0));
+  if (!src.length || Math.abs(srcSum - total) > 0.01) src = [{ desc: inv.type ? (inv.type + ' — ' + (job.address || job.name || '')) : (job.address || job.name || 'Invoice'), qty: 1, rate: total }];
+  const lines = [];
+  src.forEach(l => {
+    const amt = round2((Number(l.qty) || 0) * (Number(l.rate) || 0));
+    const desc = String(l.desc || l.description || 'Work').slice(0, 3900);
+    if (!hasShare) {
+      lines.push({ Description: desc, Quantity: 1, UnitAmount: amt, AccountCode: acc.laborIncome && acc.laborIncome.code, Tracking: tracking });
+      return;
+    }
+    const labor = round2(amt * share);
+    const mat = round2(amt - labor);
+    if (labor) lines.push({ Description: desc + ' — labor', Quantity: 1, UnitAmount: labor, AccountCode: acc.laborIncome && acc.laborIncome.code, Tracking: tracking });
+    if (mat) lines.push({ Description: desc + ' — materials', Quantity: 1, UnitAmount: mat, AccountCode: acc.materialsIncome && acc.materialsIncome.code, Tracking: tracking });
+  });
+  return lines;
+}
+
+// Creates or updates the Xero invoice for one JOBSMETRIX invoice, then
+// applies any payment JOBSMETRIX has recorded that Xero doesn't have yet,
+// plus the Stripe fee for it. Safe to call again and again.
+async function syncInvoiceToXero(companyId, jobId, invoiceId) {
+  const settings = await xeroGetSettings(companyId);
+  if (!settings.connected) throw new Error('Xero is not connected.');
+  if (!settings.setupDone) throw new Error('Run Set up accounts in Settings → Xero first.');
+  const db = admin.firestore();
+  const jobRef = db.collection('companies').doc(companyId).collection('jobs').doc(jobId);
+  const invRef = jobRef.collection('invoices').doc(invoiceId);
+  const [jobDoc, invDoc] = await Promise.all([jobRef.get(), invRef.get()]);
+  if (!jobDoc.exists || !invDoc.exists) throw new Error('Job or invoice not found.');
+  const job = jobDoc.data();
+  let inv = invDoc.data();
+  if (inv.status === 'Void') return { skipped: 'void' };
+  if (!(Number(inv.total) > 0)) throw new Error('Invoice total is $0.');
+
+  const contactId = await xeroEnsureContact(companyId, jobRef, job);
+  const tracking = await xeroJobTracking(companyId, settings, jobRef, job);
+  const lines = xeroInvoiceLines(inv, job, settings, tracking);
+  const base = {
+    Type: 'ACCREC',
+    Contact: { ContactID: contactId },
+    Date: xeroDate(inv.date),
+    DueDate: xeroDate(inv.dueDate || inv.date),
+    LineAmountTypes: 'NoTax',
+    Reference: String(job.jobNumber || job.address || '').slice(0, 255),
+    LineItems: lines,
+    Status: 'AUTHORISED',
+  };
+  if (inv.number) base.InvoiceNumber = String(inv.number).slice(0, 255);
+
+  let x = null;
+  if (inv.xeroInvoiceId) {
+    const cur = ((await xeroFetch(companyId, 'GET', 'Invoices/' + inv.xeroInvoiceId)).Invoices || [])[0];
+    if (cur && (cur.Status === 'VOIDED' || cur.Status === 'DELETED')) {
+      x = null; // voided in Xero -- make a fresh one below
+    } else if (cur && !(Number(cur.AmountPaid) > 0) && !(Number(cur.AmountCredited) > 0) && Math.abs(round2(cur.Total) - round2(inv.total)) > 0.009) {
+      x = ((await xeroFetch(companyId, 'POST', 'Invoices/' + inv.xeroInvoiceId, { InvoiceID: inv.xeroInvoiceId, ...base })).Invoices || [])[0];
+    } else {
+      x = cur;
+    }
+  }
+  if (!x) {
+    // Same number already in Xero (made by hand)? Link to it instead of a duplicate.
+    if (inv.number) {
+      const f = await xeroFetch(companyId, 'GET', 'Invoices?InvoiceNumbers=' + encodeURIComponent(String(inv.number)));
+      x = (f.Invoices || []).find(i => i.Type === 'ACCREC' && i.Status !== 'VOIDED' && i.Status !== 'DELETED') || null;
+    }
+    if (!x) x = ((await xeroFetch(companyId, 'PUT', 'Invoices', base)).Invoices || [])[0];
+  }
+  if (!x || !x.InvoiceID) throw new Error('Xero did not return an invoice.');
+
+  let onlineUrl = inv.xeroOnlineUrl || '';
+  if (!onlineUrl) {
+    try {
+      const o = await xeroFetch(companyId, 'GET', 'Invoices/' + x.InvoiceID + '/OnlineInvoice');
+      onlineUrl = ((o.OnlineInvoices || [])[0] || {}).OnlineInvoiceUrl || '';
+    } catch (e) { console.warn('Xero online invoice link:', e.message); }
+  }
+  const upd = { xeroInvoiceId: x.InvoiceID, xeroInvoiceNumber: x.InvoiceNumber || '', xeroSyncedAt: Date.now() };
+  if (onlineUrl) upd.xeroOnlineUrl = onlineUrl;
+  await invRef.update(upd);
+
+  // Payments JOBSMETRIX knows about that Xero doesn't.
+  inv = (await invRef.get()).data();
+  const amtPaid = round2(inv.amtPaid);
+  const synced = round2(inv.xeroLastSyncedAmtPaid);
+  let paymentPushed = 0;
+  if (amtPaid > synced + 0.009) {
+    const fresh = ((await xeroFetch(companyId, 'GET', 'Invoices/' + x.InvoiceID)).Invoices || [])[0] || x;
+    const due = round2(fresh.AmountDue);
+    const xPaid = round2(fresh.AmountPaid);
+    // Xero already shows at least this much paid (paid on Xero's page) -- just catch up the marker.
+    const delta = Math.min(round2(amtPaid - Math.max(synced, xPaid)), due);
+    if (delta > 0.009) {
+      const isCard = /stripe|card/i.test(String(inv.paymentMethod || inv.payMethod || ''));
+      const acct = isCard ? (settings.accounts && settings.accounts.stripeBank) : settings.depositBank;
+      if (!acct || !acct.id) throw new Error('Pick the bank account checks and cash go to (Settings → Xero).');
+      await xeroFetch(companyId, 'PUT', 'Payments', {
+        Invoice: { InvoiceID: x.InvoiceID },
+        Account: { AccountID: acct.id },
+        Date: xeroDate(inv.paidDate),
+        Amount: delta,
+        Reference: ('JOBSMETRIX ' + (inv.paymentMethod || inv.payMethod || '')).trim().slice(0, 255),
+      });
+      paymentPushed = delta;
+    }
+    await invRef.update({ xeroLastSyncedAmtPaid: Math.max(amtPaid, synced) });
+  }
+
+  // Stripe fees taken on this invoice -> Card Processing Fees, out of the Stripe bank account.
+  const fee = round2(inv.stripeFeeTotal);
+  const feeSynced = round2(inv.xeroLastSyncedFee);
+  if (fee > feeSynced + 0.009 && settings.accounts && settings.accounts.stripeBank && settings.accounts.cardFees) {
+    const feeDelta = round2(fee - feeSynced);
+    await xeroFetch(companyId, 'PUT', 'BankTransactions', {
+      Type: 'SPEND',
+      Contact: { Name: 'Stripe' },
+      BankAccount: { AccountID: settings.accounts.stripeBank.id },
+      Date: xeroDate(inv.paidDate),
+      Reference: ('Card fee ' + (inv.number || '')).trim(),
+      LineAmountTypes: 'NoTax',
+      LineItems: [{ Description: 'Stripe fee — ' + (inv.number || '') + ' ' + (job.address || ''), Quantity: 1, UnitAmount: feeDelta, AccountCode: settings.accounts.cardFees.code, Tracking: tracking }],
+    });
+    await invRef.update({ xeroLastSyncedFee: fee });
+  }
+  return { success: true, xeroInvoiceId: x.InvoiceID, number: x.InvoiceNumber || '', onlineUrl, paymentPushed };
+}
+
+exports.xeroPushInvoice = functions.runWith({ secrets: XERO_SECRETS, timeoutSeconds: 120 }).https.onCall(async (data, context) => {
+  const companyId = xeroCallableGuard(data, context, true);
+  const { jobId, invoiceId, laborShare } = data || {};
+  if (!jobId || !invoiceId) throw new functions.https.HttpsError('invalid-argument', 'Missing jobId/invoiceId.');
+  try {
+    if (laborShare !== undefined && laborShare !== null && isFinite(Number(laborShare)) && Number(laborShare) >= 0 && Number(laborShare) <= 1) {
+      await admin.firestore().collection('companies').doc(companyId).collection('jobs').doc(jobId)
+        .update({ xeroLaborShare: Math.round(Number(laborShare) * 10000) / 10000 });
+    }
+    return await syncInvoiceToXero(companyId, jobId, invoiceId);
+  } catch (e) {
+    console.error('xeroPushInvoice failed:', e.message);
+    throw new functions.https.HttpsError('internal', e.message);
+  }
+});
+
+// Payments made on Xero's own pay page (or entered in Xero by hand) come
+// back into JOBSMETRIX.
+async function pullXeroPayments(companyId) {
+  const db = admin.firestore();
+  const jobsSnap = await db.collection('companies').doc(companyId).collection('jobs').get();
+  const targets = [];
+  await Promise.all(jobsSnap.docs.map(async jd => {
+    const job = jd.data();
+    if (job.status === 'Closed Lost') return;
+    const invSnap = await jd.ref.collection('invoices').where('xeroInvoiceId', '>', '').get().catch(() => null);
+    if (!invSnap) return;
+    invSnap.forEach(d => {
+      const inv = d.data();
+      if (!inv.xeroInvoiceId || inv.status === 'Paid' || inv.status === 'Void') return;
+      if (round2(inv.total) - round2(inv.amtPaid) <= 0.009) return;
+      targets.push({ jobRef: jd.ref, jobId: jd.id, job, invRef: d.ref, invId: d.id, inv });
+    });
+  }));
+  const updated = [];
+  for (let i = 0; i < targets.length; i += 40) {
+    const chunk = targets.slice(i, i + 40);
+    const r = await xeroFetch(companyId, 'GET', 'Invoices?IDs=' + chunk.map(t => t.inv.xeroInvoiceId).join(','));
+    const byId = {};
+    (r.Invoices || []).forEach(x => { byId[x.InvoiceID] = x; });
+    for (const t of chunk) {
+      const x = byId[t.inv.xeroInvoiceId];
+      if (!x) continue;
+      const paidInXero = round2(x.AmountPaid) + round2(x.AmountCredited);
+      const had = round2(t.inv.amtPaid);
+      if (paidInXero <= had + 0.009) continue;
+      const total = round2(t.inv.total);
+      const newPaid = Math.min(total || paidInXero, paidInXero);
+      const amountNow = round2(newPaid - had);
+      const full = newPaid >= total - 0.009;
+      const today = new Date().toISOString().split('T')[0];
+      const lastPay = (x.Payments || []).map(p => String(p.Date || '')).sort().pop() || '';
+      const m = /\/Date\((\d+)/.exec(lastPay);
+      const paidDate = m ? new Date(Number(m[1])).toISOString().split('T')[0] : today;
+      const upd = {
+        amtPaid: newPaid,
+        xeroLastSyncedAmtPaid: Math.max(round2(t.inv.xeroLastSyncedAmtPaid), newPaid),
+        status: full ? 'Paid' : 'Partial',
+        paymentMethod: 'Xero',
+        xeroPaymentPulledAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      if (full) upd.paidDate = paidDate;
+      await t.invRef.update(upd);
+      const amtStr = amountNow.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      await t.jobRef.collection('logs').add({
+        date: today,
+        notes: `Invoice ${t.inv.number || ''} ${full ? 'paid' : 'partly paid'} (Xero) — $${amtStr}`.replace('  ', ' '),
+        type: 'invoice_paid', userName: 'Xero (auto)', companyId,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      }).catch(() => {});
+      if (QBO_PULL_EARLY_STATUSES.includes(t.job.status)) {
+        await t.jobRef.update({ status: 'To Be Scheduled', statusDate: today, updatedAt: admin.firestore.FieldValue.serverTimestamp(), updatedBy: 'Xero (auto)' }).catch(() => {});
+        await t.jobRef.collection('logs').add({
+          date: today, notes: 'Deposit received — moved to To Be Scheduled', type: 'status_change',
+          userName: 'Xero (auto)', companyId, createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        }).catch(() => {});
+        t.job.status = 'To Be Scheduled';
+      }
+      updated.push({ jobId: t.jobId, invoiceId: t.invId, number: t.inv.number || '', jobName: t.job.address || t.job.name || '', amount: amountNow, full });
+    }
+  }
+  await xeroStatusRef(companyId).set({ lastPaymentPullAt: Date.now(), lastPaymentPullChecked: targets.length }, { merge: true }).catch(() => {});
+  return { checked: targets.length, updated };
+}
+
+exports.xeroSyncPayments = functions.runWith({ secrets: XERO_SECRETS, timeoutSeconds: 120 }).https.onCall(async (data, context) => {
+  const companyId = xeroCallableGuard(data, context, false);
+  const s = await xeroGetSettings(companyId);
+  if (!s.connected) return { checked: 0, updated: [], notConnected: true };
+  try { return await pullXeroPayments(companyId); }
+  catch (e) { console.error('xeroSyncPayments failed:', e.message); throw new functions.https.HttpsError('internal', e.message); }
+});
+
+exports.xeroPaymentPullScheduled = functions.runWith({ secrets: XERO_SECRETS, timeoutSeconds: 300 }).pubsub
+  .schedule('every 30 minutes').onRun(async () => {
+    const companies = await admin.firestore().collection('companies').get();
+    for (const c of companies.docs) {
+      try {
+        const s = await xeroGetSettings(c.id);
+        if (!s.connected) continue;
+        const r = await pullXeroPayments(c.id);
+        if (r.updated.length) console.log('Xero payments pulled', c.id, r.updated.length);
+      } catch (e) { console.error('Xero scheduled pull failed for', c.id, e.message); }
+    }
+    return null;
+  });
+
+// Called by the Stripe webhook after a card payment is recorded.
+async function xeroAfterPayment(companyId, jobId, invoiceId) {
+  try {
+    const s = await xeroGetSettings(companyId);
+    if (!s.connected || !s.setupDone) return;
+    await syncInvoiceToXero(companyId, jobId, invoiceId);
+  } catch (e) {
+    console.error('Xero sync after payment failed (payment still recorded in JOBSMETRIX):', e.message);
+  }
+}
+
+// ════════════════════════════════════════════════════
 // ── Stripe payment link + webhook ────────────────────
 // Replaces QuickBooks Payments as the customer-facing payment
 // processor. Money goes Stripe -> Bluevine directly (payout bank
@@ -1792,7 +2406,7 @@ exports.createStripePaymentLinkForCO = functions.https.onCall(async (data, conte
 // Raw HTTP endpoint - Stripe calls this directly (no Firebase Auth
 // context at all), so this must verify the request really came from
 // Stripe using the webhook signing secret, not rely on any auth check.
-exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
+exports.stripeWebhook = functions.runWith({ secrets: ['XERO_CLIENT_ID', 'XERO_CLIENT_SECRET'] }).https.onRequest(async (req, res) => { // XERO_V1: secrets for the Xero sync after a card payment
   // Which company this event belongs to determines which webhook
   // secret verifies it -- so peek at the unverified payload first just
   // to find companyId, then verify properly with that company's own
@@ -2008,6 +2622,8 @@ async function handlePaymentIntentSucceeded(event, companyId, res, stripe) {
     } catch (e) {
       console.error('stripeWebhook: QBO sync failed (payment still recorded in JOBSMETRIX):', e.message);
     }
+    // XERO_V1: apply the payment and its Stripe fee in Xero - best-effort.
+    await xeroAfterPayment(companyId, jobId, invoiceId);
 
     return res.status(200).send('OK');
   } catch (e) {

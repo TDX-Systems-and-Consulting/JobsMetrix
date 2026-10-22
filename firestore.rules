@@ -138,6 +138,13 @@ service cloud.firestore {
         allow read, write: if false;
       }
 
+      // ── Xero OAuth tokens (XERO_V1) ──
+      // Same as quickbooksTokens: the company's Xero credentials, only ever
+      // touched by Cloud Functions. Clients read settings/xero for status.
+      match /xeroTokens/{docId} {
+        allow read, write: if false;
+      }
+
       // ── Stripe secret key (per-company, mirrors quickbooksTokens) ──
       // Holds an encrypted Stripe secret key + webhook signing secret
       // for this company's OWN connected Stripe account. Never

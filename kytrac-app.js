@@ -12166,6 +12166,7 @@ function renderInvoicingPage() {
 function loadJobInvoices(jobId) {
   if (!conDb) return;
   qbSyncPaymentsNow(false, 2 * 60 * 1000); // QBO_PAYMENT_PULL_V1
+  xeroSyncPaymentsNow(false, 2 * 60 * 1000); // XERO_V1
   coll('jobs').doc(jobId).collection('invoices')
     .orderBy('date','desc')
     .onSnapshot(snap => {
@@ -12220,6 +12221,7 @@ function renderJobInvoiceList(jobId, invs) {
         <button class="btn" style="padding:4px 10px;font-size:.76rem" onclick="printInvoiceById('${jobId}','${inv.id}')">🖨 Print</button>
         <button class="btn" style="padding:4px 10px;font-size:.76rem;background:rgba(99,179,237,.12);color:#63b3ed;border-color:rgba(99,179,237,.35)"
           onclick="emailInvoiceToCustomer('${jobId}','${inv.id}')">✉️ Email</button>
+        ${xeroInvoiceButton(jobId, inv)}
         ${inv.paymentLink && (inv.total||0) > (inv.amtPaid||0) ? `<span class="small muted" style="align-self:center">💳 Pay link sent</span>` : ''}
         <button class="btn" style="padding:4px 10px;font-size:.76rem;background:rgba(245,158,11,.12);color:#f59e0b;border-color:rgba(245,158,11,.35)"
           onclick="sendLienWaiver('${jobId}','${inv.id}','conditional')" title="Send Conditional Lien Waiver for customer e-signature">📋 Lien Waiver</button>
@@ -13100,6 +13102,13 @@ async function commitMarkPaid(jobId, invId, total) {
         .catch(e => logInvoiceActivity(jobId, 'qbo_payment_sync_failed', 'Could not record this payment in QuickBooks: ' + e.message));
     }
 
+    // XERO_V1: record this payment on the Xero invoice too (best-effort).
+    if (conFunctions && method !== 'Xero' && xeroReady()) {
+      xeroPushInvoiceNow(jobId, invId)
+        .then(() => logInvoiceActivity(jobId, 'xero_payment_synced', 'Payment recorded in Xero.'))
+        .catch(e => logInvoiceActivity(jobId, 'xero_payment_sync_failed', 'Could not record this payment in Xero: ' + e.message));
+    }
+
     const job = conJobs.find(j => j.id === jobId);
 
     // 1c-early. Show the bucket breakdown immediately -- right at the
@@ -13447,6 +13456,7 @@ function remittanceText() {
 }
 
 // ── Email Invoice to Customer ──
+function invNumSafe(inv) { return inv && inv.number ? inv.number + ' ' : ''; }
 async function emailInvoiceToCustomer(jobId, invId) {
   if (!conDb || !jobId || !invId) return;
 
@@ -13467,7 +13477,22 @@ async function emailInvoiceToCustomer(jobId, invId) {
   let stripePayLink = '';
   let stripeErrorMsg = '';
   const balanceOwed = (inv.total || 0) - (inv.amtPaid || 0);
-  if (conFunctions && balanceOwed > 0) {
+  // XERO_V1: the invoice goes to Xero first (same number, job-tagged).
+  // With "Use Xero's pay page" on, the email's Pay Now is Xero's page;
+  // otherwise (or if Xero fails) it stays the Stripe link.
+  let xeroUrl = '';
+  if (xeroReady()) {
+    try {
+      const xd = await xeroPushInvoiceNow(jobId, invId);
+      xeroUrl = (xd && xd.onlineUrl) || '';
+      logInvoiceActivity(jobId, 'xero_synced', `Invoice ${invNumSafe(inv)}sent to Xero.`);
+    } catch (e) {
+      console.warn('Xero push before email failed:', e.message);
+      logInvoiceActivity(jobId, 'xero_sync_failed', 'Could not send this invoice to Xero: ' + e.message);
+    }
+  }
+  const useXeroPage = !!(xeroReady() && _xeroStatus.usePayPage && xeroUrl && balanceOwed > 0);
+  if (conFunctions && balanceOwed > 0 && !useXeroPage) {
     try {
       const createLink = conFunctions.httpsCallable('createStripePaymentLink');
       const result = await createLink({ companyId: currentCompanyId, jobId, invoiceId: invId });
@@ -13478,7 +13503,7 @@ async function emailInvoiceToCustomer(jobId, invId) {
     }
   }
 
-  if (balanceOwed > 0 && !stripePayLink) {
+  if (balanceOwed > 0 && !stripePayLink && !useXeroPage) {
     alert('Could not generate a Stripe payment link for this invoice.\n\n'
       + 'The invoice was NOT sent (to avoid emailing it with no way to pay).\n\n'
       + (stripeErrorMsg ? ('Actual error: ' + stripeErrorMsg + '\n\n') : '')
@@ -13491,7 +13516,7 @@ async function emailInvoiceToCustomer(jobId, invId) {
   const invNum = inv.number || 'Invoice';
   const total = (inv.total || 0).toLocaleString(undefined, {minimumFractionDigits:2});
   const due = inv.dueDate || '';
-  const payLink = stripePayLink; // Stripe only (QuickBooks dropped 2026-10-19)
+  const payLink = useXeroPage ? xeroUrl : stripePayLink; // XERO_V1
 
   // Get portal link for invoice viewing
   let portalUrl = '';
@@ -14409,6 +14434,7 @@ function loadCompanyProfile() {
       populateSettingsForm();
       updateSidebarUserInfo();
       checkQBConnectionStatus();
+      checkXeroStatus(); // XERO_V1
       checkStripeConnectionStatus();
     })
     .catch(() => {
@@ -14485,6 +14511,169 @@ function checkQBConnectionStatus() {
     .catch(() => { el.innerHTML = '<span style="color:#9ca3af">Not connected yet.</span>'; });
 }
 window.checkQBConnectionStatus = checkQBConnectionStatus;
+
+// ════════════════════════════════════════════════════
+// ── XERO_V1 (client, 2026-10-22) ─────────────────────
+// ════════════════════════════════════════════════════
+// Settings → Xero: connect, one-click set up, pick the bank account checks
+// and cash go to, and choose whether invoice emails use Xero's pay page.
+// Invoices go to Xero when emailed (or with the 📘 Xero button), payments
+// recorded here go to Xero, and payments made in Xero come back here.
+let _xeroStatus = {};
+function xeroReady() { return !!(_xeroStatus.connected && _xeroStatus.setupDone); }
+function connectXero(legacy) {
+  if (!currentCompanyId || !conCurrentUser) { alert('Not ready yet — try again in a moment.'); return; }
+  const win = window.open('', '_blank', 'width=560,height=760');
+  conCurrentUser.getIdToken().then(idToken => {
+    const useLegacy = legacy === true || _xeroStatus.useLegacyScopes === true;
+    const url = `${QBO_FUNCTIONS_BASE}/xeroOAuthStart?token=${encodeURIComponent(idToken)}&companyId=${encodeURIComponent(currentCompanyId)}${useLegacy ? '&legacy=1' : ''}`;
+    if (!win) { alert('Your browser blocked the popup — allow pop-ups for this site and try again.'); return; }
+    win.location = url;
+    const poll = setInterval(() => { if (win.closed) { clearInterval(poll); setTimeout(checkXeroStatus, 800); } }, 500);
+  }).catch(e => { if (win) win.close(); alert('Could not start the Xero connection: ' + e.message); });
+}
+async function disconnectXero() {
+  const box = document.getElementById('xeroConnectionStatus');
+  if (box && !box.dataset.confirmDisconnect) {
+    box.dataset.confirmDisconnect = '1';
+    const b = document.getElementById('xeroDisconnectBtn');
+    if (b) { b.textContent = 'Tap again to disconnect'; b.style.borderColor = '#ef4444'; b.style.color = '#fca5a5'; }
+    setTimeout(() => { delete box.dataset.confirmDisconnect; renderXeroCard(); }, 5000);
+    return;
+  }
+  try {
+    await conFunctions.httpsCallable('xeroDisconnect')({ companyId: currentCompanyId });
+  } catch (e) { alert('Could not disconnect: ' + e.message); }
+  checkXeroStatus();
+}
+async function xeroDoSetup(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Setting up Xero…'; }
+  try {
+    const r = await conFunctions.httpsCallable('xeroSetup')({ companyId: currentCompanyId });
+    const made = (r.data && r.data.created) || [];
+    _xeroSetupMsg = made.length ? ('Created in Xero: ' + made.join(', ')) : 'Everything was already in Xero — nothing new needed.';
+  } catch (e) { _xeroSetupMsg = '⚠️ ' + e.message; }
+  checkXeroStatus();
+}
+let _xeroSetupMsg = '';
+async function xeroSetDepositBank(id) {
+  try { await conFunctions.httpsCallable('xeroSetup')({ companyId: currentCompanyId, depositBankId: id }); }
+  catch (e) { alert('Could not save: ' + e.message); }
+  checkXeroStatus();
+}
+async function xeroSetPayPage(on) {
+  try { await coll('settings').doc('xero').set({ usePayPage: !!on }, { merge: true }); }
+  catch (e) { alert('Could not save: ' + e.message); }
+  checkXeroStatus();
+}
+function checkXeroStatus() {
+  if (!conDb || !currentCompanyId) return;
+  coll('settings').doc('xero').get()
+    .then(d => { _xeroStatus = d.exists ? d.data() : {}; renderXeroCard(); })
+    .catch(() => { _xeroStatus = {}; renderXeroCard(); });
+}
+function renderXeroCard() {
+  const el = document.getElementById('xeroConnectionStatus');
+  const act = document.getElementById('xeroActions');
+  if (!el || !act) return;
+  const s = _xeroStatus || {};
+  if (!s.connected) {
+    el.innerHTML = '<span style="color:#9ca3af">Not connected yet.</span>' + (s.lastError ? `<div class="small" style="color:#fca5a5;margin-top:4px">${esc(s.lastError)}</div>` : '');
+    act.innerHTML = `<button class="btn-amber" onclick="connectXero()">📘 Connect Xero</button>`;
+    return;
+  }
+  const acc = s.accounts || {};
+  const banks = s.banks || [];
+  const when = s.lastPaymentPullAt ? new Date(s.lastPaymentPullAt).toLocaleString() : 'not yet';
+  el.innerHTML = `<span style="color:#1dbb87;font-weight:700">✓ Connected</span> — ${esc(s.tenantName || 'Xero')}
+    ${s.lastError ? `<div class="small" style="color:#fca5a5;margin-top:4px">${esc(s.lastError)}</div>` : ''}
+    ${_xeroSetupMsg ? `<div class="small" style="margin-top:6px">${esc(_xeroSetupMsg)}</div>` : ''}
+    ${s.setupDone ? `<div class="small muted" style="margin-top:6px;line-height:1.6">
+      Invoices book to <b>${esc((acc.laborIncome || {}).name || '')}</b> + <b>${esc((acc.materialsIncome || {}).name || '')}</b>, tagged with the job under tracking category <b>${esc((s.tracking || {}).name || 'Job')}</b>.
+      Card payments land in the <b>${esc((acc.stripeBank || {}).name || 'Stripe')}</b> bank account; fees go to <b>${esc((acc.cardFees || {}).name || '')}</b>.
+      <br>Last payment check: ${esc(when)}</div>` : `<div class="small" style="margin-top:6px;color:#fde68a">One more step: click <b>Set up accounts</b>.</div>`}`;
+  act.innerHTML = `
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+      <button class="${s.setupDone ? 'btn' : 'btn-amber'}" onclick="xeroDoSetup(this)">${s.setupDone ? '↻ Re-check accounts' : '⚙️ Set up accounts'}</button>
+      ${s.setupDone ? `<button class="btn" onclick="xeroSyncPaymentsNow(true).then(()=>checkXeroStatus())">💵 Check Xero for payments</button>` : ''}
+      <button class="btn" id="xeroDisconnectBtn" onclick="disconnectXero()">Disconnect</button>
+    </div>
+    ${s.setupDone ? `
+    <div style="margin-top:12px;display:grid;gap:10px">
+      <label class="small" style="display:grid;gap:4px">Checks and cash are deposited to
+        <select onchange="xeroSetDepositBank(this.value)" style="max-width:340px">
+          ${banks.length ? banks.map(b => `<option value="${esc(b.id)}" ${s.depositBank && s.depositBank.id === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('') : '<option value="">Add your bank account in Xero first</option>'}
+        </select>
+      </label>
+      <label class="small" style="display:flex;gap:8px;align-items:flex-start;max-width:560px">
+        <input type="checkbox" ${s.usePayPage ? 'checked' : ''} onchange="xeroSetPayPage(this.checked)" style="width:auto;margin-top:2px">
+        <span>Use Xero's pay page in invoice emails (instead of the Stripe link). Turn this on after connecting Stripe inside Xero: <i>Xero → Settings → Online payments → Stripe</i>. Payments made there come back here automatically.</span>
+      </label>
+    </div>` : ''}`;
+}
+
+// Labor share of the price, from the same margin formula as the header bar.
+async function xeroLaborShare(jobId) {
+  try {
+    const b = await getJobMarginBoth(jobId, false);
+    const t = b && (b.tmA || b.tmE);
+    const v = t && Number(t.laborShare);
+    return (v >= 0 && v <= 1) ? v : null;
+  } catch (e) { return null; }
+}
+async function xeroPushInvoiceNow(jobId, invId, quiet) {
+  if (!conFunctions || !xeroReady()) return null;
+  const laborShare = await xeroLaborShare(jobId);
+  const r = await conFunctions.httpsCallable('xeroPushInvoice')({ companyId: currentCompanyId, jobId, invoiceId: invId, laborShare });
+  return r.data;
+}
+async function xeroPushInvoiceBtn(jobId, invId, btn) {
+  if (!xeroReady()) { alert('Connect Xero and run Set up accounts first (Settings → Xero).'); return; }
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Xero…'; }
+  try {
+    const d = await xeroPushInvoiceNow(jobId, invId);
+    logInvoiceActivity(jobId, 'xero_synced', `Invoice ${d && d.number ? d.number + ' ' : ''}sent to Xero.`);
+    if (btn) { btn.textContent = '✓ In Xero'; }
+    setTimeout(() => loadJobInvoices(jobId), 600);
+  } catch (e) {
+    alert('Could not send to Xero: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '📘 Xero'; }
+  }
+}
+function xeroInvoiceButton(jobId, inv) {
+  if (!_xeroStatus.connected) return '';
+  const inX = !!inv.xeroInvoiceId;
+  return `<button class="btn" style="padding:4px 10px;font-size:.76rem;background:rgba(19,181,234,.1);color:#38bdf8;border-color:rgba(19,181,234,.35)" onclick="xeroPushInvoiceBtn('${jobId}','${inv.id}',this)" title="${inX ? 'In Xero — click to re-sync payments' : 'Send this invoice to Xero'}">${inX ? '✓ In Xero' : '📘 Xero'}</button>`;
+}
+
+// Payments made in Xero → here. Same cadence as the old QuickBooks check.
+let _xeroSyncLast = 0, _xeroSyncBusy = null;
+function xeroSyncPaymentsNow(force, minGapMs) {
+  try { if (!conFunctions || !currentCompanyId || !conCurrentUser || !canViewFinancialsTab() || !_xeroStatus.connected) return Promise.resolve(null); } catch (e) { return Promise.resolve(null); }
+  if (_xeroSyncBusy) return _xeroSyncBusy;
+  const gap = minGapMs == null ? 3 * 60 * 1000 : minGapMs;
+  if (!force && Date.now() - _xeroSyncLast < gap) return Promise.resolve(null);
+  _xeroSyncLast = Date.now();
+  _xeroSyncBusy = conFunctions.httpsCallable('xeroSyncPayments')({ companyId: currentCompanyId })
+    .then(r => { const d = r && r.data; if (d && d.updated && d.updated.length) xeroShowPaidToast(d.updated); return d; })
+    .catch(e => { console.warn('Xero payment check:', e.message); return { error: e.message }; })
+    .finally(() => { _xeroSyncBusy = null; });
+  return _xeroSyncBusy;
+}
+function xeroShowPaidToast(list) {
+  document.getElementById('xeroPaidToast')?.remove();
+  const total = list.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const t = document.createElement('div');
+  t.id = 'xeroPaidToast';
+  t.setAttribute('role', 'status');
+  t.style.cssText = 'position:fixed;top:calc(env(safe-area-inset-top) + 14px);left:50%;transform:translateX(-50%);z-index:99999;background:#0d1f35;border:2px solid #1dbb87;border-radius:12px;padding:12px 14px;display:flex;gap:10px;align-items:center;max-width:92vw;box-shadow:0 8px 24px rgba(0,0,0,.4)';
+  t.innerHTML = `<span style="color:#eaf0fb;font-size:.88rem"><strong style="color:#1dbb87">💵 Paid in Xero</strong> ${list.length === 1 ? esc((list[0].number ? list[0].number + ' · ' : '') + list[0].jobName) : list.length + ' invoices'} — $${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} recorded</span>
+    <button onclick="document.getElementById('xeroPaidToast')?.remove()" aria-label="Dismiss" style="background:none;border:none;color:#9aa6bd;cursor:pointer;font-size:1.1rem">✕</button>`;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 15000);
+}
+setInterval(() => { xeroSyncPaymentsNow(false, 15 * 60 * 1000); }, 60 * 1000);
+Object.assign(window, { connectXero, disconnectXero, xeroDoSetup, xeroSetDepositBank, xeroSetPayPage, checkXeroStatus, xeroPushInvoiceBtn, xeroSyncPaymentsNow, xeroReady });
 
 // Stripe doesn't use OAuth like QuickBooks/Google Calendar — the
 // company just pastes their own secret key directly. Same
@@ -36883,8 +37072,8 @@ async function opPipeValue(j, signed) {
 async function opLoadPipeline() {
   const el = document.getElementById('opPipe');
   _opPipeLoading = true;
-  if (el) el.innerHTML = '<div class="small muted">Checking QuickBooks for payments…</div>';
-  await Promise.race([qbSyncPaymentsNow(true), new Promise(r => setTimeout(r, 25000))]);
+  if (el) el.innerHTML = '<div class="small muted">Checking Xero for payments…</div>';
+  await Promise.race([Promise.all([qbSyncPaymentsNow(true), xeroSyncPaymentsNow(true)]), new Promise(r => setTimeout(r, 25000))]); // XERO_V1
   const jobs = conJobs.filter(j => PB_SIGNED.includes(j.status) || PB_BIDS.includes(j.status));
   if (el) el.innerHTML = `<div class="small muted">Checking deposits on ${jobs.length} jobs…</div>`;
   try {
