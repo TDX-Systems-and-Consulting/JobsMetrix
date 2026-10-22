@@ -1348,7 +1348,7 @@ async function syncInvoiceToQbo(companyId, jobId, invoiceId) {
 // the "Check QuickBooks for payments" button. No Intuit webhook setup
 // needed. Payments recorded here set qbLastSyncedAmtPaid too, so the
 // push in syncInvoiceToQbo never sends them back to QuickBooks twice.
-const QBO_PULL_EARLY_STATUSES = ['New Lead', 'Appointment Set', 'Building Estimate', 'Submitted'];
+const QBO_PULL_EARLY_STATUSES = ['New Lead', 'Appointment Set', 'Building Estimate', 'Submitted', 'Awaiting Deposit'];
 
 // QBO_INVOICE_IMPORT_V1 (2026-10-14). Travis makes most invoices directly
 // in QuickBooks, not in JOBSMETRIX, so the payment pull below (which only
@@ -1956,6 +1956,21 @@ async function handlePaymentIntentSucceeded(event, companyId, res, stripe) {
       update.paidDate = new Date().toISOString().split('T')[0];
     }
     await invRef.update(update);
+
+    // DEPOSIT_COL_V1 (10/22/26): a signed job waiting on its deposit moves
+    // to To Be Scheduled once a payment comes in -- same forward-only
+    // advance the manual Mark Paid does. Never moves a job backwards.
+    if (QBO_PULL_EARLY_STATUSES.includes(job.status || '') && amountPaidNow > 0) {
+      try {
+        await jobRef.update({ status: 'To Be Scheduled', statusDate: new Date().toISOString().split('T')[0],
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(), updatedBy: 'Stripe (auto)' });
+        await jobRef.collection('logs').add({
+          date: new Date().toISOString().split('T')[0], type: 'status_change', userName: 'Stripe (auto)', companyId,
+          notes: `Deposit received — moved from ${job.status} to To Be Scheduled`,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      } catch (stErr) { console.error('stripeWebhook: status advance failed (non-fatal):', stErr.message); }
+    }
 
     try {
       const amtStr = amountPaidNow.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
@@ -3191,7 +3206,7 @@ async function runSLATriggers(db, companyId) {
     // No daily log 2+ days on an active job — mirrors the 🟡 flag
     // already shown on the JOBSMETRIX home dashboard's Active Jobs
     // table, just surfaced proactively instead of only-if-you-look.
-    if (!['Closed Completed', 'Closed Lost', 'Submitted', 'To Be Scheduled', 'Permitting'].includes(status)) {
+    if (!['Closed Completed', 'Closed Lost', 'Submitted', 'Awaiting Deposit', 'To Be Scheduled', 'Permitting'].includes(status)) {
       const logDays = daysSince(job.lastLogDate);
       if (logDays !== null && logDays >= 3) {
         await createTodo(jobId, jobName,

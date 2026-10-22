@@ -302,7 +302,7 @@ service cloud.firestore {
           (request.auth == null &&
            request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly(['status', 'statusDate', 'lastActivity', 'lastActivityNote']) &&
-           request.resource.data.status == 'To Be Scheduled');
+           request.resource.data.status in ['To Be Scheduled', 'Awaiting Deposit']); // DEPOSIT_COL_V1: signing now lands on Awaiting Deposit
 
         // Money-sensitive subcollections: full-access roles only.
         // NOTE (known limitation): this locks the whole collection, but

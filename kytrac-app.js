@@ -580,14 +580,15 @@ function colTotalsHtml(jobs, color, colLabel) {
 
 // JOB_SECTIONS_V1 (Travis 10/21/26): the Jobs board is split into three
 // sections -- Sales (New Lead through Submitted), Operations (To Be
-// Scheduled through Complete – Awaiting Final Payment) and Finance (the
-// closed lanes). Superintendent and above can switch each section on/off to
+// Scheduled through Occupancy Inspection) and Finance (Complete – Awaiting
+// Final Payment plus the closed lanes). Superintendent and above can switch each section on/off to
 // cut clutter (remembered on this device); everyone else sees the old
 // layout with the sections labeled.
 const JOB_BOARD_SECTIONS = [
-  { key: 'sales',   label: 'Sales',      color: '#f97316', statuses: ['New Lead', 'Appointment Set', 'Building Estimate', 'Submitted'] },
-  { key: 'ops',     label: 'Operations', color: '#3b82f6', statuses: ['To Be Scheduled', 'Permitting', 'Scheduled', 'In Progress', 'Customer Inspection', 'Inspection Pending', 'Complete'] },
-  { key: 'finance', label: 'Finance',    color: '#7c3aed', statuses: ['Closed Completed', 'Closed Lost'] },
+  { key: 'sales',   label: 'Sales',      color: '#f97316', statuses: ['New Lead', 'Appointment Set', 'Building Estimate', 'Submitted', 'Awaiting Deposit'] },
+  { key: 'ops',     label: 'Operations', color: '#3b82f6', statuses: ['To Be Scheduled', 'Permitting', 'Scheduled', 'In Progress', 'Customer Inspection', 'Inspection Pending'] },
+  // JOB_SECTIONS_V2 (10/22/26): Complete – Awaiting Final Payment belongs to Finance
+  { key: 'finance', label: 'Finance',    color: '#7c3aed', statuses: ['Complete', 'Closed Completed', 'Closed Lost'] },
 ];
 function canToggleBoardSections() {
   if (currentUserTeamData?.fullAccessOverride) return true;
@@ -596,14 +597,14 @@ function canToggleBoardSections() {
   return !!role && role.level >= KYTRAC_ROLES['Superintendent'].level;
 }
 let _boardSections = (() => {
-  try { const v = JSON.parse(localStorage.getItem('jmBoardSections') || 'null'); if (v && typeof v === 'object') return v; } catch (e) {}
-  return { sales: true, ops: true, finance: false };
+  try { const v = JSON.parse(localStorage.getItem('jmBoardSections2') || 'null'); if (v && typeof v === 'object') return v; } catch (e) {}
+  return { sales: true, ops: true, finance: true }; // Finance now holds Complete – Awaiting Final Payment, so it starts on
 })();
 function toggleBoardSection(key) {
   const next = { ..._boardSections, [key]: !_boardSections[key] };
   if (!JOB_BOARD_SECTIONS.some(sec => next[sec.key])) return; // keep at least one section on
   _boardSections = next;
-  try { localStorage.setItem('jmBoardSections', JSON.stringify(_boardSections)); } catch (e) {}
+  try { localStorage.setItem('jmBoardSections2', JSON.stringify(_boardSections)); } catch (e) {}
   renderJobsBoard();
 }
 window.toggleBoardSection = toggleBoardSection;
@@ -1054,6 +1055,7 @@ const KYTRAC_STATUSES = [
   {name:'Appointment Set',    color:'#f97316', group:'estimates'},
   {name:'Building Estimate',  color:'#d97706', group:'estimates'},
   {name:'Submitted',          color:'#d97706', group:'estimates'},
+  {name:'Awaiting Deposit',   color:'#16a34a', group:'estimates'}, // DEPOSIT_COL_V1: signed, waiting on the deposit
   {name:'To Be Scheduled',    color:'#0d9488', group:'active'},
   {name:'Permitting',         color:'#0d9488', group:'active'},
   {name:'Scheduled',          color:'#3b82f6', group:'active'},
@@ -1076,6 +1078,9 @@ const KANBAN_COLUMNS = [
   {label:'Appointment Set',   color:'#f97316', statuses:['Appointment Set'],     dropStatus:'Appointment Set',   group:'estimates', hidden:false},
   {label:'Building Estimate', color:'#d97706', statuses:['Building Estimate'],   dropStatus:'Building Estimate', group:'estimates', hidden:false},
   {label:'Submitted',         color:'#d97706', statuses:['Submitted'],           dropStatus:'Submitted',         group:'estimates', hidden:false},
+  // DEPOSIT_COL_V1 (Travis 10/22/26): proposal signed, deposit not in yet.
+  // Signing lands a job here; the deposit being paid moves it to To Be Scheduled.
+  {label:'Signed – Awaiting Deposit', color:'#16a34a', statuses:['Awaiting Deposit'], dropStatus:'Awaiting Deposit', group:'estimates', hidden:false},
   {label:'To Be Scheduled',   color:'#0d9488', statuses:['To Be Scheduled'],     dropStatus:'To Be Scheduled',   group:'active',   hidden:false},
   // BOARD_COLS_V2 (2026-10-14): deposit paid, waiting on the city's permit before it can be scheduled
   {label:'Permitting',        color:'#0891b2', statuses:['Permitting'],          dropStatus:'Permitting',        group:'active',   hidden:false},
@@ -1095,7 +1100,7 @@ const KANBAN_COLUMNS = [
 // populate it going forward.
 const PIPELINE_BUCKETS = {
   estimates: ['New Lead', 'Appointment Set'],
-  bidding:   ['Building Estimate', 'Submitted'],
+  bidding:   ['Building Estimate', 'Submitted', 'Awaiting Deposit'],
   approved:  [],
   scheduled: ['To Be Scheduled', 'Permitting', 'Scheduled'],
   inprogress:['In Progress', 'Customer Inspection', 'Inspection Pending'],
@@ -1680,7 +1685,7 @@ function conRenderStats() {
   // remembered to mark Declined, so it showed ~100%.)
   if (conDb) {
     const DAY = 864e5, nowMs = Date.now();
-    const WON_ST = ['To Be Scheduled', 'Permitting', 'Scheduled', 'In Progress', 'Customer Inspection', 'Inspection Pending', 'Complete', 'Closed Completed'];
+    const WON_ST = ['Awaiting Deposit', 'To Be Scheduled', 'Permitting', 'Scheduled', 'In Progress', 'Customer Inspection', 'Inspection Pending', 'Complete', 'Closed Completed'];
     const toMs = v => !v ? 0 : typeof v.toMillis === 'function' ? v.toMillis() : typeof v === 'number' ? v : (Date.parse(v) || 0);
     let approved = 0, total = 0, lostCt = 0;
     const crPromises = conJobs.map(j =>
@@ -10918,14 +10923,14 @@ function renderFieldTechHome() {
   } else if (myJobs.length === 1) {
     const j = myJobs[0];
     jobBox.innerHTML = `
-      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px">${esc(j.name || 'Job')}</div>
+      <div style="font-size:1.1rem;font-weight:800;margin-bottom:4px">${esc(jobNumSt(j) || j.name || 'Job')}</div>
       <div style="color:var(--muted);font-size:.85rem">${esc(j.address || '')}</div>
       <div style="margin-top:6px;font-size:.78rem;color:var(--amber);font-weight:700">${esc(j.status || '')}</div>`;
   } else {
     // More than one active assignment -- list them, each opens directly.
     jobBox.innerHTML = myJobs.map(j => `
       <div onclick="event.stopPropagation();openJobDetail('${j.id}')" style="padding:8px 0;border-bottom:1px solid var(--line);cursor:pointer">
-        <div style="font-weight:700">${esc(j.name || 'Job')}</div>
+        <div style="font-weight:700">${esc(jobNumSt(j) || j.name || 'Job')}</div>
         <div style="color:var(--muted);font-size:.78rem">${esc(j.status || '')}</div>
       </div>`).join('');
   }
@@ -10954,7 +10959,7 @@ function renderFieldTechNav(myJobs) {
   }
   box.innerHTML = jobs.map(j => `
     <div style="padding:8px 0;border-bottom:1px solid var(--line)">
-      <div style="font-weight:700;font-size:.9rem">${esc(j.name || 'Job')}</div>
+      <div style="font-weight:700;font-size:.9rem">${esc(jobNumSt(j) || j.name || 'Job')}</div>
       <div style="color:var(--muted);font-size:.8rem;margin:2px 0 8px;user-select:all">${esc(j.address)}</div>
       <a href="${ftDirectionsUrl(j.address)}" target="_blank" rel="noopener" class="btn btn-amber"
         style="display:block;text-align:center;padding:10px;font-weight:800;text-decoration:none">🧭 Get Directions</a>
@@ -19275,7 +19280,7 @@ function renderPortalJob(job) {
   // Build visual status track
   // Show simplified customer-facing stages
   const customerStages = [
-    { label: 'Estimate', statuses: ['New Lead','Appointment Set','Building Estimate','Submitted'] },
+    { label: 'Estimate', statuses: ['New Lead','Appointment Set','Building Estimate','Submitted','Awaiting Deposit'] },
     { label: 'Scheduled', statuses: ['To Be Scheduled','Permitting','Scheduled'] },
     { label: 'In Progress', statuses: ['In Progress','Customer Inspection','Inspection Pending'] },
     { label: 'Complete', statuses: ['Complete','Closed Completed'] },
@@ -20436,18 +20441,20 @@ function submitPortalSignature(proposalId, jobId, action) {
         // Scheduled, skipping the old intermediate Approved column
         // entirely) — see the pipeline change made when Approved was
         // dropped from KYTRAC_STATUSES/KANBAN_COLUMNS.
-        const PORTAL_STATUS_ORDER = ['New Lead','Appointment Set','Building Estimate','Submitted','To Be Scheduled'];
+        // DEPOSIT_COL_V1: signing now lands on Signed – Awaiting Deposit;
+        // the deposit being paid moves it on to To Be Scheduled.
+        const PORTAL_STATUS_ORDER = ['New Lead','Appointment Set','Building Estimate','Submitted','Awaiting Deposit'];
         jobRef.get().then(snap => {
           if (!snap.exists) return;
           const curIdx = PORTAL_STATUS_ORDER.indexOf(snap.data().status);
-          const targetIdx = PORTAL_STATUS_ORDER.indexOf('To Be Scheduled');
+          const targetIdx = PORTAL_STATUS_ORDER.indexOf('Awaiting Deposit');
           if (curIdx !== -1 && curIdx < targetIdx) {
-            jobRef.update({ status: 'To Be Scheduled', statusDate: new Date().toISOString().split('T')[0],
+            jobRef.update({ status: 'Awaiting Deposit', statusDate: new Date().toISOString().split('T')[0],
               lastActivity: now, lastActivityNote: `Proposal signed by ${name}` })
               .then(() => {
                 jobRef.collection('logs').add({
                   type: 'status_auto_advanced',
-                  notes: `Job auto-advanced to To Be Scheduled (was ${snap.data().status}) — customer signed proposal.`,
+                  notes: `Job moved to Signed – Awaiting Deposit (was ${snap.data().status}) — customer signed proposal.`,
                   jobId, companyId, createdAt: now, createdMs: nowMs, date: todayDateStr, createdBy: 'customer-portal'
                 }).catch(()=>{});
               })
@@ -27865,7 +27872,7 @@ function loadProposals(jobId) {
 function maybeAdvanceJobStatusForApproval(jobId) {
   const job = conJobs.find(j => j.id === jobId);
   if (!job) return;
-  const TARGET_NAME = 'To Be Scheduled';
+  const TARGET_NAME = 'Awaiting Deposit'; // DEPOSIT_COL_V1: signed -> waiting on the deposit
   const currentIdx = CON_JOB_STATUSES.indexOf(job.status);
   const targetIdx = CON_JOB_STATUSES.indexOf(TARGET_NAME);
   if (currentIdx === -1 || targetIdx === -1 || currentIdx >= targetIdx) return;
