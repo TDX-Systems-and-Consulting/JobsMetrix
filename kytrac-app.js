@@ -8531,7 +8531,29 @@ function conLoadCOs(jobId) {
       conCOs = [];
       snap.forEach(doc => conCOs.push({ id: doc.id, ...doc.data() }));
       renderCOList();
+      coCatchUpPaidInvoices(jobId); // XERO_V1
     });
+}
+// XERO_V1: a change order billed with "Create Invoice" is marked Paid (and
+// added to the estimate/punch list) as soon as its invoice is paid -- by
+// Stripe, Xero, check, anything -- not only through Mark Paid in the app.
+let _coCatchUpBusy = {};
+async function coCatchUpPaidInvoices(jobId) {
+  try { if (!isOwnerOrAdmin() || _coCatchUpBusy[jobId]) return; } catch (e) { return; }
+  const open = conCOs.filter(c => ['Invoiced', 'Customer Approved', 'Approved'].includes(c.status) && !c.appliedToEstimate);
+  if (!open.length) return;
+  _coCatchUpBusy[jobId] = true;
+  try {
+    const snap = await coll('jobs').doc(jobId).collection('invoices').get();
+    const invs = []; snap.forEach(d => invs.push(d.data()));
+    for (const co of open) {
+      const inv = invs.find(i => i.changeOrderId === co.id && i.status === 'Paid');
+      if (!inv) continue;
+      await applyCOToEstimate(jobId, co.id, { paidVia: inv.paymentMethod || inv.payMethod || 'Invoice', paidAt: inv.paidDate || new Date().toISOString().split('T')[0], paidMarkedBy: 'Invoice ' + (inv.number || '') });
+      logInvoiceActivity(jobId, 'co_paid', `Change order paid with invoice ${inv.number || ''} — ${co.title || ''}: $${Math.abs(Number(co.amount) || 0).toLocaleString()}`);
+    }
+  } catch (e) { console.warn('CO catch-up:', e.message); }
+  finally { _coCatchUpBusy[jobId] = false; }
 }
 
 const CO_STATUS_COLORS = {
@@ -8598,7 +8620,7 @@ function renderCOList() {
       actions += `<button class="btn btn-green" style="padding:4px 10px;font-size:.76rem" onclick="markCOPaid('${co.id}')">💵 Mark Paid</button>`;
     }
     if (status === 'Invoiced') {
-      actions += `<span class="small muted" style="align-self:center">Waiting on payment — tap Mark Paid once QuickBooks shows it paid.</span>`;
+      actions += `<span class="small muted" style="align-self:center">Waiting on payment — marks Paid on its own when its invoice is paid.</span>`;
     }
     if (status === 'Paid') {
       actions += `<span class="small" style="align-self:center;color:#1dbb87;font-weight:700">✓ Paid${co.paidVia ? ' (' + esc(co.paidVia) + (co.paidAt ? ', ' + esc(co.paidAt) : '') + ')' : ''} · applied to estimate &amp; punch list</span>`;
@@ -9072,7 +9094,8 @@ async function markCOPaid(coId) {
   if (!isOwnerOrAdmin()) { alert('Only Owner/PM can mark a change order paid.'); return; }
   const co = conCOs.find(c => c.id === coId); if (!co) return;
   const amt = Number(co.amount || 0);
-  const how = prompt(`Mark "${co.title || 'Change order'}" (${amt < 0 ? 'credit ' : ''}$${Math.abs(amt).toLocaleString()}) as PAID?\n\nHow was it paid? (e.g. Stripe, check #1234, cash)`, 'Stripe');
+  const xeroNote = (typeof xeroReady === 'function' && xeroReady()) ? '\n\nHeads up: marking it paid here does NOT put it in Xero. To bill it through Xero, use 🧾 Create Invoice instead and email that invoice.' : '';
+  const how = prompt(`Mark "${co.title || 'Change order'}" (${amt < 0 ? 'credit ' : ''}$${Math.abs(amt).toLocaleString()}) as PAID?${xeroNote}\n\nHow was it paid? (e.g. Stripe, check #1234, cash)`, 'Stripe');
   if (how === null) return;
   try {
     await applyCOToEstimate(conCurrentJobId, coId, {
