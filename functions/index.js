@@ -1668,8 +1668,10 @@ const XERO_ACCOUNTS = [
 ];
 
 function getXeroConfig() {
-  const clientId = process.env.XERO_CLIENT_ID;
-  const clientSecret = process.env.XERO_CLIENT_SECRET;
+  // Trim stray spaces/newlines/quotes picked up when pasting into Secret Manager.
+  const clean = v => String(v || '').trim().replace(/^["']|["']$/g, '').trim();
+  const clientId = clean(process.env.XERO_CLIENT_ID);
+  const clientSecret = clean(process.env.XERO_CLIENT_SECRET);
   if (!clientId || !clientSecret) return null;
   return { clientId, clientSecret, redirectUri: XERO_REDIRECT_URI };
 }
