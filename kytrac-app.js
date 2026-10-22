@@ -2892,7 +2892,7 @@ function renderJobReports(jobId) {
   const pct = v => (v||0).toFixed(1) + '%';
 
   const contract = getJobValue(job);
-  const approvedCO = (Array.isArray(conCOs)?conCOs:[]).filter(c=>c.status==='Approved').reduce((s,c)=>s+Number(c.amount||0),0);
+  const approvedCO = (Array.isArray(conCOs)?conCOs:[]).filter(c=>['Customer Approved','Invoiced','Paid'].includes(normalizeCOStatus(c.status))).reduce((s,c)=>s+Number(c.amount||0),0);
   const contractTotal = contract + approvedCO;
   const estCost = job.estCost || 0;
   const actualCost = job.actualCost || 0;
@@ -6966,14 +6966,10 @@ function renderFinancialsHub(jobId) {
   // Subcontractor payments (1099 flat-rate job pay)
   fhLoadJobSubPayments(jobId, () => { fhRenderSubPayments(); fhRenderTotals(job); });
 
-  // MARGIN_CALC_V2: full Job Margin Calculator inline
-  renderJobMarginPanel(jobId);
-
-  // Owner-only COO budget breakdown
-  renderCOOBudgetBreakdown();
-  renderLaborBudget();
-
-  fhRenderEva();
+  // JOB_SHEET_V1 (10/22/26): the margin calculator, COO budget breakdown,
+  // labor budget and Estimate-vs-Actual panels were removed from this tab --
+  // they ran older formulas and disagreed with the header bar. The one
+  // margin view is now Owner Portal → Job Margin Sheet.
 }
 
 // Fresh from Firestore, not the estGroups global — that's only
@@ -7087,7 +7083,6 @@ function fhRenderInvoices() {
       <div class="finhub-line-amt">${fhMoney(inv.total)}</div>
       <div class="finhub-line-bal" style="color:${bal>0?'#fde68a':'#a3f2d2'}">${bal>0?fhMoney(bal)+' due':'paid'}</div>
       <div>${fhBadge(status,color)}</div>
-      ${canSend && inv.total > 0 ? `<div style="flex-basis:100%" onclick="event.stopPropagation()"><button class="btn" style="padding:3px 8px;font-size:.7rem;margin-top:4px" onclick="sendInvoiceSplitToPlannerXD('${inv.id}')">📤 Send split to PlannerXD (private)</button></div>` : ''}
     </div>`;
   }).join('');
 }
@@ -7755,7 +7750,7 @@ function fhRenderEva() {
 
 function fhRenderTotals(job) {
   const contract = getJobValue(job);
-  const approvedCO = (Array.isArray(conCOs)?conCOs:[]).filter(c=>c.status==='Approved').reduce((s,c)=>s+Number(c.amount||0),0);
+  const approvedCO = (Array.isArray(conCOs)?conCOs:[]).filter(c=>['Customer Approved','Invoiced','Paid'].includes(normalizeCOStatus(c.status))).reduce((s,c)=>s+Number(c.amount||0),0);
   const contractTotal = contract + approvedCO;
   const invoiced = _fhInvoices.reduce((s,i)=>s+(i.total||0),0);
   const collected = _fhInvoices.reduce((s,i)=>s+(i.amtPaid||0),0);
@@ -14616,7 +14611,13 @@ function populateSettingsForm() {
   setVal('settOtThreshold', p.otWeeklyThreshold !== undefined ? p.otWeeklyThreshold : 40);
   setVal('settOtMultiplier', p.otMultiplier !== undefined ? p.otMultiplier : 1.5);
   setVal('settWeekStart', p.weekStartDay || 'mon');
-  setVal('settPlannerxdOwnerUid', p.ownerUid);
+  // PLANNERXD_REMOVED_V1 (Travis 10/22/26): PlannerXD is removed from
+  // JobsMetrix. Every PlannerXD push (pulse sync, signed-proposal / sub-pay /
+  // SLA notifications) only runs when settings/company.ownerUid is set, so
+  // clearing it once turns all of them off.
+  if (p.ownerUid && currentUserRole === 'Owner' && !window._viewAsRole) {
+    coll('settings').doc('company').set({ ownerUid: '' }, { merge: true }).then(() => { p.ownerUid = ''; _pulseSyncOwnerUid = null; _pulseSyncOwnerUidPromise = null; }).catch(() => {});
+  }
 
   // Logo
   const img = document.getElementById('logoPreviewImg');
@@ -15900,9 +15901,6 @@ function renderTodos() {
         </div>
       </div>
       <div style="display:flex;gap:6px;flex-shrink:0;align-items:center">
-        ${todo.plannerxdPushedAt
-          ? `<button onclick="pushTodoToPlannerXD('${todo.id}')" title="Already pushed — click to send again" style="background:none;border:1px solid rgba(29,187,135,.3);border-radius:6px;color:#1dbb87;cursor:pointer;font-size:.68rem;padding:3px 8px;white-space:nowrap">✓ PlannerXD (resend)</button>`
-          : `<button onclick="pushTodoToPlannerXD('${todo.id}')" title="Manually add this to PlannerXD's Do First list" style="background:none;border:1px solid rgba(110,145,210,.25);border-radius:6px;color:var(--muted);cursor:pointer;font-size:.72rem;padding:3px 8px;white-space:nowrap">📤 To PlannerXD</button>`}
         <button onclick="openEditTodo('${todo.id}')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.9rem;padding:2px 4px">✏️</button>
         <button onclick="deleteTodo('${todo.id}')" style="background:none;border:none;color:rgba(239,83,80,.4);cursor:pointer;font-size:.9rem;padding:2px 4px">🗑</button>
       </div>
@@ -26108,7 +26106,7 @@ async function opMaybeImportOldEos() {
 }
 
 const OP_TABS = [
-  ['dashboard', '🏠 Dashboard'], ['pipeline', '🏗 Pipeline vs Backlog'], ['l10', '⏱ Level 10'], ['scorecard', '📊 Scorecard'], ['rocks', '🪨 Rocks'],
+  ['dashboard', '🏠 Dashboard'], ['sheet', '📒 Job Margin Sheet'], ['pipeline', '🏗 Pipeline vs Backlog'], ['l10', '⏱ Level 10'], ['scorecard', '📊 Scorecard'], ['rocks', '🪨 Rocks'],
   ['issues', '⚠️ Issues'], ['todos', '✅ To-Dos'], ['vto', '🧭 V/TO'], ['chart', '👥 Accountability'],
   ['quarterly', '📅 Quarterly'], ['financials', '💰 Financials'],
 ];
@@ -26132,7 +26130,7 @@ function renderOwnerPortalBody() {
   if (fin) fin.style.display = opTab === 'financials' ? 'block' : 'none';
   if (opTab === 'financials') { body.innerHTML = ''; return opRenderFinancials(); }
   if (opTab === 'l10' && _opL10 && document.getElementById('opL10Live')) return opRenderL10(); // keep live meeting in place
-  const r = { dashboard: opRenderDashboard, pipeline: opRenderPipeline, l10: opRenderL10, scorecard: opRenderScorecard, rocks: opRenderRocks, issues: opRenderIssues, todos: opRenderTodos, vto: opRenderVto, chart: opRenderChart, quarterly: opRenderQuarterly }[opTab];
+  const r = { dashboard: opRenderDashboard, sheet: opRenderJobSheet, pipeline: opRenderPipeline, l10: opRenderL10, scorecard: opRenderScorecard, rocks: opRenderRocks, issues: opRenderIssues, todos: opRenderTodos, vto: opRenderVto, chart: opRenderChart, quarterly: opRenderQuarterly }[opTab];
   if (r) r(body);
 }
 
@@ -26513,6 +26511,259 @@ async function opRollRocks(q, nq) {
 
 // ── FINANCIALS ──
 let _opJobPL = null, _opJobPLLoading = false;
+// ════════════════════════════════════════════════════════════════════
+// JOB_SHEET_V1 (Travis 10/22/26): Owner Portal → Job Margin Sheet.
+// One spreadsheet-style page per job that replaces the Financials-tab
+// margin calculator / COO budget / labor budget panels. Every number comes
+// from getJobMarginBoth() -- the SAME function behind the job header bar,
+// the Dashboard and Live P/L -- so the screens can't disagree.
+//   Plan   = the signed estimate (+ approved change orders), locked formula
+//   Actual = real numbers: receipts + materials purchases + vendor bills,
+//            agreed sub amounts, real Stripe fees
+//   Over/Under = Actual − Plan, and who absorbs it (Retained Earnings vs
+//            operating Checking).
+// Payments to date and a draw schedule built from the job's own invoices
+// sit underneath, and the whole sheet downloads as an .xlsx file.
+// ════════════════════════════════════════════════════════════════════
+let _jsJobId = null, _jsData = null, _jsSeq = 0;
+function openJobSheet(jobId) {
+  _jsJobId = jobId || _jsJobId;
+  opTab = 'sheet';
+  ktNav('owner', document.querySelector('.kt-nav-item[onclick*="\'owner\'"]'));
+}
+window.openJobSheet = openJobSheet;
+function jsJobChoices() {
+  const order = s => { const i = CON_JOB_STATUSES.indexOf(s); return i < 0 ? 99 : i; };
+  return conJobs.filter(j => !j.archived && j.status !== 'Closed Lost' && order(j.status) >= CON_JOB_STATUSES.indexOf('Awaiting Deposit'))
+    .sort((a, b) => String(b.jobNumber || '').localeCompare(String(a.jobNumber || '')));
+}
+function opRenderJobSheet(body) {
+  const jobs = jsJobChoices();
+  if (!_jsJobId || !conJobs.find(j => j.id === _jsJobId)) _jsJobId = (jobs[0] || {}).id || null;
+  body.innerHTML = `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+      <select onchange="_jsJobId=this.value;opRenderJobSheet(document.getElementById('opBody'))" style="width:auto;max-width:100%;font-weight:700">
+        ${jobs.map(j => `<option value="${j.id}" ${j.id === _jsJobId ? 'selected' : ''}>${esc(jobNumSt(j))} — ${esc(j.status || '')}</option>`).join('')}
+      </select>
+      <button class="btn" onclick="opRenderJobSheet(document.getElementById('opBody'))">↻ Refresh</button>
+      <button class="btn-amber" onclick="jsDownloadXlsx()">⬇ Download Excel</button>
+      ${_jsJobId ? `<button class="btn" onclick="openJobDetail('${_jsJobId}','financials')">Open job</button>` : ''}
+    </div><div id="jsSheet"><div class="small muted" style="padding:16px">${_jsJobId ? 'Loading real numbers…' : 'No signed jobs yet.'}</div></div>`;
+  if (_jsJobId) jsLoad(_jsJobId);
+}
+async function jsLoad(jobId) {
+  const seq = ++_jsSeq;
+  try {
+    const ref = coll('jobs').doc(jobId);
+    const [b, invS, payS, expS, rcS, hrs] = await Promise.all([
+      getJobMarginBoth(jobId, true),
+      ref.collection('invoices').get().catch(() => null),
+      ref.collection('subcontractorPayments').get().catch(() => null),
+      ref.collection('expenses').get().catch(() => null),
+      ref.collection('receipts').get().catch(() => null),
+      (typeof computeJobLaborHours === 'function' ? computeJobLaborHours(jobId).catch(() => null) : Promise.resolve(null)),
+    ]);
+    if (seq !== _jsSeq) return;
+    const el = document.getElementById('jsSheet');
+    if (!el) return;
+    if (!b) { el.innerHTML = '<div class="small muted" style="padding:16px">This job has no estimate lines yet.</div>'; return; }
+    const list = s => { const a = []; if (s) s.forEach(d => a.push({ id: d.id, ...d.data() })); return a; };
+    const invs = list(invS).sort((x, y) => String(x.date || '').localeCompare(String(y.date || '')));
+    const pays = list(payS).filter(p => !/cancel|void/i.test(p.status || '')).sort((x, y) => String(x.date || '').localeCompare(String(y.date || '')));
+    const exps = list(expS);
+    const logged = new Set(exps.map(x => x.receiptId).filter(Boolean));
+    const rcpts = list(rcS).filter(r => !logged.has(r.id) && !r.expenseId);
+    _jsData = { b, invs, pays, exps, rcpts, hrs };
+    el.innerHTML = jsHtml(_jsData);
+  } catch (e) {
+    const el = document.getElementById('jsSheet');
+    if (el && seq === _jsSeq) el.innerHTML = `<div class="small" style="padding:16px;color:#ef5350">Could not load this job: ${esc(e.message)}</div>`;
+  }
+}
+
+// Shared row model (screen + Excel). kind: sec | in | row | total | note
+function jsModel(d) {
+  const { b, invs, pays, exps, rcpts, hrs } = d;
+  const E = b.tmE, A = b.tmA, info = b.info || {}, job = b.job, R = JTXD_LOCKED_RATES;
+  const n = v => Number(v) || 0;
+  const pct = v => (Math.round(v * 1000) / 10) + '%';
+  const keepPlan = E.retainedEarnings + E.checking, keepAct = A.retainedEarnings + A.checking;
+  const verdict = {
+    over: keepAct < keepPlan - 1, delta: keepAct - keepPlan,
+    reDelta: A.retainedEarnings - E.retainedEarnings, chkDelta: A.checking - E.checking,
+    lines: [
+      ['Materials cost', A.materialsCostReal - E.materialsCostReal],
+      ['Subcontractor / labor cost', A.realLaborCost - E.realLaborCost],
+      ['Card (Stripe) fees', (A.processingFees || 0) - (E.processingFees || 0)],
+      ['Price (change orders / signed price)', -(A.revenue - E.revenue)],
+    ].filter(l => Math.abs(l[1]) >= 1),
+  };
+  const W = [ // [label, plan, actual, better('up'|'down'|''), kind, note]
+    ['THE JOB', null, null, '', 'sec'],
+    ['Total job price (signed + approved change orders)', E.revenue, A.revenue, 'up', 'total'],
+    ['Materials billed to customer (incl. markup)', E.materialsPrice, A.materialsPrice, 'up', 'row'],
+    ['Labor billed to customer', E.laborPrice, A.laborPrice, 'up', 'row'],
+    ['Check: materials + labor − price (should be $0)', E.materialsPrice + E.laborPrice - E.revenue, A.materialsPrice + A.laborPrice - A.revenue, '', 'row'],
+    ['MARGIN WATERFALL (locked formula)', null, null, '', 'sec'],
+    ['Subcontractor pay (real cost)', E.realLaborCost, A.realLaborCost, 'down', 'row', 'Plan: 60% of labor billed · Actual: agreed sub amounts' + (info.hourlyLabor ? ' + hourly labor' : '')],
+    ['Jason sales commission (' + pct(R.jasonCommissionPct) + ' of labor)', E.jasonCommission, A.jasonCommission, 'down', 'row'],
+    ['Card fee on labor (Stripe ' + pct(R.processingFeePct) + ')', E.feeLaborShare || 0, A.feeLaborShare || 0, 'down', 'row', 'Actual: real Stripe fees taken + 2.9% of what is still unpaid'],
+    ['JTXD Pool (labor − sub pay − Jason sales − card fee)', E.jtxdActual, A.jtxdActual, 'up', 'total'],
+    ['Overhead (' + pct(R.overhead) + ' of Pool)', E.overhead, A.overhead, '', 'row'],
+    ['   paid from Overhead: Jason superintendent (' + pct(R.superintendentPct) + ' of labor)', E.superintendentPay, A.superintendentPay, '', 'row'],
+    ['   paid from Overhead: Jason consultant (' + pct(R.consultantPct) + ' of labor)', E.consultantPay, A.consultantPay, '', 'row'],
+    ['   Overhead left for company bills', E.overheadNet, A.overheadNet, 'up', 'row'],
+    ['Marketing (' + pct(R.marketing) + ' of Pool)', E.marketing, A.marketing, '', 'row'],
+    ['Flex (' + pct(R.flex) + ' of remainder)', E.flex, A.flex, '', 'row'],
+    ['Taxes (' + pct(R.taxes) + ' of remainder after Flex)', E.taxes, A.taxes, '', 'row'],
+    ['Retained Earnings', E.retainedEarnings, A.retainedEarnings, 'up', 'total'],
+    ['Retained Earnings % of price', 'P:' + E.reOfRevenuePct, 'P:' + A.reOfRevenuePct, 'up', 'row'],
+    ['GO / NO-GO (10% floor)', 'T:' + E.goNoGo, 'T:' + A.goNoGo, 'up', 'row'],
+    ['Travis pay (' + pct(R.ownerPayPct) + ' of Retained Earnings)', E.travisDraw, A.travisDraw, '', 'row'],
+    ['   W-2 salary (' + pct(R.ownerW2Share) + ')', E.ownerW2, A.ownerW2, '', 'row'],
+    ['   Owner draw (' + pct(1 - R.ownerW2Share) + ')', E.ownerDraw, A.ownerDraw, '', 'row'],
+    ['Employer payroll tax (' + pct(R.employerPayrollTaxPct) + ' of W-2)', E.employerPayrollTax, A.employerPayrollTax, '', 'row'],
+    ['To Savings (Retained Earnings − Travis pay − employer tax)', E.savings, A.savings, 'up', 'total'],
+    ['MATERIALS AND CHECKING', null, null, '', 'sec'],
+    ['Materials real cost', E.materialsCostReal, A.materialsCostReal, 'down', 'row', 'Actual: receipts + materials purchases + vendor bills'],
+    ['Materials markup (billed − real cost)', E.materialsMarkup, A.materialsMarkup, 'up', 'row'],
+    ['Card fee on materials (Stripe)', E.feeMaterialsShare || 0, A.feeMaterialsShare || 0, 'down', 'row'],
+    ['To Checking (markup + Flex − card fee on materials)', E.checking, A.checking, 'up', 'total'],
+    ['Jason total pay (sales + superintendent + consultant)', E.jasonTotal, A.jasonTotal, '', 'row'],
+    ['Every dollar accounted for (should be $0)', jsBucketsCheck(E), jsBucketsCheck(A), '', 'row'],
+  ];
+  const H = [
+    ['Billed hours (labor ÷ $300)', E.billedHours],
+    ['Real hours at ' + pct(R.laborEfficiency) + ' efficiency', E.efficiencyHours],
+    ['Days as billed (÷ 8)', E.billedDays],
+    ['Days at ' + pct(R.laborEfficiency) + ' (÷ 8)', E.efficiencyDays],
+    ['Weeks at ' + pct(R.laborEfficiency) + ' (5-day weeks)', E.efficiencyDays / 5],
+  ];
+  if (hrs && hrs.actHours) H.push(['Person-hours logged so far', hrs.actHours], ['Person-hour budget (crew of ' + R.crewSize + ')', hrs.estHours]);
+
+  // Payments to date
+  const collected = invs.reduce((s, i) => s + n(i.amtPaid), 0);
+  const invoiced = invs.reduce((s, i) => s + n(i.total), 0);
+  const fees = invs.reduce((s, i) => s + n(i.stripeFeeTotal), 0);
+  const subPaid = pays.filter(p => p.status === 'Paid').reduce((s, p) => s + n(p.amount), 0);
+  const subEntered = pays.reduce((s, p) => s + n(p.amount), 0);
+  const byVendor = {};
+  exps.forEach(x => { const k = (x.purchasedFrom || x.vendor || 'Other').trim(); byVendor[k] = (byVendor[k] || 0) + n(x.amount); });
+  rcpts.forEach(r => { const k = ((r.vendor || r.store || 'Receipt') + ' (receipt, not logged)').trim(); byVendor[k] = (byVendor[k] || 0) + n(r.amount); });
+  const flagged = exps.filter(x => /food|lunch|meal|balance adjust|catch.?up|transfer/i.test([x.desc, x.purchasedFrom, x.vendor].join(' ')))
+    .map(x => ({ what: x.purchasedFrom || x.vendor || '', desc: x.desc || '', amount: n(x.amount) }));
+  const matOut = exps.reduce((s, x) => s + n(x.amount), 0) + rcpts.reduce((s, r) => s + n(r.amount), 0);
+  const billsPaid = n(info.billsPaid);
+  const outTotal = matOut + billsPaid + subEntered + n(info.hourlyLabor);
+  const pay = { collected, invoiced, fees, subPaid, subEntered, subCommitted: n(info.subCommitted), byVendor, flagged, matOut, billsPaid, hourly: n(info.hourlyLabor), outTotal, cash: collected - fees - outTotal };
+
+  // Draw schedule: each customer invoice is a draw; dollars split by the
+  // Actual buckets in proportion to the draw's share of the price.
+  const buckets = buildJobMarginBuckets(A);
+  const draws = invs.filter(i => n(i.total) > 0).map((i, k) => ({ label: (i.type || 'Invoice') + ' ' + (i.number || k + 1), date: i.date || '', amount: n(i.total), paid: n(i.amtPaid), share: A.revenue ? n(i.total) / A.revenue : 0 }));
+  const drawn = draws.reduce((s, x) => s + x.amount, 0);
+  if (A.revenue - drawn >= 1) draws.push({ label: 'Not invoiced yet', date: '', amount: A.revenue - drawn, paid: 0, share: (A.revenue - drawn) / A.revenue, pending: true });
+  return { job, E, A, info, verdict, W, H, pay, draws, buckets, invs, pays };
+}
+function jsBucketsCheck(tm) { return buildJobMarginBuckets(tm).reduce((s, x) => s + x[2], 0) - tm.revenue; }
+
+function jsHtml(d) {
+  const m = jsModel(d);
+  const money = v => (v < -0.5 ? '−$' : '$') + Math.abs(Math.round(v)).toLocaleString();
+  const cell = (v) => typeof v === 'string' && v.startsWith('P:') ? (Math.round(Number(v.slice(2)) * 1000) / 10) + '%' : typeof v === 'string' && v.startsWith('T:') ? v.slice(2) : (Math.abs(v) < 0.5 ? '–' : money(v));
+  const G = OP_GREEN, Rd = OP_RED, line = 'rgba(128,128,128,.28)';
+  const td = `border:1px solid ${line};padding:5px 8px`;
+  const num = `text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums`;
+  const v = m.verdict;
+  const banner = `<div style="${OP_CARD};border:2px solid ${v.over ? Rd : G};margin-bottom:14px">
+    <div style="font-size:1.15rem;font-weight:900;color:${v.over ? Rd : G}">${v.over ? '🔴 OVER budget' : '🟢 On or under budget'} — ${money(Math.abs(v.delta))} ${v.over ? 'less' : 'more'} than planned stays with the company</div>
+    <div class="small muted" style="margin:4px 0 8px">Plan vs actual, on the same locked formula. Retained Earnings ${money(m.E.retainedEarnings)} → ${money(m.A.retainedEarnings)} (${v.reDelta < 0 ? '−' : '+'}${money(Math.abs(v.reDelta))}) · Operating Checking ${money(m.E.checking)} → ${money(m.A.checking)} (${v.chkDelta < 0 ? '−' : '+'}${money(Math.abs(v.chkDelta))}). Material overruns come out of Checking (the markup float); sub overruns come out of the Pool, so they hit Retained Earnings.</div>
+    ${v.lines.map(([l, x]) => `<div style="display:flex;justify-content:space-between;gap:10px;max-width:560px;font-size:.88rem"><span>${esc(l)}</span><b style="color:${x > 0 ? Rd : G}">${x > 0 ? money(x) + ' over' : money(-x) + ' under'}</b></div>`).join('')}
+  </div>`;
+  const notes = (m.info.notes || []).map(t => `<div>• ${esc(t)}</div>`).join('');
+  const flag = m.pay.flagged.length ? `<div style="${OP_CARD};border-color:${OP_AMBER};margin-bottom:14px;font-size:.84rem"><b style="color:${OP_AMBER}">⚠ Check these — they're counted as materials but may not be:</b>${m.pay.flagged.map(f => `<div>• ${esc(f.what)}${f.desc ? ' — ' + esc(f.desc) : ''}: <b>${money(f.amount)}</b></div>`).join('')}<div class="small muted" style="margin-top:4px">A catch-up or balance-adjustment entry should only stay if those purchases aren't ALSO entered one by one. Food and meals belong in overhead, not job materials. Fix them on the job's Financials tab → Materials Purchases and this sheet updates.</div></div>` : '';
+  const wRows = m.W.map(r => {
+    const [label, p, a, better, kind, note] = r;
+    if (kind === 'sec') return `<tr><td colspan="5" style="${td};background:rgba(217,119,6,.12);font-weight:900;font-size:.74rem;letter-spacing:.06em">${esc(label)}</td></tr>`;
+    let diff = '', dc = '';
+    if (typeof p === 'number' && typeof a === 'number') {
+      const dlt = a - p;
+      if (Math.abs(dlt) >= 1) { diff = (dlt > 0 ? '+' : '−') + money(Math.abs(dlt)); if (better) dc = (better === 'up' ? dlt > 0 : dlt < 0) ? G : Rd; }
+    }
+    const goC = typeof a === 'string' && a.startsWith('T:') ? (a === 'T:GO' ? G : Rd) : '';
+    const w = kind === 'total' ? 'font-weight:800;' : '';
+    return `<tr><td style="${td};${w}">${esc(label)}${note ? `<div class="small muted">${esc(note)}</div>` : ''}</td>
+      <td style="${td};${num};color:var(--muted);${w}">${cell(p)}</td>
+      <td style="${td};${num};font-weight:800;${goC ? 'color:' + goC : ''}">${cell(a)}</td>
+      <td style="${td};${num};font-weight:700;color:${dc || 'var(--muted)'}">${diff}</td></tr>`;
+  }).join('');
+  const hRows = m.H.map(([l, x]) => `<tr><td style="${td}">${esc(l)}</td><td style="${td};${num};font-weight:700">${(Math.round(x * 10) / 10).toLocaleString()}</td></tr>`).join('');
+  const P = m.pay;
+  const invRows = m.invs.map(i => `<tr><td style="${td}">${esc(i.number || '')}</td><td style="${td}">${esc(i.type || 'Invoice')}</td><td style="${td}">${esc(i.date || '')}</td><td style="${td};${num}">${money(Number(i.total) || 0)}</td><td style="${td};${num};color:${G}">${money(Number(i.amtPaid) || 0)}</td><td style="${td};${num}">${money((Number(i.total) || 0) - (Number(i.amtPaid) || 0))}</td><td style="${td}">${esc(i.status || '')}</td></tr>`).join('');
+  const payRows = m.pays.map(p => `<tr><td style="${td}">${esc(p.date || '')}</td><td style="${td}">${esc(p.subName || '')}</td><td style="${td}">${esc(p.desc || '')}</td><td style="${td};${num}">${money(Number(p.amount) || 0)}</td><td style="${td};color:${p.status === 'Paid' ? G : OP_AMBER}">${esc(p.status || '')}</td></tr>`).join('');
+  const vendRows = Object.entries(P.byVendor).sort((a, b) => b[1] - a[1]).map(([k, x]) => `<tr><td style="${td}">${esc(k)}</td><td style="${td};${num}">${money(x)}</td></tr>`).join('');
+  const bk = m.buckets;
+  const drawHead = ['Draw', 'Date', 'Draw %', 'Draw $', 'Collected', ...bk.map(x => x[0])];
+  const drawRows = m.draws.map(dr => `<tr style="${dr.pending ? 'color:var(--muted)' : ''}"><td style="${td};white-space:nowrap">${esc(dr.label)}</td><td style="${td}">${esc(dr.date)}</td><td style="${td};${num}">${(Math.round(dr.share * 1000) / 10)}%</td><td style="${td};${num};font-weight:800">${money(dr.amount)}</td><td style="${td};${num};color:${G}">${dr.pending ? '' : money(dr.paid)}</td>${bk.map(x => `<td style="${td};${num}">${money(x[2] * dr.share)}</td>`).join('')}</tr>`).join('');
+  const drawTot = `<tr style="font-weight:900"><td style="${td}">TOTALS</td><td style="${td}"></td><td style="${td};${num}">${Math.round(m.draws.reduce((s, x) => s + x.share, 0) * 1000) / 10}%</td><td style="${td};${num}">${money(m.A.revenue)}</td><td style="${td};${num};color:${G}">${money(P.collected)}</td>${bk.map(x => `<td style="${td};${num}">${money(x[2])}</td>`).join('')}</tr>`;
+  const sec = t => `<div style="font-weight:900;font-size:1rem;margin:18px 0 8px">${t}</div>`;
+  const tbl = (head, rows, extra) => `<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-size:.84rem${extra || ''}"><tr>${head.map(h => `<th style="${td};text-align:left;background:rgba(128,128,128,.12);white-space:nowrap">${h}</th>`).join('')}</tr>${rows}</table></div>`;
+  return `
+  <div style="font-weight:900;font-size:1.1rem">JOB MARGIN SHEET — ${esc(jobNumSt(m.job))}</div>
+  <div class="small muted" style="margin-bottom:12px">${esc(m.job.address || '')} · ${esc(m.job.status || '')} · Same numbers as the job's header bar, Dashboard and Live P/L.</div>
+  ${banner}${flag}
+  ${notes ? `<div style="font-size:.8rem;color:var(--muted);line-height:1.5;margin-bottom:10px">${notes}</div>` : ''}
+  <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+    <div style="flex:3 1 520px;min-width:0">${tbl(['', 'Plan (estimate)', 'Actual', 'Over / under'], wRows)}</div>
+    <div style="flex:1 1 240px;min-width:0">${tbl(['Hours & days', ''], hRows)}</div>
+  </div>
+  ${sec('💵 Payments to date')}
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+    ${[['Collected from customer', P.collected, G], ['Stripe fees taken', -P.fees, ''], ['Paid out (materials, bills, subs, hourly)', -P.outTotal, ''], ['Cash from this job right now', P.cash, P.cash >= 0 ? G : Rd], ['Still to collect', m.A.revenue - P.collected, OP_AMBER], ['Subs still owed (agreed − entered)', Math.max(0, P.subCommitted - P.subEntered), OP_AMBER]]
+      .map(([l, x, c]) => `<div style="${OP_CARD};flex:1 1 160px;padding:10px 12px"><div style="font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)">${l}</div><div style="font-size:1.2rem;font-weight:900;${c ? 'color:' + c : ''}">${money(x)}</div></div>`).join('')}
+  </div>
+  ${tbl(['Invoice', 'Type', 'Date', 'Amount', 'Paid', 'Balance', 'Status'], invRows || `<tr><td colspan="7" style="${td}" class="muted">No invoices yet</td></tr>`)}
+  <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:12px">
+    <div style="flex:2 1 420px;min-width:0"><div style="font-weight:800;margin-bottom:6px">Subcontractor payments — ${money(P.subEntered)} entered of ${money(P.subCommitted)} agreed · ${money(P.subPaid)} marked Paid</div>${tbl(['Date', 'Sub', 'For', 'Amount', 'Status'], payRows || `<tr><td colspan="5" style="${td}">None entered</td></tr>`)}</div>
+    <div style="flex:1 1 260px;min-width:0"><div style="font-weight:800;margin-bottom:6px">Materials by vendor — ${money(P.matOut)}${P.billsPaid ? ' + bills ' + money(P.billsPaid) : ''}</div>${tbl(['Vendor', 'Spent'], vendRows || `<tr><td colspan="2" style="${td}">None yet</td></tr>`)}</div>
+  </div>
+  ${sec('📅 Draw schedule (from this job\'s invoices) — where each draw\'s dollars go, Actual')}
+  ${tbl(drawHead, drawRows + drawTot, ';font-size:.78rem')}
+  <div class="small muted" style="margin-top:6px">Each draw is split in the same proportions as the Actual waterfall. Columns add up to the draw.</div>`;
+}
+
+// ── Excel download (SheetJS, loaded on first use) ──
+function jsEnsureXlsx() {
+  if (window.XLSX) return Promise.resolve();
+  return new Promise((ok, bad) => { const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; s.onload = ok; s.onerror = () => bad(new Error('Could not load the Excel library')); document.head.appendChild(s); });
+}
+async function jsDownloadXlsx() {
+  if (!_jsData) { alert('Pick a job and let it load first.'); return; }
+  try { await jsEnsureXlsx(); } catch (e) { alert(e.message); return; }
+  const m = jsModel(_jsData);
+  const r = v => typeof v === 'number' ? Math.round(v * 100) / 100 : typeof v === 'string' && v.startsWith('P:') ? Math.round(Number(v.slice(2)) * 1000) / 10 + '%' : typeof v === 'string' && v.startsWith('T:') ? v.slice(2) : (v == null ? '' : v);
+  const rows = [
+    ['JOB MARGIN SHEET — ' + jobNumSt(m.job)], [m.job.address || ''], [],
+    [m.verdict.over ? 'OVER budget' : 'On or under budget', r(m.verdict.delta), 'Retained Earnings + Checking, actual vs plan'],
+    ...m.verdict.lines.map(([l, x]) => [l, r(x), x > 0 ? 'over' : 'under']), [],
+    ['', 'Plan (estimate)', 'Actual', 'Over / under'],
+    ...m.W.map(([l, p, a, , kind]) => kind === 'sec' ? [l] : [l.trim(), r(p), r(a), typeof p === 'number' && typeof a === 'number' ? r(a - p) : '']),
+    [], ['HOURS & DAYS'], ...m.H.map(([l, x]) => [l, Math.round(x * 10) / 10]),
+    [], ['PAYMENTS TO DATE'], ['Collected', r(m.pay.collected)], ['Stripe fees taken', r(m.pay.fees)], ['Paid out', r(m.pay.outTotal)], ['Cash from this job', r(m.pay.cash)],
+    [], ['Invoice', 'Type', 'Date', 'Amount', 'Paid', 'Balance', 'Status'],
+    ...m.invs.map(i => [i.number || '', i.type || '', i.date || '', r(Number(i.total) || 0), r(Number(i.amtPaid) || 0), r((Number(i.total) || 0) - (Number(i.amtPaid) || 0)), i.status || '']),
+    [], ['Sub payment date', 'Sub', 'For', 'Amount', 'Status'], ...m.pays.map(p => [p.date || '', p.subName || '', p.desc || '', r(Number(p.amount) || 0), p.status || '']),
+    [], ['Materials vendor', 'Spent'], ...Object.entries(m.pay.byVendor).map(([k, x]) => [k, r(x)]),
+    [], ['DRAW SCHEDULE', 'Date', 'Draw %', 'Draw $', 'Collected', ...m.buckets.map(x => x[0])],
+    ...m.draws.map(dr => [dr.label, dr.date, Math.round(dr.share * 1000) / 10 + '%', r(dr.amount), dr.pending ? '' : r(dr.paid), ...m.buckets.map(x => r(x[2] * dr.share))]),
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{ wch: 52 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 14 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, String(m.job.jobNumber || 'Job').slice(0, 31));
+  XLSX.writeFile(wb, `Job Margin Sheet - ${(m.job.jobNumber || 'job')} ${jobStreet(m.job)}.xlsx`.replace(/[\\/:*?"<>|]/g, ''));
+}
+window.jsDownloadXlsx = jsDownloadXlsx;
+
 function opRenderFinancials() {
   const host = document.getElementById('opFinHost');
   if (!host) return;
