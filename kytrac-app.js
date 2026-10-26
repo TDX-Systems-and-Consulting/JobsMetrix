@@ -26752,6 +26752,9 @@ let _jsJobId = null, _jsData = null, _jsSeq = 0;
 function openJobSheet(jobId) {
   _jsJobId = jobId || _jsJobId;
   opTab = 'sheet';
+  // The job screen is a full-screen overlay; close it or the sheet opens
+  // hidden behind it and the button looks dead.
+  try { kClose('jobDetailModal'); } catch (e) {}
   ktNav('owner', document.querySelector('.kt-nav-item[onclick*="\'owner\'"]'));
 }
 window.openJobSheet = openJobSheet;
