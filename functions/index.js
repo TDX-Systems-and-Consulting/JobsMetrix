@@ -3063,10 +3063,14 @@ exports.sendMessageNotificationSms = functions.firestore
 // shares that phone number (a repeat customer), picks the most recently
 // updated one rather than guessing wrong or breaking -- flagged here so
 // it's a known, deliberate choice, not silently arbitrary.
-exports.plivoInboundSms = functions.https.onRequest(async (req, res) => {
+exports.plivoInboundSms = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCOUNT_KEY'] }).https.onRequest(async (req, res) => {
   const from = req.body.From || req.query.From;
   const text = req.body.Text || req.query.Text;
   if (!from || !text) { res.status(200).send('ignored'); return; }
+
+  // KYTLEAD_V2: a reply from a lead is logged on the lead and pauses its
+  // automatic follow-ups. Job matching below still runs as before.
+  try { await kl2InboundText(from, text); } catch (e) { console.error('kl2InboundText failed', e.message); }
 
   const db = admin.firestore();
   const companiesSnap = await db.collection('companies').get();
@@ -4570,8 +4574,8 @@ exports.kytleadMorningDigest = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCO
     const db = admin.firestore();
     const ct = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }));
     const today = `${ct.getFullYear()}-${String(ct.getMonth() + 1).padStart(2, '0')}-${String(ct.getDate()).padStart(2, '0')}`;
-    const OPEN = ['new', 'contacted', 'appt', 'estimating', 'sent', 'followup'];
-    const label = { new: 'New Lead', contacted: 'Contacted', appt: 'Appointment Set', estimating: 'Estimating', sent: 'Estimate Sent', followup: 'Follow-up' };
+    const OPEN = ['new', 'attempted', 'contacted', 'appt', 'walkthrough', 'estimating', 'sent', 'followup'];
+    const label = { new: 'New Lead', attempted: 'Contact Attempted', contacted: 'Contacted', appt: 'Appointment Set', walkthrough: 'Walkthrough Done', estimating: 'Estimating', sent: 'Proposal Sent', followup: 'Negotiation / Revisions' };
     const esc = v => String(v == null ? '' : v).replace(/[&<>"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
     const companies = await db.collection('companies').get();
     for (const co of companies.docs) {
@@ -4614,3 +4618,452 @@ exports.kytleadMorningDigest = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCO
     }
     return null;
   });
+
+// ============================================================================
+// KYTLEAD_V2 (Travis 10/27/26) — Jason's CRM requirements, Phase 1 core.
+// The five non-negotiables: every lead has an owner, every open opportunity
+// has a next action, every interaction is recorded, every pipeline stage can
+// trigger automation, every completed project stays eligible for outreach.
+//
+// Sequences ("cadences") live in settings/cadences { list: [...] } and are
+// edited in the app (Leads -> Sequences). A lead's place in a sequence is
+// lead.cadence = { id, name, step, startedAt, nextAt, status, stopReason }.
+// Steps are offsets from the start ("Day 4"), and each step is one of:
+//   email -- sent automatically through Gmail (reply-to = the lead's owner)
+//   sms   -- sent automatically when Plivo is set up; otherwise it becomes a
+//            one-tap "Send text" next step for the salesperson
+//   call / task -- becomes the lead's next step, due that day
+//   stage -- moves the lead (e.g. to Long-term nurture), which can start
+//            another sequence
+// Automatic messages only go out Mon-Sat during sending hours (Central). Never
+// Sundays.
+// ============================================================================
+const KL2_DEFAULT_CADENCES = [
+  {
+    id: 'sales-investor', name: 'New lead — Investor', trigger: 'lead_created', audience: 'investor', active: true,
+    steps: [
+      { value: 0, unit: 'days', action: 'sms', body: 'Hi {first_name}, this is {owner_first} with {company}. Got your request{at_address}. I\'ll call you shortly to talk numbers and timeline. Reply here anytime.' },
+      { value: 1, unit: 'days', action: 'call', body: 'Call {first_name}: scope, budget, timeline, set a walkthrough' },
+      { value: 2, unit: 'days', action: 'email', subject: 'Your rehab with {company}', body: 'Hi {first_name},\n\nThanks for reaching out about {address_or_project}. We work with investors every week, and we know the numbers have to work: a clear scope, a firm price, and a schedule that respects your holding costs.\n\nThe next step is a quick walkthrough so we can give you a real number, not a guess. What day works for you?\n\n{owner_name}\n{company}' },
+      { value: 4, unit: 'days', action: 'sms', body: 'Hi {first_name}, {owner_first} with {company} checking in. Still want a number on the rehab? Happy to walk it this week.' },
+      { value: 7, unit: 'days', action: 'call', body: 'Day 7 call to {first_name}: log the outcome' },
+      { value: 14, unit: 'days', action: 'email', subject: 'Budgeting your next rehab', body: 'Hi {first_name},\n\nOne thing we see on every flip: the budget is won or lost before demo day. Line-item scopes, materials locked early, and a contractor who tells you about overages before they happen.\n\nWhenever you have a property under contract, or are deciding whether to buy one, send it over. We\'ll give you a rehab number you can underwrite with.\n\n{owner_name}\n{company}' },
+      { value: 30, unit: 'days', action: 'stage', stage: 'nurture', body: 'No response after 30 days: move to long-term nurture' },
+    ],
+  },
+  {
+    id: 'sales-homeowner', name: 'New lead — Homeowner', trigger: 'lead_created', audience: 'homeowner', active: true,
+    steps: [
+      { value: 0, unit: 'days', action: 'sms', body: 'Hi {first_name}, this is {owner_first} with {company}. Thanks for reaching out about your project{at_address}! I\'ll give you a call shortly. Reply here anytime.' },
+      { value: 1, unit: 'days', action: 'call', body: 'Call {first_name}: what they want, budget, timeline, set a walkthrough' },
+      { value: 2, unit: 'days', action: 'email', subject: 'Your project with {company}', body: 'Hi {first_name},\n\nThanks for thinking of us for your project. Here\'s how we work: we come out, walk the space with you, listen to what you want, and give you a clear written estimate. No pressure and no surprises.\n\nWhat day works for a quick walkthrough?\n\n{owner_name}\n{company}' },
+      { value: 4, unit: 'days', action: 'sms', body: 'Hi {first_name}, {owner_first} with {company} checking in. Would you still like us to come take a look at your project?' },
+      { value: 7, unit: 'days', action: 'call', body: 'Day 7 call to {first_name}: log the outcome' },
+      { value: 14, unit: 'days', action: 'email', subject: 'Planning your remodel', body: 'Hi {first_name},\n\nA few things that make every remodel go smoother: decide your must-haves early, pick finishes before work starts, and plan for a small cushion in the budget.\n\nWhenever you\'re ready to talk about your project, just reply to this email. We\'d love to help.\n\n{owner_name}\n{company}' },
+      { value: 30, unit: 'days', action: 'stage', stage: 'nurture', body: 'No response after 30 days: move to long-term nurture' },
+    ],
+  },
+  {
+    id: 'post-investor', name: 'Project complete — Investor', trigger: 'stage:complete', audience: 'investor', active: true,
+    steps: [
+      { value: 0, unit: 'days', action: 'email', subject: 'Thank you from {company}', body: 'Hi {first_name},\n\nThank you for trusting us with {address_or_project}. It was a pleasure working with you.\n\nIf anything needs attention, reply to this email and we\'ll take care of it.\n\n{owner_name}\n{company}' },
+      { value: 3, unit: 'days', action: 'sms', body: 'Hi {first_name}, {owner_first} with {company}. How does everything look at {address_or_project}? Anything we need to touch up?' },
+      { value: 7, unit: 'days', action: 'email', subject: 'Quick favor?', body: 'Hi {first_name},\n\nIf we earned it, a short review helps other investors find a contractor they can trust:\n{review_link}\n\nThank you!\n{owner_name}' },
+      { value: 30, unit: 'days', action: 'call', body: 'Personal call to {first_name}: how did the property perform? What\'s next in the pipeline?' },
+      { value: 90, unit: 'days', action: 'email', subject: 'What\'s next on your list?', body: 'Hi {first_name},\n\nChecking in: do you have your next acquisition lined up? Send us the address before you close and we\'ll give you a rehab number you can underwrite with.\n\n{owner_name}\n{company}' },
+      { value: 6, unit: 'months', action: 'call', body: 'Six-month relationship call to {first_name}: upcoming acquisitions, rehabs, budgets' },
+      { value: 12, unit: 'months', action: 'email', subject: 'A year since we worked together', body: 'Hi {first_name},\n\nIt\'s been a year since we finished {address_or_project}. Thank you again for the work. If you have projects planned for the coming year, we\'d love to help you budget them.\n\n{owner_name}\n{company}' },
+    ],
+  },
+  {
+    id: 'post-homeowner', name: 'Project complete — Homeowner', trigger: 'stage:complete', audience: 'homeowner', active: true,
+    steps: [
+      { value: 0, unit: 'days', action: 'email', subject: 'Thank you from {company}', body: 'Hi {first_name},\n\nThank you for letting us into your home. We hope you love the finished project!\n\nIf anything needs attention, just reply to this email and we\'ll take care of it.\n\n{owner_name}\n{company}' },
+      { value: 3, unit: 'days', action: 'sms', body: 'Hi {first_name}, {owner_first} with {company}. How is everything with the project? Anything we can help with?' },
+      { value: 7, unit: 'days', action: 'email', subject: 'Quick favor?', body: 'Hi {first_name},\n\nIf you\'re happy with your project, would you leave us a short review? It means a lot to a local business:\n{review_link}\n\nThank you!\n{owner_name}' },
+      { value: 30, unit: 'days', action: 'call', body: 'Personal follow-up call to {first_name}: still happy? any friends or neighbors planning projects?' },
+      { value: 90, unit: 'days', action: 'email', subject: 'Anything else on your list?', body: 'Hi {first_name},\n\nHope you\'re enjoying the finished work. Is there another project on your list, or a friend or neighbor planning one? We\'d be grateful for the chance to help.\n\n{owner_name}\n{company}' },
+      { value: 6, unit: 'months', action: 'call', body: 'Six-month check-in call to {first_name}' },
+      { value: 12, unit: 'months', action: 'email', subject: 'Your home, one year later', body: 'Hi {first_name},\n\nIt\'s been a year since we finished your project. If you\'re thinking about maintenance or your next renovation, we\'re here to help.\n\n{owner_name}\n{company}' },
+    ],
+  },
+  {
+    id: 'nurture', name: 'Long-term nurture', trigger: 'stage:nurture', audience: 'any', active: true,
+    steps: [
+      { value: 30, unit: 'days', action: 'email', subject: 'Still thinking about that project?', body: 'Hi {first_name},\n\nJust checking in. If the timing is better now, reply to this email and we\'ll get you on the schedule for a walkthrough.\n\n{owner_name}\n{company}' },
+      { value: 90, unit: 'days', action: 'call', body: 'Nurture call to {first_name}: has anything changed?' },
+      { value: 6, unit: 'months', action: 'email', subject: 'Checking in from {company}', body: 'Hi {first_name},\n\nWe\'re booking projects for the coming season. If you\'re still planning yours, reply here and we\'ll set up a time.\n\n{owner_name}\n{company}' },
+    ],
+  },
+];
+
+const KL2_OPEN = ['new', 'attempted', 'contacted', 'appt', 'walkthrough', 'estimating', 'sent', 'followup'];
+// A sales sequence stops once the lead moves past first contact.
+const KL2_SALES_STOP = ['appt', 'walkthrough', 'estimating', 'sent', 'followup', 'won', 'complete', 'lost', 'postponed', 'nurture'];
+const KL2_UNIT_MS = { minutes: 6e4, hours: 36e5, days: 864e5, weeks: 7 * 864e5, months: 30 * 864e5 };
+
+function kl2Digits(p) { const d = String(p || '').replace(/\D/g, ''); return d.length === 11 && d[0] === '1' ? d.slice(1) : d; }
+function kl2Audience(type) {
+  const t = String(type || '').toLowerCase();
+  if (/investor|flip|rental|landlord|property manager/.test(t)) return 'investor';
+  return 'homeowner';
+}
+function kl2Central(ms) { return new Date(new Date(ms).toLocaleString('en-US', { timeZone: 'America/Chicago' })); }
+function kl2DateStr(ms) { const d = kl2Central(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+// Next moment automatic messages may go out: Mon-Sat, startHour..endHour Central.
+function kl2NextSendTime(ms, cfg) {
+  const start = Number(cfg.quietStart != null ? cfg.quietStart : 8), end = Number(cfg.quietEnd != null ? cfg.quietEnd : 19);
+  for (let i = 0; i < 8 * 24 * 4; i++) {
+    const t = ms + i * 15 * 6e4;
+    const c = kl2Central(t);
+    if (c.getDay() !== 0 && c.getHours() >= start && c.getHours() < end) return t;
+  }
+  return ms;
+}
+async function kl2Config(db, companyId) {
+  try {
+    const s = await db.collection('companies').doc(companyId).collection('settings').doc('cadences').get();
+    const d = s.exists ? s.data() : {};
+    return { ...d, list: Array.isArray(d.list) && d.list.length ? d.list : KL2_DEFAULT_CADENCES };
+  } catch (e) { return { list: KL2_DEFAULT_CADENCES }; }
+}
+function kl2Pick(cfg, trigger, lead) {
+  const aud = kl2Audience(lead.type);
+  const cands = cfg.list.filter(c => c.active !== false && c.trigger === trigger && (c.steps || []).length);
+  return cands.find(c => c.audience === aud) || cands.find(c => !c.audience || c.audience === 'any') || null;
+}
+function kl2StepOffset(s) { return (Number(s.value) || 0) * (KL2_UNIT_MS[s.unit] || KL2_UNIT_MS.days); }
+function kl2Fill(str, lead, ctx) {
+  const first = String(lead.name || '').trim().split(/\s+/)[0] || 'there';
+  const ownerName = ctx.ownerName || ctx.company;
+  const map = {
+    first_name: first, name: lead.name || '', company: ctx.company, owner_name: ownerName,
+    owner_first: String(ownerName).split(/\s+/)[0], address: lead.address || '',
+    at_address: lead.address ? ' for ' + lead.address : '',
+    address_or_project: lead.address || 'your project',
+    review_link: ctx.reviewUrl || '(just reply to this email, it means a lot)',
+  };
+  return String(str || '').replace(/\{(\w+)\}/g, (m, k) => (k in map ? map[k] : m));
+}
+async function kl2Context(db, companyId, lead, cfg) {
+  const co = await db.collection('companies').doc(companyId).get();
+  const cd = co.exists ? co.data() : {};
+  let company = cd.name || 'JTXD Contracting';
+  try { const p = await db.collection('companies').doc(companyId).collection('settings').doc('company').get(); if (p.exists && (p.data().companyName || p.data().name)) company = p.data().companyName || p.data().name; } catch (e) {}
+  let ownerName = '';
+  const owner = (lead.owner || '').toLowerCase();
+  if (owner) {
+    try {
+      const t = await db.collection('companies').doc(companyId).collection('settings').doc('team').get();
+      const data = t.exists ? t.data() : {};
+      const members = data.members && typeof data.members === 'object' ? data.members : data;
+      const m = Object.values(members).find(v => v && typeof v === 'object' && String(v.email || '').toLowerCase() === owner);
+      if (m) ownerName = m.name || '';
+    } catch (e) {}
+    if (!ownerName) ownerName = owner.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
+  return { company, ownerName, ownerEmail: owner, reviewUrl: cfg.reviewUrl || '', companyOwnerEmail: (cd.ownerEmail || '').toLowerCase() };
+}
+function kl2Enroll(cad, startMs) {
+  const first = cad.steps[0];
+  return { id: cad.id, name: cad.name, trigger: cad.trigger, step: 0, startedAt: startMs, nextAt: startMs + kl2StepOffset(first), status: 'active' };
+}
+function kl2Act(type, note, extra) { return { type, note, at: Date.now(), by: 'auto', ...(extra || {}) }; }
+
+async function kl2SendEmail(to, toName, subject, text, ctx, unsubUrl) {
+  const gmail = await getGmailClient();
+  const esc = v => String(v == null ? '' : v).replace(/[&<>"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
+  const html = `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.55;color:#1a1a1a;max-width:600px">${text.split(/\n\n+/).map(p => '<p>' + esc(p).replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>') + '</p>').join('')}`
+    + (unsubUrl ? `<p style="font-size:11px;color:#999;margin-top:24px">Don't want these emails? <a href="${unsubUrl}" style="color:#999">Unsubscribe</a>.</p>` : '') + '</div>';
+  const raw = buildRawMessage({ to, toName, replyTo: ctx.ownerEmail || undefined, fromName: ctx.ownerName ? `${ctx.ownerName} | ${ctx.company}` : ctx.company, subject, bodyHtml: html, bodyText: text + (unsubUrl ? `\n\nUnsubscribe: ${unsubUrl}` : '') });
+  await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
+}
+// Internal alert to a salesperson / manager.
+async function kl2Alert(to, subject, lines, companyName) {
+  if (!to) return;
+  try {
+    const gmail = await getGmailClient();
+    const esc = v => String(v == null ? '' : v).replace(/[&<>"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
+    const html = `<div style="font-family:Arial,sans-serif;max-width:600px;color:#1a1a1a">${lines.map(l => '<p style="margin:6px 0">' + esc(l) + '</p>').join('')}
+      <p style="margin-top:18px"><a href="https://jobsmetrix.com/" style="background:#d97706;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none">Open Leads in JobsMetrix</a></p>
+      <p style="font-size:12px;color:#999">${esc(companyName)} · KYTLEAD</p></div>`;
+    const raw = buildRawMessage({ to, fromName: companyName + ' Leads', subject, bodyHtml: html, bodyText: lines.join('\n') });
+    await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
+  } catch (e) { console.warn('kl2Alert failed', to, e.message); }
+}
+function kl2UnsubUrl(companyId, leadId, token) {
+  const proj = process.env.GCLOUD_PROJECT || 'kytrac-72d91';
+  return `https://us-central1-${proj}.cloudfunctions.net/kytleadUnsubscribe?c=${encodeURIComponent(companyId)}&l=${encodeURIComponent(leadId)}&t=${encodeURIComponent(token)}`;
+}
+
+// Runs the lead's current sequence step if it is due. Safe to call from
+// several places at once: the step is claimed in a transaction first.
+async function kl2RunStep(companyId, leadId, cfgIn) {
+  const db = admin.firestore();
+  const ref = db.collection('companies').doc(companyId).collection('leads').doc(leadId);
+  const now = Date.now();
+  const claim = await db.runTransaction(async tx => {
+    const s = await tx.get(ref);
+    if (!s.exists) return null;
+    const l = s.data();
+    const c = l.cadence;
+    if (!c || c.status !== 'active' || !(c.nextAt <= now + 5000)) return null;
+    if (c.claimedUntil && c.claimedUntil > now) return null;
+    tx.update(ref, { 'cadence.claimedUntil': now + 5 * 6e4 });
+    return l;
+  });
+  if (!claim) return { skipped: true };
+  const lead = claim, c = lead.cadence;
+  const cfg = cfgIn || await kl2Config(db, companyId);
+  const cad = cfg.list.find(x => x.id === c.id);
+  const done = async (reason, extra) => ref.update({ 'cadence.status': 'done', 'cadence.nextAt': admin.firestore.FieldValue.delete(), 'cadence.claimedUntil': 0, 'cadence.stopReason': reason, ...(extra || {}) });
+  if (!cad || !(cad.steps || [])[c.step]) return done(cad ? 'Finished' : 'Sequence was deleted');
+  const step = cad.steps[c.step];
+  const auto = step.action === 'email' || step.action === 'sms';
+  // Automatic messages wait for sending hours (Mon-Sat, never Sunday).
+  if (auto) {
+    const ok = kl2NextSendTime(now, cfg);
+    if (ok > now + 6e4) { await ref.update({ 'cadence.nextAt': ok, 'cadence.claimedUntil': 0 }); return { deferred: ok }; }
+  }
+  const ctx = await kl2Context(db, companyId, lead, cfg);
+  const patch = {};
+  const acts = [];
+  const body = kl2Fill(step.body, lead, ctx);
+  const assign = step.assign && step.assign !== 'owner' ? step.assign : '';
+  const setNext = (text, type, extra) => {
+    if (lead.nextAction && lead.nextAction.pending && lead.nextStep) acts.push(kl2Act('note', 'Missed step replaced by the sequence: ' + lead.nextStep));
+    patch.nextStep = text; patch.nextDue = kl2DateStr(now);
+    patch.nextAction = { type, body: extra || '', pending: true, cadenceId: cad.id, step: c.step, at: now };
+    if (assign) patch.owner = assign;
+  };
+  if (step.action === 'email') {
+    if (lead.email && !lead.unsubscribed) {
+      const token = lead.unsubToken || crypto.randomBytes(12).toString('hex');
+      if (!lead.unsubToken) patch.unsubToken = token;
+      const subject = kl2Fill(step.subject || 'Following up', lead, ctx);
+      try { await kl2SendEmail(lead.email, lead.name, subject, body, ctx, kl2UnsubUrl(companyId, leadId, token)); acts.push(kl2Act('email', 'Auto email: ' + subject)); patch.lastTouchMs = now; }
+      catch (e) { acts.push(kl2Act('note', 'Auto email failed: ' + e.message)); }
+    } else acts.push(kl2Act('note', 'Skipped auto email (' + (lead.unsubscribed ? 'unsubscribed' : 'no email address') + ')'));
+  } else if (step.action === 'sms') {
+    const plivo = getPlivoClient();
+    const to = kl2Digits(lead.phone);
+    if (lead.smsOptOut || lead.wrongNumber) acts.push(kl2Act('note', 'Skipped text (' + (lead.smsOptOut ? 'customer opted out' : 'marked wrong number') + ')'));
+    else if (!to) acts.push(kl2Act('note', 'Skipped text (no phone number)'));
+    else if (plivo && cfg.autoSms !== false) {
+      try { await plivo.client.messages.create(plivo.from, '1' + to, body.slice(0, 600)); acts.push(kl2Act('text', 'Auto text: ' + body.slice(0, 160))); patch.lastTouchMs = now; }
+      catch (e) { acts.push(kl2Act('note', 'Auto text failed: ' + e.message)); setNext('Send text: ' + body.slice(0, 70), 'sms', body); }
+    } else setNext('Send text: ' + body.slice(0, 70) + (body.length > 70 ? '…' : ''), 'sms', body);
+  } else if (step.action === 'call') setNext(body || 'Call', 'call');
+  else if (step.action === 'task') setNext(body || 'Task', 'task');
+  else if (step.action === 'stage' && step.stage) {
+    patch.stage = step.stage; patch.stageChangedAt = now;
+    acts.push(kl2Act('stage', (body || 'Sequence moved the lead') + ' → ' + step.stage));
+  }
+  const nextIdx = c.step + 1;
+  if (cad.steps[nextIdx]) {
+    patch['cadence.step'] = nextIdx;
+    patch['cadence.nextAt'] = Math.max(now + 6e4, c.startedAt + kl2StepOffset(cad.steps[nextIdx]));
+    patch['cadence.claimedUntil'] = 0;
+  } else if (step.action !== 'stage') {
+    patch['cadence.status'] = 'done'; patch['cadence.nextAt'] = admin.firestore.FieldValue.delete(); patch['cadence.claimedUntil'] = 0; patch['cadence.stopReason'] = 'Finished';
+  }
+  if (step.action === 'stage' && !cad.steps[nextIdx]) {
+    // The stage change starts its own sequence (onWrite); just close this one.
+    patch['cadence.status'] = 'done'; patch['cadence.nextAt'] = admin.firestore.FieldValue.delete(); patch['cadence.claimedUntil'] = 0; patch['cadence.stopReason'] = 'Finished';
+  }
+  if (acts.length) patch.activity = admin.firestore.FieldValue.arrayUnion(...acts);
+  await ref.update(patch);
+  return { ran: step.action };
+}
+
+exports.kytleadOnWrite = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCOUNT_KEY'], timeoutSeconds: 120 }).firestore
+  .document('companies/{companyId}/leads/{leadId}')
+  .onWrite(async (change, context) => {
+    const { companyId, leadId } = context.params;
+    if (!change.after.exists) return null;
+    const a = change.after.data();
+    if (a.isActivityLog) return null;
+    const b = change.before.exists ? change.before.data() : null;
+    const db = admin.firestore();
+    const ref = change.after.ref;
+    const now = Date.now();
+    const patch = {};
+    const digits = kl2Digits(a.phone);
+    if (digits !== (a.phoneDigits || '')) patch.phoneDigits = digits;
+    let cfg = null;
+    const getCfg = async () => (cfg = cfg || await kl2Config(db, companyId));
+
+    if (!b) {
+      // New lead: owner, duplicate check, instant alert, start the sequence.
+      const routing = await db.collection('companies').doc(companyId).collection('settings').doc('notifyRouting').get().catch(() => null);
+      const co = await db.collection('companies').doc(companyId).get();
+      const fallbackOwner = ((routing && routing.exists && routing.data().sales) || (co.exists && co.data().ownerEmail) || '').toLowerCase();
+      if (!a.owner && fallbackOwner) patch.owner = fallbackOwner;
+      const leadsCol = db.collection('companies').doc(companyId).collection('leads');
+      let dup = null;
+      if (digits.length >= 10) { const q = await leadsCol.where('phoneDigits', '==', digits).limit(3).get(); dup = q.docs.find(d => d.id !== leadId); }
+      if (!dup && a.email) { const q = await leadsCol.where('email', '==', a.email).limit(3).get(); dup = q.docs.find(d => d.id !== leadId); }
+      if (dup) patch.duplicateOf = { id: dup.id, name: dup.data().name || '' };
+      const c = await getCfg();
+      const dupActive = dup && dup.data().cadence && dup.data().cadence.status === 'active';
+      if (!a.cadence && ['new', 'attempted', 'contacted'].includes(a.stage || 'new') && c.autoEnroll !== false) {
+        const cad = kl2Pick(c, 'lead_created', a);
+        // Same person already getting follow-ups: don't double-text them.
+        if (cad && dupActive) patch.activity = admin.firestore.FieldValue.arrayUnion(kl2Act('note', `Not started on "${cad.name}": ${dup.data().name || 'another lead'} with the same contact info is already in a sequence. Merge or start it by hand.`));
+        else if (cad) patch.cadence = kl2Enroll(cad, now);
+      } else if (!a.cadence && !dupActive) {
+        // Created straight into a later stage (e.g. a completed job): that
+        // stage's own sequence starts.
+        const cad = kl2Pick(c, 'stage:' + (a.stage || 'new'), a);
+        if (cad) patch.cadence = kl2Enroll(cad, now);
+      }
+      const owner = patch.owner || a.owner;
+      const ctxName = co.exists ? (co.data().name || 'JTXD Contracting') : 'JTXD Contracting';
+      if (owner && a.createdBy !== owner) {
+        await kl2Alert(owner, `New lead: ${a.name || '(no name)'}${a.source ? ' · ' + a.source : ''}`, [
+          `New lead assigned to you: ${a.name || '(no name)'}`,
+          [a.phone, a.email].filter(Boolean).join(' · '),
+          a.address ? 'Property: ' + a.address : '', a.type ? 'Type: ' + a.type : '',
+          a.notes ? 'Notes: ' + String(a.notes).slice(0, 400) : '',
+          dup ? `⚠ Possible duplicate of ${dup.data().name || 'another lead'}` : '',
+          'Reach out right away. Leads contacted in the first hour close far more often.',
+        ].filter(Boolean), ctxName);
+      }
+    } else {
+      // Stage change: stop sales follow-ups, start the stage's own sequence.
+      if (a.stage !== b.stage) {
+        const cur = a.cadence;
+        if (cur && cur.status === 'active' && cur.trigger === 'lead_created' && KL2_SALES_STOP.includes(a.stage)) {
+          patch['cadence.status'] = 'stopped'; patch['cadence.nextAt'] = admin.firestore.FieldValue.delete(); patch['cadence.stopReason'] = 'Stage moved to ' + a.stage;
+        }
+        const c = await getCfg();
+        const cad = kl2Pick(c, 'stage:' + a.stage, a);
+        if (cad && !(cur && cur.status === 'active' && cur.id === cad.id)) {
+          patch.cadence = kl2Enroll(cad, now);
+          delete patch['cadence.status']; delete patch['cadence.nextAt']; delete patch['cadence.stopReason'];
+          patch.activity = admin.firestore.FieldValue.arrayUnion(kl2Act('note', 'Started sequence: ' + cad.name));
+        }
+      }
+    }
+    if (Object.keys(patch).length) await ref.update(patch);
+    // Run a step that is due right now (e.g. the "Immediately" text).
+    const cadNow = patch.cadence || (a.cadence && a.cadence.status === 'active' && !patch['cadence.status'] ? a.cadence : null);
+    const changed = !b || !b.cadence || !a.cadence || patch.cadence || b.cadence.nextAt !== a.cadence.nextAt || b.cadence.status !== a.cadence.status;
+    if (cadNow && cadNow.nextAt <= now + 5000 && changed) {
+      try { await kl2RunStep(companyId, leadId, await getCfg()); } catch (e) { console.error('kl2 immediate step failed', e.message); }
+    }
+    return null;
+  });
+
+// Every 15 minutes: run due sequence steps and escalate uncontacted leads.
+exports.kytleadCadenceRunner = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCOUNT_KEY'], timeoutSeconds: 300 }).pubsub
+  .schedule('every 15 minutes').onRun(async () => {
+    const db = admin.firestore();
+    const now = Date.now();
+    const companies = await db.collection('companies').get();
+    for (const co of companies.docs) {
+      try {
+        const leads = co.ref.collection('leads');
+        const due = await leads.where('cadence.nextAt', '<=', now).limit(200).get();
+        if (!due.empty) {
+          const cfg = await kl2Config(db, co.id);
+          for (const d of due.docs) {
+            if ((d.data().cadence || {}).status !== 'active') continue;
+            try { await kl2RunStep(co.id, d.id, cfg); } catch (e) { console.error('kl2 step failed', co.id, d.id, e.message); }
+          }
+        }
+        // Escalation: a new lead nobody has contacted within N hours.
+        const fresh = await leads.where('stage', '==', 'new').get();
+        if (fresh.empty) continue;
+        const cfg = await kl2Config(db, co.id);
+        const hours = Number(cfg.escalateHours) > 0 ? Number(cfg.escalateHours) : 2;
+        if (kl2NextSendTime(now, cfg) > now + 6e4) continue; // only alert during working hours
+        const manager = (cfg.escalateTo || co.data().ownerEmail || '').toLowerCase();
+        for (const d of fresh.docs) {
+          const l = d.data();
+          if (l.isActivityLog || l.escalatedAt || l.lastTouchMs) continue;
+          if (!l.createdMs || now - l.createdMs < hours * 36e5) continue;
+          const manual = (l.activity || []).some(x => x.by !== 'auto' && x.by !== 'web-form' && ['call', 'text', 'email', 'appt'].includes(x.type));
+          if (manual) continue;
+          const to = [l.owner, manager].filter((v, i, arr) => v && arr.indexOf(v) === i).join(', ');
+          await kl2Alert(to, `⚠ Not contacted yet: ${l.name || 'new lead'} (${hours}+ hrs)`, [
+            `${l.name || 'A new lead'} came in ${Math.round((now - l.createdMs) / 36e5)} hours ago and nobody has called, texted or emailed them yet.`,
+            `Owner: ${l.owner || 'unassigned'}`, [l.phone, l.email].filter(Boolean).join(' · '),
+            'Call now, or reassign the lead in JobsMetrix → Leads.',
+          ], co.data().name || 'JTXD Contracting');
+          await d.ref.update({ escalatedAt: now, activity: admin.firestore.FieldValue.arrayUnion(kl2Act('note', `Escalated: not contacted within ${hours} hours`)) });
+        }
+      } catch (e) { console.error('kytleadCadenceRunner failed for', co.id, e.message); }
+    }
+    return null;
+  });
+
+// When a job is completed, the customer moves into post-project follow-up.
+exports.kytleadJobCompleted = functions.firestore
+  .document('companies/{companyId}/jobs/{jobId}')
+  .onUpdate(async (change, context) => {
+    const { companyId, jobId } = context.params;
+    const a = change.after.data(), b = change.before.data();
+    const DONE = ['Complete', 'Closed Completed'];
+    if (!DONE.includes(a.status) || DONE.includes(b.status)) return null;
+    const db = admin.firestore();
+    const leads = db.collection('companies').doc(companyId).collection('leads');
+    const q = await leads.where('jobId', '==', jobId).limit(1).get();
+    if (!q.empty) {
+      const l = q.docs[0];
+      if (l.data().stage !== 'complete') await l.ref.update({ stage: 'complete', stageChangedAt: Date.now(), activity: admin.firestore.FieldValue.arrayUnion(kl2Act('stage', 'Job completed → post-project follow-up')) });
+      return null;
+    }
+    if (!a.phone && !a.email) return null;
+    await leads.add({
+      companyId, name: a.client || a.name || 'Customer', phone: a.phone || '', email: a.email || '', address: a.address || '',
+      type: a.customerType || '', source: a.leadSource || 'Repeat customer', owner: (a.salesOwner || '').toLowerCase(),
+      stage: 'complete', stageChangedAt: Date.now(), jobId, jobNumber: a.jobNumber || '', value: Number(a.contractValue) || 0,
+      createdMs: Date.now(), createdBy: 'auto',
+      activity: [kl2Act('note', 'Created from completed job ' + (a.jobNumber || '') + ' for post-project follow-up')],
+    });
+    return null;
+  });
+
+// Email unsubscribe link (in every automatic email).
+exports.kytleadUnsubscribe = functions.https.onRequest(async (req, res) => {
+  const c = String(req.query.c || ''), l = String(req.query.l || ''), t = String(req.query.t || '');
+  const page = msg => res.status(200).send(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><div style="font-family:Arial,sans-serif;max-width:480px;margin:60px auto;padding:0 16px;text-align:center"><h2>${msg}</h2></div>`);
+  if (!c || !l || !t) return page('This link is not valid.');
+  try {
+    const ref = admin.firestore().collection('companies').doc(c).collection('leads').doc(l);
+    const s = await ref.get();
+    if (!s.exists || s.data().unsubToken !== t) return page('This link is not valid.');
+    await ref.update({ unsubscribed: true, unsubscribedAt: Date.now(), activity: admin.firestore.FieldValue.arrayUnion(kl2Act('note', 'Customer unsubscribed from emails')) });
+    return page('You\'re unsubscribed. You won\'t get these emails anymore.');
+  } catch (e) { return page('Something went wrong. Please reply to the email and we\'ll take care of it.'); }
+});
+
+// A customer texted the business number: log it on the lead, stop automatic
+// follow-ups, and tell the owner. STOP opts them out of texts.
+async function kl2InboundText(fromRaw, text) {
+  const digits = kl2Digits(fromRaw);
+  if (digits.length < 10) return false;
+  const db = admin.firestore();
+  const companies = await db.collection('companies').get();
+  let hit = false;
+  for (const co of companies.docs) {
+    const q = await co.ref.collection('leads').where('phoneDigits', '==', digits).limit(5).get();
+    for (const d of q.docs) {
+      const l = d.data();
+      if (l.isActivityLog) continue;
+      hit = true;
+      const stop = /^\s*(stop|unsubscribe|cancel|end|quit|stopall)\s*$/i.test(text);
+      const patch = { lastReplyMs: Date.now(), lastTouchMs: Date.now(), activity: admin.firestore.FieldValue.arrayUnion({ type: 'text', note: 'Customer texted: ' + String(text).slice(0, 300), at: Date.now(), by: 'customer', inbound: true }) };
+      if (stop) patch.smsOptOut = true;
+      if (l.cadence && l.cadence.status === 'active' && (l.cadence.trigger === 'lead_created' || stop)) {
+        patch['cadence.status'] = 'stopped'; patch['cadence.nextAt'] = admin.firestore.FieldValue.delete(); patch['cadence.stopReason'] = stop ? 'Customer texted STOP' : 'Customer replied';
+      }
+      if (!stop) { patch.nextStep = 'Reply to ' + (String(l.name || '').split(' ')[0] || 'customer') + '\'s text'; patch.nextDue = kl2DateStr(Date.now()); patch.nextAction = { type: 'task', pending: true, at: Date.now() }; }
+      if (l.stage === 'new' || l.stage === 'attempted') { patch.stage = 'contacted'; patch.stageChangedAt = Date.now(); }
+      await d.ref.update(patch);
+      if (l.owner && !stop) await kl2Alert(l.owner, `💬 ${l.name || 'A lead'} texted back`, [`${l.name || 'A lead'} (${l.phone}) replied:`, `"${String(text).slice(0, 500)}"`, 'Automatic follow-ups are paused. Reply from your phone.'], co.data().name || 'JTXD Contracting');
+    }
+  }
+  return hit;
+}
