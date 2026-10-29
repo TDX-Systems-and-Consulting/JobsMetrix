@@ -26623,11 +26623,12 @@ function opRenderRocks(body) {
       <span class="small muted">${rocks.length} Rock${rocks.length === 1 ? '' : 's'} · ${rocks.filter(r => r.status === 'Done').length} done · due ${opQuarterEnd(q)}. EOS rule: 3–7 company Rocks a quarter, one owner each.</span>
     </div>
     ${rocks.map(r => {
+      if (_opEditId === r.id) return opEditForm('rocks', r);
       const ms = r.milestones || [];
       return `<div style="${OP_CARD};margin-bottom:10px">
         <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">
           <div style="font-weight:800;font-size:.95rem">${esc(r.title)}</div>
-          <div style="display:flex;gap:6px;align-items:center">${OP_PILL(r.type || 'Company', 'var(--muted)')}${statusSel(r)}<button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opDeleteDoc('rocks','${r.id}')">✕</button></div>
+          <div style="display:flex;gap:6px;align-items:center">${OP_PILL(r.type || 'Company', 'var(--muted)')}${statusSel(r)}<button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opEditItem('${r.id}')">✏️ Edit</button><button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opDeleteDoc('rocks','${r.id}')">✕</button></div>
         </div>
         <div class="small muted" style="margin:4px 0 8px">${esc(r.owner || '')} · due ${esc(r.due || opQuarterEnd(q))}${r.notes ? ' · ' + esc(r.notes) : ''}</div>
         ${ms.map((m, i) => `<label style="display:flex;gap:8px;align-items:center;padding:2px 0;font-size:.85rem"><input type="checkbox" ${m.done ? 'checked' : ''} onchange="opToggleMilestone('${r.id}',${i},this.checked)"> <span style="${m.done ? 'text-decoration:line-through;color:var(--muted)' : ''}">${esc(m.text)}</span>${m.due ? `<span class="small muted">· ${esc(m.due)}</span>` : ''}</label>`).join('')}
@@ -26655,6 +26656,30 @@ async function opAddMilestone(id) {
 }
 function opToggleMilestone(id, i, done) { const r = opData.rocks.find(x => x.id === id); const ms = (r.milestones || []).slice(); ms[i] = { ...ms[i], done }; opColl('rocks').doc(id).update({ milestones: ms }); }
 
+// ── INLINE EDIT (Issues, Rocks, To-Dos) ──
+let _opEditId = null;
+function opEditItem(id) { _opEditId = id; renderOwnerPortalBody(); setTimeout(() => { const f = document.querySelector('#opEditBox input'); if (f) f.focus(); }, 30); }
+function opCancelEdit() { _opEditId = null; renderOwnerPortalBody(); }
+function opEditForm(col, x) {
+  const inp = (k, label, val, type) => `<label class="small muted" style="display:flex;flex-direction:column;gap:3px;flex:1 1 ${k === 'title' || k === 'text' || k === 'notes' ? '260px' : '140px'}">${label}<input id="opE_${k}" type="${type || 'text'}" value="${esc(val || '')}" style="padding:7px"></label>`;
+  let f = '';
+  if (col === 'issues') f = inp('title', 'Issue', x.title) + inp('notes', 'Notes', x.notes) + `<label class="small muted" style="display:flex;flex-direction:column;gap:3px">List<select id="opE_list" style="padding:7px">${['Short-term', 'Long-term'].map(l => `<option ${l === (x.list || 'Short-term') ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`;
+  if (col === 'rocks') f = inp('title', 'Rock', x.title) + `<label class="small muted" style="display:flex;flex-direction:column;gap:3px">Owner${opOwnerSelect('opE_owner', x.owner)}</label>` + inp('due', 'Due', x.due, 'date') + `<label class="small muted" style="display:flex;flex-direction:column;gap:3px">Type<select id="opE_type" style="padding:7px">${['Company', 'Individual'].map(l => `<option ${l === (x.type || 'Company') ? 'selected' : ''}>${l}</option>`).join('')}</select></label>` + inp('notes', 'Definition of done / notes', x.notes);
+  if (col === 'todos') f = inp('text', 'To-do', x.text) + `<label class="small muted" style="display:flex;flex-direction:column;gap:3px">Owner${opOwnerSelect('opE_owner', x.owner)}</label>` + inp('due', 'Due', x.due, 'date');
+  return `<div id="opEditBox" style="${OP_CARD};margin-bottom:8px;border-color:var(--amber)">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">${f}</div>
+    <div style="display:flex;gap:8px;margin-top:10px"><button class="btn-amber" onclick="opSaveEdit('${col}','${x.id}')" style="padding:8px 14px">✓ Save changes</button><button class="btn" onclick="opCancelEdit()">Cancel</button></div></div>`;
+}
+async function opSaveEdit(col, id) {
+  const v = k => { const el = document.getElementById('opE_' + k); return el ? el.value.trim() : undefined; };
+  const keys = { issues: ['title', 'notes', 'list'], rocks: ['title', 'owner', 'due', 'type', 'notes'], todos: ['text', 'owner', 'due'] }[col];
+  const data = {}; keys.forEach(k => { const x = v(k); if (x !== undefined) data[k] = x; });
+  if ((col === 'todos' ? !data.text : !data.title)) return alert('It needs a name.');
+  if (col === 'issues') { const cur = opData.issues.find(i => i.id === id); if (cur && (cur.list || 'Short-term') !== data.list) data.priority = 0; }
+  try { await opColl(col).doc(id).update(data); } catch (e) { return alert('Could not save: ' + e.message); }
+  _opEditId = null; renderOwnerPortalBody();
+}
+Object.assign(window, { opEditItem, opCancelEdit, opSaveEdit });
 // ── ISSUES (IDS) ──
 function opRenderIssues(body, inMeeting) {
   const list = _opIssueList;
@@ -26663,12 +26688,13 @@ function opRenderIssues(body, inMeeting) {
   const html = `
     <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">${['Short-term', 'Long-term'].map(l => `<button class="con-subtab ${l === list ? 'active' : ''}" onclick="_opIssueList='${l}';renderOwnerPortalBody()">${l} (${opData.issues.filter(i => i.status !== 'Solved' && (i.list || 'Short-term') === l).length})</button>`).join('')}</div>
     <div class="small muted" style="margin-bottom:8px">IDS: pick the top 3 (1, 2, 3), then solve #1 first. <b>Identify</b> the real problem, <b>Discuss</b> once, <b>Solve</b> with a to-do.</div>
-    ${open.map(i => `<div style="${OP_CARD};margin-bottom:8px">
+    ${open.map(i => _opEditId === i.id ? opEditForm('issues', i) : `<div style="${OP_CARD};margin-bottom:8px">
       <div style="display:flex;gap:8px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap">
         <div style="flex:1;min-width:200px"><div style="font-weight:800">${i.priority ? `<span style="color:var(--amber)">#${i.priority}</span> ` : ''}${esc(i.title)}</div>${i.notes ? `<div class="small muted" style="margin-top:2px">${esc(i.notes)}</div>` : ''}<div class="small muted">${esc(i.raisedBy || '')}</div></div>
         <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
           ${[1, 2, 3].map(p => `<button class="btn" style="padding:3px 9px;font-size:.74rem;${i.priority === p ? 'background:var(--amber);color:#fff' : ''}" onclick="opUpdate('issues','${i.id}',{priority:${i.priority === p ? 0 : p}})">${p}</button>`).join('')}
           <button class="btn" style="padding:3px 9px;font-size:.74rem" onclick="opMoveIssue('${i.id}')">${list === 'Short-term' ? '→ Long-term' : '→ Short-term'}</button>
+          <button class="btn" style="padding:3px 9px;font-size:.74rem" onclick="opEditItem('${i.id}')">✏️ Edit</button>
           <button class="btn-amber" style="padding:4px 10px;font-size:.76rem" onclick="opSolveIssue('${i.id}')">Solve</button>
           <button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opDeleteDoc('issues','${i.id}')">✕</button>
         </div>
@@ -26701,11 +26727,12 @@ async function opSolveIssue(id) {
 function opRenderTodos(body, inMeeting) {
   const open = opData.todos.filter(t => !t.done);
   const done = opData.todos.filter(t => t.done).slice(-15).reverse();
-  const row = t => `<div style="display:flex;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line)">
+  const row = t => _opEditId === t.id ? opEditForm('todos', t) : `<div style="display:flex;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line)">
       <input type="checkbox" ${t.done ? 'checked' : ''} onchange="opUpdate('todos','${t.id}',{done:this.checked,doneAt:this.checked?'${opToday()}':''})" style="width:18px;height:18px">
       <div style="flex:1;min-width:0"><span style="${t.done ? 'text-decoration:line-through;color:var(--muted)' : ''}">${esc(t.text)}</span>${t.fromIssue ? `<div class="small muted">from: ${esc(t.fromIssue)}</div>` : ''}</div>
       <span class="small muted">${esc(t.owner || '')}</span>
       <span class="small" style="${!t.done && t.due && t.due < opToday() ? 'color:' + OP_RED + ';font-weight:700' : 'color:var(--muted)'}">${esc(t.due || '')}</span>
+      <button class="btn" style="padding:2px 7px;font-size:.7rem" onclick="opEditItem('${t.id}')">✏️</button>
       ${inMeeting ? '' : `<button class="btn" style="padding:2px 7px;font-size:.7rem" onclick="opDeleteDoc('todos','${t.id}')">✕</button>`}
     </div>`;
   const html = `
