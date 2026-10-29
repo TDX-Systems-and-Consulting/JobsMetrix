@@ -26761,7 +26761,13 @@ function opRenderL10(body) {
   body = body || document.getElementById('opBody');
   if (!_opL10) {
     const past = opData.meetings.filter(m => m.endedAt).slice(0, 8);
+    const prep = opPreparedL10();
     body.innerHTML = `
+      ${prep ? `<div style="${OP_CARD};margin-bottom:14px;border-color:var(--amber)">
+        <div style="font-weight:800;font-size:1rem">📋 Prepared: Level 10 for ${esc(prep.date)}</div>
+        <div class="small muted" style="margin:4px 0 8px">The prep notes show inside each section when you start the meeting${prep.date === opToday() ? '' : ' (Start uses them on ' + esc(prep.date) + ')'}.</div>
+        ${OP_L10.map((s, i) => (prep.prep || {})[s[0]] ? `<details style="margin:4px 0"><summary style="cursor:pointer;font-weight:700">${i + 1}. ${s[1]}</summary><div class="small" style="white-space:pre-wrap;margin:6px 0 0 14px">${esc(prep.prep[s[0]])}</div></details>` : '').join('')}
+      </div>` : ''}
       <div style="${OP_CARD};margin-bottom:14px">
         <div style="font-weight:800;font-size:1.05rem">Level 10 meeting · Friday, 90 minutes</div>
         <div class="small muted" style="margin:4px 0 12px">Same day, same time, same agenda. The timer keeps each section honest; everything you enter saves as you go.</div>
@@ -26798,6 +26804,7 @@ function opRenderL10(body) {
         <div style="font-weight:900;font-size:1.15rem">${idx + 1}. ${s[1]}</div>
         <div style="font-variant-numeric:tabular-nums;font-weight:800;font-size:1.2rem;${over ? 'color:' + OP_RED : ''}" id="opL10Clock">${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')} / ${s[2]}:00</div>
       </div>
+      ${(L.prep || {})[s[0]] ? `<details open style="margin-bottom:10px;padding:8px 10px;border:1px dashed var(--amber);border-radius:8px"><summary style="cursor:pointer;font-weight:700;font-size:.84rem">📋 Prep notes</summary><div class="small" style="white-space:pre-wrap;margin-top:6px">${esc(L.prep[s[0]])}</div></details>` : ''}
       <div id="opL10Content">${content}</div>
       <div style="display:flex;justify-content:space-between;gap:8px;margin-top:16px;flex-wrap:wrap">
         <span class="small muted">Meeting time: ${total} of 90 min</span>
@@ -26812,7 +26819,18 @@ function opRenderL10(body) {
     el.style.color = e > b * 60 ? OP_RED : '';
   }, 1000);
 }
+// A meeting can be prepared ahead (prepared: true, date, prep notes per
+// section, headlines). Start on that date picks it up instead of a blank one.
+function opPreparedL10() {
+  return opData.meetings.filter(m => m.prepared && !m.startedAt && !m.endedAt && (m.date || '') >= opToday()).sort((a, b) => (a.date || '').localeCompare(b.date || ''))[0] || null;
+}
 async function opStartL10() {
+  const prep = opPreparedL10();
+  if (prep && prep.date === opToday()) {
+    await opColl('meetings').doc(prep.id).update({ startedAt: new Date().toISOString() });
+    _opL10 = { id: prep.id, step: 0, startMs: Date.now(), stepStartMs: Date.now(), headlines: prep.headlines || [], ratings: {}, solved: [], prep: prep.prep || {} };
+    return opRenderL10();
+  }
   const ref = await opColl('meetings').add({ type: 'L10', date: opToday(), startedAt: new Date().toISOString(), headlines: [], ratings: {}, solved: [], createdAtMs: Date.now() });
   _opL10 = { id: ref.id, step: 0, startMs: Date.now(), stepStartMs: Date.now(), headlines: [], ratings: {}, solved: [] };
   opRenderL10();
