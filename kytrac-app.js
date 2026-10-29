@@ -26398,6 +26398,135 @@ function opRenderDashboard(body) {
 function opAvgRating(m) { const v = Object.values(m.ratings || {}).map(Number).filter(n => n > 0); return v.length ? (v.reduce((a, b) => a + b, 0) / v.length).toFixed(1) : '—'; }
 function opRockPill(s) { return OP_PILL(s || 'On Track', s === 'Done' ? OP_GREEN : s === 'Off Track' || s === 'Not Done' ? OP_RED : OP_BLUE); }
 
+// ── SCORECARD AUTO-FILL (Travis 10/29/26) ──
+// Measurables with an "auto" source get this week's number filled from
+// JobsMetrix data when the Scorecard or Level 10 opens (at most every 10
+// minutes, or on ↻). Only the current week is written, so past weeks stay
+// exactly as they were reported. Bank balances stay typed in by hand.
+const OP_ACTIVE_JOB = ['Awaiting Deposit', 'To Be Scheduled', 'Permitting', 'Scheduled', 'In Progress', 'Customer Inspection', 'Inspection Pending'];
+const OP_AUTO = {
+  pctCollected:   { label: '% of due invoices collected (invoices)', match: /collect/i },
+  belowGoNoGo:    { label: 'Active jobs under 10% retained earnings', match: /go\s*\/?\s*no.?go/i },
+  moneyOwed:      { label: 'Unpaid invoices on finished jobs', match: /owed|awaiting payment/i },
+  jobsDelayed:    { label: 'In-progress jobs past their end date', match: /delay|behind schedule/i },
+  daysBooked:     { label: 'Days until the least-booked team runs out of work', match: /booked/i },
+  missingReceipts:{ label: 'In-progress jobs with no receipt this week', match: /receipt/i },
+  awaitingInspect:{ label: 'Jobs in Customer / Occupancy Inspection', match: /inspection/i },
+  weekPL:         { label: 'Retained earnings % across active jobs', match: /p\s*\/\s*l/i },
+  salesAppts:     { label: 'Leads: appointments + lunches logged', match: /appointment|lunch/i },
+  salesClosed:    { label: 'Leads: deals marked Won / Contract Signed', match: /sales closed|closed$/i },
+  hipshots:       { label: 'Leads: hipshots logged', match: /hipshot/i },
+};
+let _opAutoAt = 0, _opAutoBusy = false, _opAutoLast = null;
+function opAutoDetect(m) {
+  if (/balance|checking/i.test(m.name || '')) return '';
+  const k = Object.keys(OP_AUTO).find(k => OP_AUTO[k].match.test(m.name || ''));
+  return k || '';
+}
+function opWeekRange() {
+  const start = getWeekKey();
+  const e = new Date(start + 'T12:00:00'); e.setDate(e.getDate() + 6);
+  const end = e.toISOString().slice(0, 10);
+  return { start, end, startMs: new Date(start + 'T00:00:00').getTime(), endMs: new Date(end + 'T23:59:59').getTime() };
+}
+async function opComputeAuto(keys) {
+  const need = new Set(keys);
+  const out = {};
+  const wr = opWeekRange();
+  const today = opToday();
+  const jobs = (Array.isArray(conJobs) ? conJobs : []).filter(j => !j.archived);
+  const active = jobs.filter(j => OP_ACTIVE_JOB.includes(j.status));
+  const inProg = jobs.filter(j => j.status === 'In Progress');
+  // Invoices (only what's needed)
+  if (need.has('pctCollected') || need.has('moneyOwed')) {
+    const invJobs = jobs.filter(j => OP_ACTIVE_JOB.includes(j.status) || ['Complete', 'Closed Completed'].includes(j.status));
+    let collected = 0, dueUnpaid = 0, owed = 0;
+    await Promise.all(invJobs.map(async j => {
+      const s = await coll('jobs').doc(j.id).collection('invoices').get().catch(() => null);
+      if (!s) return;
+      s.forEach(d => {
+        const inv = d.data();
+        if (String(inv.status || '').toLowerCase() === 'draft' || inv.voided) return;
+        const total = Number(inv.total) || 0, paid = Number(inv.amtPaid) || 0, bal = Math.max(0, total - paid);
+        if (inv.paidDate && inv.paidDate >= wr.start && inv.paidDate <= wr.end) collected += paid;
+        if (bal > 0.005 && inv.dueDate && inv.dueDate <= wr.end) dueUnpaid += bal;
+        if (bal > 0.005 && ['Customer Inspection', 'Inspection Pending', 'Complete', 'Closed Completed'].includes(j.status)) owed += bal;
+      });
+    }));
+    if (collected + dueUnpaid > 0) out.pctCollected = Math.round(collected / (collected + dueUnpaid) * 100);
+    out.moneyOwed = Math.round(owed);
+  }
+  if (need.has('belowGoNoGo') || need.has('weekPL')) {
+    let below = 0, re = 0, rev = 0;
+    for (const j of active) {
+      if (j.status === 'Awaiting Deposit' && !getJobValue(j)) continue;
+      const b = await getJobMarginBoth(j.id).catch(() => null);
+      if (!b || !b.tmA || !b.tmA.revenue) continue;
+      if ((b.tmA.reOfRevenuePct || 0) < 0.10) below++;
+      re += b.tmA.retainedEarnings || 0; rev += b.tmA.revenue || 0;
+    }
+    out.belowGoNoGo = below;
+    if (rev > 0) out.weekPL = Math.round(re / rev * 1000) / 10;
+  }
+  if (need.has('jobsDelayed')) out.jobsDelayed = inProg.filter(j => j.endDate && j.endDate < today).length;
+  if (need.has('awaitingInspect')) out.awaitingInspect = jobs.filter(j => ['Customer Inspection', 'Inspection Pending'].includes(j.status)).length;
+  if (need.has('daysBooked')) {
+    const byLead = {};
+    jobs.filter(j => ['Scheduled', 'In Progress', 'Permitting'].includes(j.status) && j.endDate).forEach(j => {
+      const lead = j.superintendent || j.teamLead || 'Unassigned';
+      if (!byLead[lead] || j.endDate > byLead[lead]) byLead[lead] = j.endDate;
+    });
+    const days = Object.values(byLead).map(e => Math.max(0, Math.round((new Date(e + 'T12:00:00') - new Date(today + 'T12:00:00')) / 864e5)));
+    out.daysBooked = days.length ? Math.min(...days) : 0;
+  }
+  if (need.has('missingReceipts')) {
+    let missing = 0;
+    await Promise.all(inProg.map(async j => {
+      const ref = coll('jobs').doc(j.id);
+      const [r, e] = await Promise.all([ref.collection('receipts').get().catch(() => null), ref.collection('expenses').get().catch(() => null)]);
+      let hit = false;
+      if (r) r.forEach(d => { const x = d.data(); const ms = x.createdAt && x.createdAt.toMillis ? x.createdAt.toMillis() : 0; if (ms >= wr.startMs && ms <= wr.endMs) hit = true; });
+      if (e) e.forEach(d => { const x = d.data(); if (x.date && x.date >= wr.start && x.date <= wr.end) hit = true; });
+      if (!hit) missing++;
+    }));
+    out.missingReceipts = missing;
+  }
+  if (need.has('salesAppts') || need.has('salesClosed') || need.has('hipshots')) {
+    const leads = typeof _klLeads !== 'undefined' ? _klLeads : [];
+    let appts = 0, hips = 0, won = 0;
+    leads.forEach(l => {
+      (l.activity || []).forEach(a => { if (a.at >= wr.startMs && a.at <= wr.endMs && a.by !== 'auto') { if (a.type === 'appt' || a.type === 'lunch') appts++; if (a.type === 'hipshot') hips++; } });
+      if (!l.isActivityLog && l.wonAt >= wr.startMs && l.wonAt <= wr.endMs) won++;
+    });
+    out.salesAppts = appts; out.hipshots = hips; out.salesClosed = won;
+  }
+  return out;
+}
+async function opAutoFill(force) {
+  if (_opAutoBusy || !opData.metrics || !opData.metrics.length) return;
+  if (!force && Date.now() - _opAutoAt < 10 * 6e4) return;
+  _opAutoBusy = true; _opAutoAt = Date.now();
+  try {
+    // One-time: link existing measurables to their source by name.
+    for (const m of opData.metrics) {
+      if (m.auto === undefined) { const k = opAutoDetect(m); await opColl('metrics').doc(m.id).update({ auto: k }).catch(() => {}); m.auto = k; }
+    }
+    const auto = opData.metrics.filter(m => m.auto && OP_AUTO[m.auto]);
+    if (!auto.length) return;
+    const vals = await opComputeAuto(auto.map(m => m.auto));
+    const wk = getWeekKey();
+    for (const m of auto) {
+      const v = vals[m.auto];
+      if (v === undefined || v === null || Number.isNaN(v)) continue;
+      if ((m.values || {})[wk] === v) continue;
+      await opColl('metrics').doc(m.id).update({ ['values.' + wk]: v, autoUpdatedMs: Date.now() }).catch(() => {});
+    }
+    _opAutoLast = Date.now();
+  } catch (e) { console.warn('Scorecard auto-fill:', e.message); }
+  finally { _opAutoBusy = false; }
+}
+window.opAutoFill = opAutoFill;
+
 // ── SCORECARD ──
 // Scorecard starts at the first L10 meeting (Fri 10/30/26). Columns are still
 // keyed by the Monday of each week (so stored numbers don't move) but are
@@ -26409,14 +26538,17 @@ function opRenderScorecard(body, compact) {
   const startWk = getWeekKey(OP_SCORECARD_START + 'T12:00:00');
   const weeks = opWeekKeys(compact ? 6 : 13).filter(w => w >= startWk), wk = getWeekKey();
   if (!weeks.length) weeks.push(startWk);
+  setTimeout(() => opAutoFill(false), 0);
   const rows = opData.metrics.map(m => {
     const vals = m.values || {};
     return `<tr>
-      <td style="padding:6px 8px;font-weight:700;white-space:nowrap">${esc(m.name)}</td>
+      <td style="padding:6px 8px;font-weight:700;white-space:nowrap">${esc(m.name)}${m.auto && OP_AUTO[m.auto] ? ` <span title="Fills itself: ${esc(OP_AUTO[m.auto].label)}" style="font-size:.66rem;font-weight:800;color:#60a5fa;border:1px solid rgba(96,165,250,.4);border-radius:999px;padding:1px 6px">⚡ auto</span>` : ''}</td>
       <td style="padding:6px 8px" class="small muted">${esc(m.owner || '')}</td>
       <td style="padding:6px 8px;white-space:nowrap" class="small">${m.higherIsBetter === false ? '≤' : '≥'} ${esc(opFmtVal(m, m.goal))}</td>
       ${weeks.map(w => { const v = vals[w]; const ok = opOnTrack(m, v);
-        return w === wk || compact
+        return (w === wk && m.auto && OP_AUTO[m.auto] && !compact)
+          ? `<td style="padding:6px 8px;text-align:right;font-variant-numeric:tabular-nums;font-weight:800;${ok === false ? 'color:' + OP_RED : ok ? 'color:' + OP_GREEN : ''}" title="Filled automatically. Double-click to override this week." ondblclick="opEditCell('${m.id}','${w}')">${v === undefined ? '<span class=small style=color:var(--muted)>…</span>' : esc(opFmtVal(m, v))}</td>`
+          : w === wk || compact
           ? `<td style="padding:4px"><input type="number" step="any" value="${v ?? ''}" onchange="opSetMetric('${m.id}','${w}',this.value)" style="width:78px;padding:4px 6px;text-align:right;border-radius:6px;${ok === true ? 'border-color:' + OP_GREEN : ok === false ? 'border-color:' + OP_RED + ';color:' + OP_RED : ''}"></td>`
           : `<td style="padding:6px 8px;text-align:right;font-variant-numeric:tabular-nums;${ok === false ? 'color:' + OP_RED + ';font-weight:700' : ok ? 'color:' + OP_GREEN : ''}" ondblclick="opEditCell('${m.id}','${w}')">${esc(opFmtVal(m, v))}</td>`; }).join('')}
       ${compact ? '' : `<td style="padding:4px;white-space:nowrap"><button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opEditMetric('${m.id}')">✏️ Edit</button> <button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opMetricToIssue('${m.id}')">→ Issue</button> <button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opDeleteDoc('metrics','${m.id}')">✕</button></td>`}
@@ -26429,7 +26561,10 @@ function opRenderScorecard(body, compact) {
     </table></div>`;
   if (compact) return html;
   body.innerHTML = `
-    <div class="small muted" style="margin-bottom:10px">Weekly numbers. Each column is a Friday L10 meeting date and covers that Monday–Sunday week. Type this week's number in the highlighted column; double-click an older cell to change it. Red = off track. Tap ✏️ Edit to change a measurable's name, owner, unit, goal or direction.</div>
+    <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-start;margin-bottom:10px">
+      <div class="small muted" style="flex:1 1 400px">Weekly numbers. Each column is a Friday L10 meeting date and covers that Monday–Sunday week. Rows marked <b style="color:#60a5fa">⚡ auto</b> fill themselves from JobsMetrix; type the others in the highlighted column. Double-click any cell to change it. Red = off track. Tap ✏️ Edit to change a measurable or where it fills from.</div>
+      <button class="btn" style="padding:6px 12px;font-size:.8rem" onclick="this.textContent='Updating…';opAutoFill(true).then(()=>renderOwnerPortalBody())">↻ Update auto numbers</button>
+    </div>
     ${html}
     <div style="${OP_CARD};margin-top:16px;display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end">
       <label class="small muted" style="display:flex;flex-direction:column;gap:3px;flex:2 1 200px">Measurable<input id="opMName" placeholder="e.g. Cash collected" style="padding:7px"></label>
@@ -26437,6 +26572,7 @@ function opRenderScorecard(body, compact) {
       <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Unit<select id="opMUnit" style="padding:7px"><option>$</option><option>#</option><option>%</option></select></label>
       <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Goal<input id="opMGoal" type="number" step="any" style="padding:7px;width:110px"></label>
       <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Good when<select id="opMDir" style="padding:7px"><option value="1">At or above goal</option><option value="0">At or below goal</option></select></label>
+      <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Fills from<select id="opMAuto" style="padding:7px;max-width:240px"><option value="">Typed in by hand</option>${Object.entries(OP_AUTO).map(([k, a]) => `<option value="${k}">⚡ ${esc(a.label)}</option>`).join('')}</select></label>
       <button class="btn-amber" id="opMAddBtn" onclick="opAddMetric()" style="padding:9px 16px">+ Add measurable</button>
       <button class="btn" id="opMCancelBtn" onclick="opCancelEditMetric()" style="padding:9px 16px" hidden>Cancel</button>
     </div>`;
@@ -26450,6 +26586,7 @@ function opEditMetric(id) {
   document.getElementById('opMUnit').value = m.unit || '#';
   document.getElementById('opMGoal').value = m.goal === '' || m.goal == null ? '' : m.goal;
   document.getElementById('opMDir').value = m.higherIsBetter === false ? '0' : '1';
+  const au = document.getElementById('opMAuto'); if (au) au.value = m.auto || '';
   const b = document.getElementById('opMAddBtn'); if (b) b.textContent = '✓ Save changes';
   const c = document.getElementById('opMCancelBtn'); if (c) c.hidden = false;
   document.getElementById('opMName').scrollIntoView({ block: 'center' });
@@ -26462,11 +26599,13 @@ async function opAddMetric() {
   const g = document.getElementById('opMGoal').value;
   if (_opEditMetricId) {
     // Edit keeps the weekly numbers already entered.
-    await opColl('metrics').doc(_opEditMetricId).update({ name, owner: document.getElementById('opMOwner').value, unit: document.getElementById('opMUnit').value, goal: g === '' ? '' : Number(g), higherIsBetter: document.getElementById('opMDir').value === '1' }).catch(e => alert(e.message));
+    await opColl('metrics').doc(_opEditMetricId).update({ name, owner: document.getElementById('opMOwner').value, unit: document.getElementById('opMUnit').value, goal: g === '' ? '' : Number(g), higherIsBetter: document.getElementById('opMDir').value === '1', auto: (document.getElementById('opMAuto') || {}).value || '' }).catch(e => alert(e.message));
     _opEditMetricId = null;
+    opAutoFill(true);
     return renderOwnerPortalBody();
   }
-  await opColl('metrics').add({ name, owner: document.getElementById('opMOwner').value, unit: document.getElementById('opMUnit').value, goal: g === '' ? '' : Number(g), higherIsBetter: document.getElementById('opMDir').value === '1', values: {}, order: Date.now(), createdAtMs: Date.now() });
+  await opColl('metrics').add({ name, owner: document.getElementById('opMOwner').value, unit: document.getElementById('opMUnit').value, goal: g === '' ? '' : Number(g), higherIsBetter: document.getElementById('opMDir').value === '1', auto: (document.getElementById('opMAuto') || {}).value || '', values: {}, order: Date.now(), createdAtMs: Date.now() });
+  opAutoFill(true);
 }
 function opSetMetric(id, week, val) { opColl('metrics').doc(id).update({ ['values.' + week]: val === '' ? firebase.firestore.FieldValue.delete() : Number(val) }).catch(e => alert(e.message)); }
 function opEditCell(id, week) { const m = opData.metrics.find(x => x.id === id); const v = prompt(`${m.name} — week of ${week}:`, (m.values || {})[week] ?? ''); if (v !== null) opSetMetric(id, week, v.trim()); }
