@@ -26399,8 +26399,16 @@ function opAvgRating(m) { const v = Object.values(m.ratings || {}).map(Number).f
 function opRockPill(s) { return OP_PILL(s || 'On Track', s === 'Done' ? OP_GREEN : s === 'Off Track' || s === 'Not Done' ? OP_RED : OP_BLUE); }
 
 // ── SCORECARD ──
+// Scorecard starts at the first L10 meeting (Fri 10/30/26). Columns are still
+// keyed by the Monday of each week (so stored numbers don't move) but are
+// labeled with that week's Friday meeting date.
+const OP_SCORECARD_START = '2026-10-30';
+function opMeetingLabel(k) { const d = new Date(k + 'T12:00:00'); d.setDate(d.getDate() + 4); return (d.getMonth() + 1) + '/' + d.getDate(); }
+let _opEditMetricId = null;
 function opRenderScorecard(body, compact) {
-  const weeks = opWeekKeys(compact ? 6 : 13), wk = getWeekKey();
+  const startWk = getWeekKey(OP_SCORECARD_START + 'T12:00:00');
+  const weeks = opWeekKeys(compact ? 6 : 13).filter(w => w >= startWk), wk = getWeekKey();
+  if (!weeks.length) weeks.push(startWk);
   const rows = opData.metrics.map(m => {
     const vals = m.values || {};
     return `<tr>
@@ -26411,17 +26419,17 @@ function opRenderScorecard(body, compact) {
         return w === wk || compact
           ? `<td style="padding:4px"><input type="number" step="any" value="${v ?? ''}" onchange="opSetMetric('${m.id}','${w}',this.value)" style="width:78px;padding:4px 6px;text-align:right;border-radius:6px;${ok === true ? 'border-color:' + OP_GREEN : ok === false ? 'border-color:' + OP_RED + ';color:' + OP_RED : ''}"></td>`
           : `<td style="padding:6px 8px;text-align:right;font-variant-numeric:tabular-nums;${ok === false ? 'color:' + OP_RED + ';font-weight:700' : ok ? 'color:' + OP_GREEN : ''}" ondblclick="opEditCell('${m.id}','${w}')">${esc(opFmtVal(m, v))}</td>`; }).join('')}
-      ${compact ? '' : `<td style="padding:4px;white-space:nowrap"><button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opMetricToIssue('${m.id}')">→ Issue</button> <button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opDeleteDoc('metrics','${m.id}')">✕</button></td>`}
+      ${compact ? '' : `<td style="padding:4px;white-space:nowrap"><button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opEditMetric('${m.id}')">✏️ Edit</button> <button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opMetricToIssue('${m.id}')">→ Issue</button> <button class="btn" style="padding:3px 8px;font-size:.72rem" onclick="opDeleteDoc('metrics','${m.id}')">✕</button></td>`}
     </tr>`;
   }).join('');
   const html = `
     <div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:.85rem;min-width:100%">
-      <tr style="color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.05em"><td style="padding:6px 8px">Measurable</td><td style="padding:6px 8px">Owner</td><td style="padding:6px 8px">Goal</td>${weeks.map(w => `<td style="padding:6px 8px;text-align:right;${w === wk ? 'color:var(--amber);font-weight:800' : ''}">${opFmtWeek(w)}</td>`).join('')}${compact ? '' : '<td></td>'}</tr>
+      <tr style="color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.05em"><td style="padding:6px 8px">Measurable</td><td style="padding:6px 8px">Owner</td><td style="padding:6px 8px">Goal</td>${weeks.map(w => `<td style="padding:6px 8px;text-align:right;${w === wk ? 'color:var(--amber);font-weight:800' : ''}">${opMeetingLabel(w)}</td>`).join('')}${compact ? '' : '<td></td>'}</tr>
       ${rows || `<tr><td colspan="${weeks.length + 4}" class="small muted" style="padding:12px">No measurables yet.</td></tr>`}
     </table></div>`;
   if (compact) return html;
   body.innerHTML = `
-    <div class="small muted" style="margin-bottom:10px">Weekly numbers, week starting Monday. Type this week's number in the highlighted column; double-click an older cell to change it. Red = off track.</div>
+    <div class="small muted" style="margin-bottom:10px">Weekly numbers. Each column is a Friday L10 meeting date and covers that Monday–Sunday week. Type this week's number in the highlighted column; double-click an older cell to change it. Red = off track. Tap ✏️ Edit to change a measurable's name, owner, unit, goal or direction.</div>
     ${html}
     <div style="${OP_CARD};margin-top:16px;display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end">
       <label class="small muted" style="display:flex;flex-direction:column;gap:3px;flex:2 1 200px">Measurable<input id="opMName" placeholder="e.g. Cash collected" style="padding:7px"></label>
@@ -26429,12 +26437,35 @@ function opRenderScorecard(body, compact) {
       <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Unit<select id="opMUnit" style="padding:7px"><option>$</option><option>#</option><option>%</option></select></label>
       <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Goal<input id="opMGoal" type="number" step="any" style="padding:7px;width:110px"></label>
       <label class="small muted" style="display:flex;flex-direction:column;gap:3px">Good when<select id="opMDir" style="padding:7px"><option value="1">At or above goal</option><option value="0">At or below goal</option></select></label>
-      <button class="btn-amber" onclick="opAddMetric()" style="padding:9px 16px">+ Add measurable</button>
+      <button class="btn-amber" id="opMAddBtn" onclick="opAddMetric()" style="padding:9px 16px">+ Add measurable</button>
+      <button class="btn" id="opMCancelBtn" onclick="opCancelEditMetric()" style="padding:9px 16px" hidden>Cancel</button>
     </div>`;
+  _opEditMetricId = null;
 }
+function opEditMetric(id) {
+  const m = opData.metrics.find(x => x.id === id); if (!m) return;
+  _opEditMetricId = id;
+  document.getElementById('opMName').value = m.name || '';
+  document.getElementById('opMOwner').value = m.owner || 'Travis';
+  document.getElementById('opMUnit').value = m.unit || '#';
+  document.getElementById('opMGoal').value = m.goal === '' || m.goal == null ? '' : m.goal;
+  document.getElementById('opMDir').value = m.higherIsBetter === false ? '0' : '1';
+  const b = document.getElementById('opMAddBtn'); if (b) b.textContent = '✓ Save changes';
+  const c = document.getElementById('opMCancelBtn'); if (c) c.hidden = false;
+  document.getElementById('opMName').scrollIntoView({ block: 'center' });
+  document.getElementById('opMName').focus();
+}
+function opCancelEditMetric() { renderOwnerPortalBody(); }
+window.opEditMetric = opEditMetric; window.opCancelEditMetric = opCancelEditMetric;
 async function opAddMetric() {
   const name = document.getElementById('opMName').value.trim(); if (!name) return alert('Name the measurable.');
   const g = document.getElementById('opMGoal').value;
+  if (_opEditMetricId) {
+    // Edit keeps the weekly numbers already entered.
+    await opColl('metrics').doc(_opEditMetricId).update({ name, owner: document.getElementById('opMOwner').value, unit: document.getElementById('opMUnit').value, goal: g === '' ? '' : Number(g), higherIsBetter: document.getElementById('opMDir').value === '1' }).catch(e => alert(e.message));
+    _opEditMetricId = null;
+    return renderOwnerPortalBody();
+  }
   await opColl('metrics').add({ name, owner: document.getElementById('opMOwner').value, unit: document.getElementById('opMUnit').value, goal: g === '' ? '' : Number(g), higherIsBetter: document.getElementById('opMDir').value === '1', values: {}, order: Date.now(), createdAtMs: Date.now() });
 }
 function opSetMetric(id, week, val) { opColl('metrics').doc(id).update({ ['values.' + week]: val === '' ? firebase.firestore.FieldValue.delete() : Number(val) }).catch(e => alert(e.message)); }
