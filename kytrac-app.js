@@ -16429,6 +16429,43 @@ window.saveCustomer = saveCustomer;
 window.deleteCustomer = deleteCustomer;
 window.renderCustomers = renderCustomers;
 
+// CUSTOMER_PRINT_V1 (Travis 10/30/26): printable customer list. Uses the
+// same document viewer as proposals/invoices (Print + Save PDF buttons, works
+// on the iPhone app). Prints whatever the search box is showing -- clear the
+// search for everyone.
+function printCustomerList() {
+  const q = (document.getElementById('customerSearch')?.value || '').toLowerCase();
+  const list = (q ? allCustomers.filter(c =>
+      (c.name||'').toLowerCase().includes(q) || (c.email||'').toLowerCase().includes(q) ||
+      (c.phone||'').toLowerCase().includes(q) || (c.address||'').toLowerCase().includes(q))
+    : allCustomers.slice()).sort((a, b) => (a.name||'').localeCompare(b.name||''));
+  const co = (typeof companyProfile !== 'undefined' && companyProfile.companyName) || 'Customer List';
+  const today = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  const rows = list.map((c, i) => {
+    const jobs = conJobs.filter(j => j.client === c.name || j.customerId === c.id);
+    const open = jobs.filter(j => !['Closed Completed','Closed Lost','Complete'].includes(j.status)).length;
+    const src = c.source ? esc(c.source) + (c.referredBy ? ' — ' + esc(c.referredBy) : '') : '';
+    return '<tr><td class="n">' + (i + 1) + '</td><td><b>' + esc(c.name||'') + '</b><div class="sub">' + esc(c.type||'Homeowner') + (src ? ' · ' + src : '') + '</div></td>' +
+      '<td class="nw">' + esc(c.phone||'') + '</td><td>' + esc(c.email||'') + '</td><td>' + esc(c.address||'') + '</td>' +
+      '<td class="n">' + jobs.length + (open ? ' <span class="sub">(' + open + ' open)</span>' : '') + '</td></tr>';
+  }).join('');
+  const html = '<!doctype html><html><head><meta charset="utf-8"><title>Customer List</title><style>' +
+    '@page{size:letter landscape;margin:.5in}body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:24px;font-size:11px}' +
+    'h1{font-size:18px;margin:0}.meta{color:#555;margin:4px 0 14px}table{width:100%;border-collapse:collapse}' +
+    'th{background:#1a2b4c;color:#fff;text-align:left;padding:6px;font-size:10px;text-transform:uppercase;letter-spacing:.04em}' +
+    'td{padding:6px;border-bottom:1px solid #ddd;vertical-align:top}tr:nth-child(even) td{background:#f6f7f9}' +
+    'thead{display:table-header-group}tr{page-break-inside:avoid}.n{text-align:center;white-space:nowrap}.nw{white-space:nowrap}.sub{color:#666;font-size:10px;font-weight:normal}' +
+    '</style></head><body><h1>' + esc(co) + ' — Customer List</h1><div class="meta">' + list.length + ' customer' + (list.length !== 1 ? 's' : '') +
+    (q ? ' matching "' + esc(q) + '"' : '') + ' · Printed ' + today + '</div>' +
+    '<table><thead><tr><th>#</th><th>Customer</th><th>Phone</th><th>Email</th><th>Address</th><th>Jobs</th></tr></thead><tbody>' +
+    (rows || '<tr><td colspan="6" style="text-align:center;padding:20px">No customers.</td></tr>') + '</tbody></table></body></html>';
+  const titleEl = document.getElementById('viewProposalModalTitle');
+  if (titleEl) titleEl.textContent = '🖨 Customer List';
+  document.getElementById('viewProposalIframe').srcdoc = html;
+  kOpen('viewProposalModal');
+}
+window.printCustomerList = printCustomerList;
+
 // ════════════════════════════════════════════════════
 // ── TIME TRACKING ──
 // ════════════════════════════════════════════════════
