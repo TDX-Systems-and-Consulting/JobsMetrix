@@ -47,6 +47,35 @@ const JTXD_LOCKED_RATES = {
   crewSize: 3,
 };
 
+// CREW_SIZE_V1 (Travis 10/31/26): jobs are priced for a 3-person crew, but a
+// job can run with 1, 2 or 3 guys. The crew size is saved on the job and only
+// changes the day count (fewer guys = more days). Price, sub pay and margin
+// do not change.
+function jobCrewSize(jobId) {
+  const j = (typeof conJobs !== 'undefined' ? conJobs : []).find(x => x.id === (jobId || conCurrentJobId));
+  const n = Number(j && j.crewSize);
+  return [1, 2, 3].includes(n) ? n : JTXD_LOCKED_RATES.crewSize;
+}
+function paintCrewDays(id, billedDays, efficiencyDays, jobId) {
+  const e = document.getElementById(id); if (!e) return;
+  jobId = jobId || conCurrentJobId;
+  if (billedDays != null) { e.dataset.b = billedDays; e.dataset.e = efficiencyDays; e.dataset.job = jobId || ''; }
+  const f = JTXD_LOCKED_RATES.crewSize / jobCrewSize(e.dataset.job || jobId);
+  const fmt = v => (Number(v) * f).toLocaleString(undefined, { maximumFractionDigits: 1 });
+  if (e.dataset.b !== undefined) e.textContent = fmt(e.dataset.b) + ' / ' + fmt(e.dataset.e);
+  const sel = document.getElementById(id + 'Crew');
+  if (sel) { sel.value = String(jobCrewSize(e.dataset.job || jobId)); sel.dataset.job = e.dataset.job || jobId || ''; }
+}
+async function setJobCrewSize(n, jobId) {
+  n = Number(n); jobId = jobId || conCurrentJobId;
+  if (![1, 2, 3].includes(n) || !jobId) return;
+  const j = conJobs.find(x => x.id === jobId); if (j) j.crewSize = n;
+  ['estKpiDaysToComplete', 'fbarDays'].forEach(id => paintCrewDays(id));
+  try { await coll('jobs').doc(jobId).update({ crewSize: n }); }
+  catch (err) { if (typeof showToast === 'function') showToast('Could not save crew size: ' + err.message); }
+}
+window.setJobCrewSize = setJobCrewSize;
+
 // JOB_STREET_V1 (2026-10-10): street-only address for labels ("707 Karon Drive"),
 // same rule the Kanban cards use: text before the first comma, trimmed at the
 // street suffix so city text glued onto the street is dropped.
@@ -3258,6 +3287,7 @@ function paintJobMoney(job, b) {
   put('fbarJasonPay', ready ? fmt(tm.jasonTotal) : wait, undefined,
     ready ? `Sales ${fmt(tm.jasonCommission)} + superintendent ${fmt(tm.superintendentPay)} + consultant ${fmt(tm.consultantPay)}` : '');
   put('fbarDays', ready ? `${tm.billedDays.toFixed(1)} / ${tm.efficiencyDays.toFixed(1)}` : wait, undefined, 'Billed days / realistic days (8-hr days)');
+  if (ready) paintCrewDays('fbarDays', tm.billedDays, tm.efficiencyDays, job.id);
   put('fbarGoNoGo', ready ? tm.goNoGo : wait, ready ? (tm.goNoGo === 'GO' ? '#1dbb87' : '#ef5350') : 'var(--muted)');
 
   // Dashboard right panel
@@ -3294,6 +3324,7 @@ function paintEstimateMoneyTiles(tm, info) {
   const pl = document.getElementById('estKpiPriceLabel'); if (pl) pl.textContent = info.signed ? 'Contract Price' : 'Est. Price';
   set('estKpiJtxdActual', fmt(tm.jtxdActual));
   set('estKpiDaysToComplete', tm.billedDays.toFixed(1) + ' / ' + tm.efficiencyDays.toFixed(1));
+  paintCrewDays('estKpiDaysToComplete', tm.billedDays, tm.efficiencyDays);
   set('estKpiSubLabor', fmt(tm.realLaborCost));
   const sl = document.getElementById('estKpiSubLaborLabel'); if (sl) sl.textContent = info.subFromEstimate ? 'Est. Subcontractor Labor (60%)' : 'Subcontractor Labor (agreed)';
   set('estKpiJasonCommission', fmt(tm.jasonCommission));
@@ -25063,6 +25094,7 @@ function updateEstimateSummary() {
   setEl('estKpiDaysToComplete',
     tm.billedDays.toLocaleString(undefined, {maximumFractionDigits: 1}) + ' / ' +
     tm.efficiencyDays.toLocaleString(undefined, {maximumFractionDigits: 1}));
+  paintCrewDays('estKpiDaysToComplete', tm.billedDays, tm.efficiencyDays);
 
   // Est. Subcontractor Labor -- defaults to 60% of Labor Billed ($180/$300
   // real pay ratio), same placeholder the JTXD Margin Calculator's "Real
