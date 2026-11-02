@@ -29777,8 +29777,36 @@ function customerSafeLabel(sub) {
 // deliberately a separate function rather than changing
 // customerSafeLabel itself.
 function proposalSafeLabel(sub) {
-  return toGenericLabel(sub.name);
+  return proposalCleanName(toGenericLabel(sub.name));
 }
+
+// PROPOSAL_NAMES_V1 (Travis 11/2/26): category names are written for the
+// estimator and crew ("Bathroom Guided Questions", "Electrical: final",
+// "Demo", "LVP Flooring Install x2.97"). The customer proposal shows clean
+// trade names instead. Only the proposal uses this; the punch list and crew
+// paperwork keep the original names.
+const PROPOSAL_NAME_MAP = [
+  [/^electrical\s*:\s*final$/i, 'Electrical Finish'],
+  [/^electrical\s*:\s*rough$/i, 'Electrical Rough-In'],
+  [/^plumbing\s*:\s*final$/i, 'Plumbing Finish'],
+  [/^plumbing\s*:\s*rough$/i, 'Plumbing Rough-In'],
+  [/^hvac\s*:\s*final$/i, 'HVAC Finish'],
+  [/^hvac\s*:\s*rough$/i, 'HVAC Rough-In'],
+  [/^demo(lition)?(\s*[\/&]\s*(trash\s*out|cleanup|clean\s*up|debris(\s*removal)?))?$/i, 'Demolition & Debris Removal'],
+  [/^trash\s*out$/i, 'Debris Removal'],
+  [/^misc(ellaneous)?\.?$/i, 'Miscellaneous Repairs'],
+];
+function proposalCleanName(name) {
+  let n = String(name || '').trim()
+    .replace(/\s*×\s*(\d+(\.\d+)?)?$/, '')     // "LVP Flooring Install ×2.97"
+    .replace(/\s*[—–-]\s*$/, '')                 // dangling dash: "Wall/Ceiling Paint —"
+    .trim();
+  const guided = n.match(/^(.*?)\s*guided\s*questions$/i);
+  if (guided) return (guided[1].trim() || 'Project') + ' Remodel';
+  for (const [re, clean] of PROPOSAL_NAME_MAP) if (re.test(n)) return clean;
+  return n || 'Work';
+}
+window.proposalCleanName = proposalCleanName;
 
 // Turns the crew-facing scope stored on a subgroup into individual punch-list
 // tasks. Scope is commonly entered one room/instruction per line, but older
