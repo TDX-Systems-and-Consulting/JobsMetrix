@@ -72,6 +72,17 @@ service cloud.firestore {
       allow update: if inCompany(companyId) && hasFullAccess();
       allow delete: if false; // no client-side company deletion, ever
 
+      // ── Per-user read state (Notes / Messages "NEW" badges) ──
+      // READ_STATE_V2 (11/2/26): the app has always written read marks to
+      // companies/{id}/userReadState/{user}/..., but the only rule was a
+      // top-level /userReadState path, so every write was denied and NEW
+      // badges came back after each refresh. Key = email lowercased with
+      // '.' -> '_' and '@' -> '_at_' (getReadStateRef in kytrac-app.js).
+      match /userReadState/{userKey}/{type}/{docId} {
+        allow read, write: if inCompany(companyId)
+          && userKey == myEmail().lower().replace('[.]', '_').replace('@', '_at_');
+      }
+
       // ── Settings (team roster, company profile, markup/burden/OT config) ──
       match /settings/team {
         // Readable by any company member (needed for @mention roster,

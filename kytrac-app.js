@@ -7884,7 +7884,7 @@ window.switchDetailTab = switchDetailTab;
 // Path: companies/{companyId}/userReadState/{userEmail}/readCOs/{coId}
 
 function getReadStateRef(type) {
-  const email = (conCurrentUser?.email || '').replace(/\./g, '_').replace(/@/g, '_at_');
+  const email = (conCurrentUser?.email || '').toLowerCase().replace(/\./g, '_').replace(/@/g, '_at_');
   if (!email || !currentCompanyId || !conDb) return null;
   return conDb.collection('companies').doc(currentCompanyId)
     .collection('userReadState').doc(email).collection(type);
@@ -8017,6 +8017,16 @@ async function markAllNotesRead() {
 }
 window.markAllNotesRead = markAllNotesRead;
 
+// READ_STATE_V2 (Travis 11/2/26): a change order needs action only while it
+// is waiting to be priced. The old check treated every status except the
+// retired Approved/Declined/Rejected as new, so Customer Approved, Invoiced,
+// Paid and Priced change orders came back as ACTION NEEDED on every load.
+function coNeedsAction(status) {
+  const n = String(normalizeCOStatus(status) || '').toLowerCase();
+  return n === '' || n.startsWith('submitted') || n.startsWith('pending') || n.startsWith('draft');
+}
+window.coNeedsAction = coNeedsAction;
+
 // ── MESSAGES: load all job messages, track unread ──
 async function loadGlobalMessages() {
   const el = document.getElementById('globalMessagesList');
@@ -8029,7 +8039,7 @@ async function loadGlobalMessages() {
   for (const job of conJobs.slice(0, 20)) {
     try {
       const snap = await coll('jobs').doc(job.id).collection('messages')
-        .orderBy('createdMs', 'desc').limit(10).get();
+        .orderBy('createdMs', 'desc').limit(50).get();
       snap.forEach(d => allMsgs.push({ id: d.id, ...d.data(), jobId: job.id, jobName: job.name }));
     } catch(e) {}
   }
@@ -8105,9 +8115,7 @@ async function loadGlobalChangeOrders() {
     }
   }
 
-  const unprocessed = allCOs.filter(co =>
-    !['approved','declined','rejected'].includes((co.status || '').toLowerCase())
-  );
+  const unprocessed = allCOs.filter(co => coNeedsAction(co.status));
   setNavBadge('navCOBadge', unprocessed.length);
 
   if (!allCOs.length) {
@@ -8119,7 +8127,7 @@ async function loadGlobalChangeOrders() {
 
   el.innerHTML = allCOs.map(co => {
     const status = (co.status || 'pending').toLowerCase();
-    const isUnprocessed = !['approved','declined','rejected'].includes(status);
+    const isUnprocessed = coNeedsAction(co.status);
     const sc = statusColor[status] || '#f59e0b';
     const amount = co.amount || co.total || 0;
     return `<div style="background:${isUnprocessed ? 'rgba(239,83,80,.07)' : 'rgba(8,18,36,.6)'};border:1px solid ${isUnprocessed ? 'rgba(239,83,80,.4)' : 'var(--line)'};border-radius:12px;padding:16px">
@@ -8260,7 +8268,7 @@ async function refreshNotificationBadges() {
       const snap = await coll('jobs').doc(job.id).collection('changeorders').get().catch(() => null);
       if (snap) snap.forEach(d => {
         const co = d.data();
-        if (!['approved','declined','rejected'].includes((co.status || '').toLowerCase())) unprocessedCOs++;
+        if (coNeedsAction(co.status)) unprocessedCOs++;
       });
     }
     setNavBadge('navCOBadge', unprocessedCOs);
