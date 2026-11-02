@@ -19456,12 +19456,16 @@ function loadPortalJob(db, jobId, tokenData, token) {
       // not just hidden after the fact.
       if (!_portalSubAgreementMode) {
         // Load shared daily logs (last 20)
+        // PORTAL_LOGS_V2 (Travis 11/1/26): the logs collection also holds
+        // internal Activity entries (status changes, paid-in-full, overrides,
+        // signatures, invoices) -- those all carry a `type`. Crew daily logs
+        // never do, so the portal shows only entries without a type.
         portalColl('jobs').doc(jobId).collection('logs')
-          .orderBy('date','desc').limit(20).get()
+          .orderBy('date','desc').limit(100).get()
           .then(snap => {
             const logs = [];
-            snap.forEach(d => logs.push({ id: d.id, ...d.data() }));
-            renderPortalLogs(logs);
+            snap.forEach(d => { const x = d.data(); if (!x.type) logs.push({ id: d.id, ...x }); });
+            renderPortalLogs(logs.slice(0, 20));
           }).catch(() => renderPortalLogs([]));
 
         // Load invoices if sharing enabled
@@ -19631,7 +19635,7 @@ function renderPortalLogs(logs) {
   }
 
   el.innerHTML = logs.map(log => {
-    const hasPhotos = log.photos && log.photos.length > 0;
+    const hasPhotos = Array.isArray(log.photos) && log.photos.some(p => p && (p.storageUrl || p.dataUrl || p.url));
     return `<div class="portal-log-card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <div style="font-weight:700;font-size:.82rem;color:var(--amber)">${log.date||''}</div>
@@ -19642,7 +19646,7 @@ function renderPortalLogs(logs) {
       </div>
       ${log.notes?`<div style="font-size:.86rem;color:#eaf0fb;line-height:1.6;margin-bottom:${hasPhotos?'10px':'0'}">${esc(log.notes)}</div>`:''}
       ${hasPhotos?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
-        ${log.photos.slice(0,8).map(p => `<img src="${p.dataUrl}" style="width:80px;height:80px;object-fit:cover;border-radius:8px;cursor:pointer;border:1px solid rgba(110,145,210,.2)" onclick="window.open('${p.dataUrl.replace(/'/g,"\\'")}','_blank')" />`).join('')}
+        ${log.photos.slice(0,8).map(p => { const u = (p && (p.storageUrl || p.dataUrl || p.url)) || ''; return u ? `<img src="${esc(u)}" style="width:80px;height:80px;object-fit:cover;border-radius:8px;cursor:pointer;border:1px solid rgba(110,145,210,.2)" onclick="window.open(this.src,'_blank')" />` : ''; }).join('')}
       </div>`:''}
     </div>`;
   }).join('');
@@ -20356,7 +20360,8 @@ function renderPortalProposal(prop, jobId) {
       // Same independence as the internal document renderer: the item's
       // name and any note always show, so the full scope stays visible --
       // only that line's price is gated behind Itemized.
-      const itemsHtml = (c.items || []).length
+      // PROPOSAL_SCOPE_V3: line items only on a Full Itemized proposal.
+      const itemsHtml = (data.itemized && (c.items || []).length)
         ? c.items.filter(it => it.label || it.notes).map(it => {
             const itPrice = data.itemized ? `<span style="float:right;color:#cbd5e1">$${it.price.toFixed(2)}</span>` : '';
             const qtyTag = it.qtyText ? ` <span style="color:#cbd5e1;font-weight:700;white-space:nowrap">· ${esc(it.qtyText)}</span>` : '';
@@ -28432,7 +28437,12 @@ function renderProposalDocumentHtml(data, job, co, autoPrint) {
       // non-itemized proposal always shows the item's name (so a nitpicky
       // customer still sees the full scope), and always shows note text if
       // present -- but that line's $ amount only shows when Itemized is on.
-      const itemsHtml = (c.items || []).length
+      // PROPOSAL_SCOPE_V3 (Travis 11/2/26): the customer proposal shows the
+      // room, its scope note, and each category name (Baseboard Install,
+      // Wall Stud Framing). The individual line items (Door Casing 62 lf,
+      // Baseboard Labor...) belong to the punch list and crew paperwork,
+      // so they only print on a Full Itemized (bank/lender) proposal.
+      const itemsHtml = (itemized && (c.items || []).length)
         ? `<div class="cat-items">${c.items.map(it => {
             if (!it.label && !it.notes) return '';
             const itPrice = itemized ? `<span style="float:right;font-weight:600;color:#374151">$${it.price.toFixed(2)}</span>` : '';

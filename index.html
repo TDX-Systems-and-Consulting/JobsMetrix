@@ -1943,7 +1943,7 @@
             <select id="jcdStatusFilter" onchange="renderJCDTable()" style="font-size:.78rem;padding:5px 10px;background:var(--input-bg);border:1px solid var(--amber-border);color:var(--text);border-radius:8px">
               <option value="">All Statuses</option>
               <option>New Lead</option><option>Appointment Set</option><option>Building Estimate</option>
-              <option>Submitted</option><option>Approved</option><option>To Be Scheduled</option>
+              <option>Submitted</option><option value="Awaiting Deposit">Signed – Awaiting Deposit</option><option>To Be Scheduled</option>
               <option>Permitting</option><option>Scheduled</option><option>In Progress</option>
               <option>Customer Inspection</option><option value="Inspection Pending">Occupancy Inspection</option><option value="Complete">Complete – Awaiting Final Payment</option>
               <option>Closed Completed</option><option>Closed Lost</option>
@@ -4010,7 +4010,7 @@
               <option value="Appointment Set">Appointment Set</option>
               <option value="Building Estimate">Building Estimate</option>
               <option value="Submitted">Submitted</option>
-              <option value="Approved">Approved</option>
+              <option value="Awaiting Deposit">Signed – Awaiting Deposit</option>
               <option value="To Be Scheduled">To Be Scheduled</option>
               <option value="Permitting">Permitting</option>
               <option value="Scheduled">Scheduled</option>
@@ -4433,7 +4433,7 @@
           <select id="detailStatusBadge" onchange="commitJobStatusChange(this.value)"
             style="font-size:.74rem;font-weight:700;padding:3px 10px;border-radius:999px;background:rgba(217,119,6,.15);color:var(--amber);border:1px solid rgba(217,119,6,.3);cursor:pointer;flex-shrink:0">
             <option>New Lead</option><option>Appointment Set</option><option>Building Estimate</option>
-            <option>Submitted</option><option>Approved</option><option>To Be Scheduled</option>
+            <option>Submitted</option><option value="Awaiting Deposit">Signed – Awaiting Deposit</option><option>To Be Scheduled</option>
             <option>Permitting</option><option>Scheduled</option><option>In Progress</option>
             <option>Customer Inspection</option><option value="Inspection Pending">Occupancy Inspection</option><option value="Complete">Complete – Awaiting Final Payment</option>
             <option>Closed Completed</option><option>Closed Lost</option>
@@ -4675,7 +4675,7 @@
           <div id="entryInfoSavedMsg" style="display:none;color:#1dbb87;font-size:.8rem;font-weight:600">✓ Saved</div>
         </div>
         <div style="background:rgba(217,119,6,.08);border:1px solid rgba(217,119,6,.3);border-radius:10px;padding:12px 14px;margin-bottom:18px;font-size:.85rem;color:var(--muted)">
-          Required before this job can move to <b>Approved</b> or <b>Scheduled</b> — a crew showing up to a vacant property needs to know how to actually get in.
+          Required before this job can move to <b>To Be Scheduled</b> or <b>Scheduled</b> — a crew showing up to a vacant property needs to know how to actually get in.
         </div>
         <div class="form-grid">
           <div><label class="small muted" style="display:block;margin-bottom:5px">Lockbox Code</label>
@@ -5289,7 +5289,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202610311720"></script>
+<script src="kytrac-app.js?v=202611021215"></script>
 <script src="kytlead.js?v=202610271900"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
