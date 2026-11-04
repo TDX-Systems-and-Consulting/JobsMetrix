@@ -18950,7 +18950,7 @@ function populateLogsFilters() {
   if (jobSel) {
     const cur = jobSel.value;
     jobSel.innerHTML = '<option value="">All Jobs</option>' +
-      conJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(j.name)}</option>`).join('');
+      conJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(jobNumSt(j) || j.name)}</option>`).join('');
   }
   // Crew filter - unique crew members from logs
   const crewSel = document.getElementById('logsCrewFilter');
@@ -19029,8 +19029,13 @@ function renderGlobalLogCard(log) {
     <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:14px 16px 10px;border-bottom:1px solid rgba(110,145,210,.08);flex-wrap:wrap;gap:8px">
       <div>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <span style="font-weight:800;color:var(--amber);font-size:.88rem;cursor:pointer" onclick="openJobDetail('${log.jobId}')">${esc(log.jobName)}</span>
-          ${log.jobNumber?`<span style="font-size:.7rem;color:var(--muted)">${esc(log.jobNumber)}</span>`:''}
+          ${(() => { // LOGS_ADDRESS_V1 (Travis 11/4/26): lead with the street address, job number after
+            const j = conJobs.find(x => x.id === log.jobId) || { name: log.jobName, jobNumber: log.jobNumber, address: log.jobAddress };
+            const title = jobLabelParts(j) || log.jobName || 'Job';
+            const num = j.jobNumber || log.jobNumber || '';
+            return `<span style="font-weight:800;color:var(--amber);font-size:.88rem;cursor:pointer" onclick="openJobDetail('${log.jobId}')">${esc(title)}</span>` +
+              (num ? `<span style="font-size:.7rem;color:var(--muted)">${esc(num)}</span>` : '');
+          })()}
           <span style="background:${s.color}22;color:${s.color};padding:1px 7px;border-radius:999px;font-size:.68rem;font-weight:700">${esc(log.jobStatus||'')}</span>
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px">
@@ -19049,7 +19054,7 @@ function renderGlobalLogCard(log) {
         <span style="font-weight:700;margin-right:6px">⚠️ Issue:</span>${esc(log.issues)}
       </div>`:''}
       ${hasPhotos?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
-        ${log.photos.slice(0,6).filter(p => p && p.dataUrl).map((p,i) => `<img src="${p.dataUrl}" style="width:70px;height:70px;object-fit:cover;border-radius:8px;cursor:pointer;border:1px solid rgba(110,145,210,.2)" onclick="openLightbox('${p.dataUrl.replace(/'/g,"\\'")}')" />`).join('')}
+        ${log.photos.slice(0,6).map(p => (p && (p.storageUrl || p.dataUrl)) || '').filter(Boolean).map(u => `<img src="${esc(u)}" style="width:70px;height:70px;object-fit:cover;border-radius:8px;cursor:pointer;border:1px solid rgba(110,145,210,.2)" onclick="openLightbox(this.src)" />`).join('')}
         ${log.photos.length>6?`<div style="width:70px;height:70px;border-radius:8px;background:rgba(8,18,36,.8);border:1px solid rgba(110,145,210,.2);display:flex;align-items:center;justify-content:center;font-size:.76rem;color:var(--muted)">+${log.photos.length-6}</div>`:''}
       </div>`:''}
     </div>
