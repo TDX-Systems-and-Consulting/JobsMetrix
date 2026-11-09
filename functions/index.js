@@ -5148,6 +5148,19 @@ async function hatPerson(db, companyId, hat) {
     const q = await db.collection('companies').doc(companyId).collection('team').where('email', '==', email).limit(1).get();
     if (!q.empty) name = q.docs[0].data().name || email;
   } catch (e) {}
+  if (name === email) {
+    // The app keeps the live roster in settings/team; find the name there.
+    try {
+      const t = await db.collection('companies').doc(companyId).collection('settings').doc('team').get();
+      const walk = o => {
+        if (!o || typeof o !== 'object') return null;
+        if (String(o.email || '').toLowerCase() === email.toLowerCase() && o.name) return o.name;
+        for (const v of Object.values(o)) { const f = walk(v); if (f) return f; }
+        return null;
+      };
+      name = (t.exists && walk(t.data())) || email;
+    } catch (e) {}
+  }
   return { email, name };
 }
 function hatJobLabel(job, id) {
