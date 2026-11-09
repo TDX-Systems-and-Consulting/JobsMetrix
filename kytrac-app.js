@@ -11212,7 +11212,9 @@ function renderHomeDashboard() {
     }
   }
 
-  if (!fullAccess) return;
+  // HOME_ACTIVITY_OM_V2: the Office Manager's Activity card still loads
+  // even though the money/pipeline panels below stay owner-only.
+  if (!fullAccess) { if (currentUserRole === 'Office Manager') renderWhatsChanged(); return; }
 
   // ── Pipeline — horizontal strip (active stages only) ──
   const pipeline = document.getElementById('homePipelineSummary');
