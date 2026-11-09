@@ -2117,7 +2117,8 @@
         <select id="newTodoJobLink" style="font-size:.82rem;padding:8px 12px;background:var(--input-bg);border:1px solid var(--amber-border);color:var(--text);border-radius:10px;max-width:220px">
           <option value="">No job linked</option>
         </select>
-        <select id="newTodoAssignee" style="font-size:.82rem;padding:8px 12px;background:var(--input-bg);border:1px solid var(--amber-border);color:var(--text);border-radius:10px">
+        <input type="date" id="newTodoDue" title="Due date" style="font-size:.82rem;padding:7px 10px;background:var(--input-bg);border:1px solid var(--amber-border);color:var(--text);border-radius:10px" />
+        <select id="newTodoAssignee" onchange="this.dataset.touched='1'" style="font-size:.82rem;padding:8px 12px;background:var(--input-bg);border:1px solid var(--amber-border);color:var(--text);border-radius:10px">
           <option value="">Unassigned</option>
         </select>
         <button class="btn-amber" onclick="addTodo()">+ Add</button>
@@ -2125,12 +2126,17 @@
 
       <!-- Filters -->
       <div class="todo-filters">
-        <button class="todo-filter-btn active" onclick="filterTodos('all',this)">All</button>
-        <button class="todo-filter-btn" onclick="filterTodos('mine',this)">Mine</button>
-        <button class="todo-filter-btn" onclick="filterTodos('open',this)">Open</button>
-        <button class="todo-filter-btn" onclick="filterTodos('done',this)">Completed</button>
-        <button class="todo-filter-btn" onclick="filterTodos('high',this)">🔴 High Priority</button>
-        <button class="todo-filter-btn" onclick="filterTodos('today',this)">📅 Due Today</button>
+        <button id="todoScopeMine" class="todo-filter-btn active" onclick="setTodoScope('mine')">👤 Mine</button>
+        <button id="todoScopeAll" class="todo-filter-btn" onclick="setTodoScope('all')">👥 Everyone</button>
+        <select id="todoHatFilter" onchange="renderTodos()" style="font-size:.78rem;padding:5px 10px;background:var(--input-bg);border:1px solid var(--amber-border);color:var(--text);border-radius:8px">
+          <option value="">All hats</option><option value="pm">PM</option><option value="owner">Owner</option><option value="sales">Sales</option><option value="super">Superintendent</option><option value="office">Office</option>
+        </select>
+        <span style="width:1px;align-self:stretch;background:var(--amber-border);margin:0 4px"></span>
+        <button class="todo-filter-btn todo-status-btn active" onclick="filterTodos('all',this)">All</button>
+        <button class="todo-filter-btn todo-status-btn" onclick="filterTodos('open',this)">Open</button>
+        <button class="todo-filter-btn todo-status-btn" onclick="filterTodos('done',this)">Completed</button>
+        <button class="todo-filter-btn todo-status-btn" onclick="filterTodos('high',this)">🔴 High Priority</button>
+        <button class="todo-filter-btn todo-status-btn" onclick="filterTodos('today',this)">📅 Due Today</button>
       </div>
 
       <!-- Stats -->
@@ -2619,22 +2625,11 @@
       <!-- NOTIFY_ROUTING_V1: who gets system to-dos and alerts (Owner only) -->
       <div class="settings-section" id="notifyRoutingSection" style="display:none">
         <div class="settings-head">
-          <h3>🔔 Who Gets Alerts</h3>
-          <p>Both partners stay Owner. This decides who receives the automatic to-dos and alerts, by seat, so each person only gets their own noise.</p>
+          <h3>🔔 Who Gets Alerts (To-Do Hats)</h3>
+          <p>Every automatic to-do is tagged with a hat: the job it belongs to. Pick who wears each hat. Change a hat here (for example, Superintendent to Shane) and new to-dos follow it. Logins and access don't change.</p>
         </div>
         <div class="settings-body">
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px">
-            <div>
-              <label class="small muted" style="display:block;margin-bottom:5px">Sales alerts go to</label>
-              <select id="routeSalesSelect" style="width:100%"></select>
-              <div class="small muted" style="margin-top:4px">Estimate follow-ups (Submitted 3+ days) and cold estimates (7+ days).</div>
-            </div>
-            <div>
-              <label class="small muted" style="display:block;margin-bottom:5px">Operations alerts go to</label>
-              <select id="routeOpsSelect" style="width:100%"></select>
-              <div class="small muted" style="margin-top:4px">Scheduling, inspections, invoices due/overdue, missing daily logs, change orders, receipts, and job message alerts.</div>
-            </div>
-          </div>
+          <div id="hatRoutingGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px"></div>
           <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
             <button class="btn-amber" onclick="saveNotifyRouting()">Save</button>
             <span class="small muted" id="routeStatus"></span>
@@ -5289,7 +5284,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202611091640"></script>
+<script src="kytrac-app.js?v=202611091730"></script>
 <script src="kytlead.js?v=202610271900"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell

@@ -3693,7 +3693,9 @@ exports.dailyKpiRefresh = functions.pubsub
       // QBO connection status (SLAs are based on job/invoice/CO data
       // already in Firestore, not QBO). ──────────────────────────────
       try {
-        await runSLATriggers(db, companyId);
+        // TODO_HATS_V1: no automatic to-dos on Sunday (Sabbath).
+        const _ctDay = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' })).getDay();
+        if (_ctDay !== 0) await runSLATriggers(db, companyId);
       } catch(e) {
         console.error(`SLA triggers failed for ${companyId}:`, e.message);
       }
@@ -3758,7 +3760,10 @@ async function runSLATriggers(db, companyId) {
   // seat (settings/notifyRouting = { sales, ops } emails, set in
   // Settings > Who Gets Alerts). Sales = estimate follow-ups; everything
   // else = ops. Unset or unknown email = old behavior (every Owner).
-  let salesOwners = owners, opsOwners = owners;
+  // TODO_HATS_V1: every automatic to-do is tagged with a hat (pm, owner,
+  // sales, super, office) and goes to the one person wearing that hat in
+  // Settings > Who Gets Alerts. Falls back to the old sales/ops seats.
+  let salesOwners = owners, opsOwners = owners, pmOwners = owners, ownerOwners = owners, officeOwners = owners;
   try {
     const rd = await db.collection('companies').doc(companyId)
       .collection('settings').doc('notifyRouting').get();
@@ -3771,8 +3776,12 @@ async function runSLATriggers(db, companyId) {
       };
       salesOwners = pick(r.sales) || owners;
       opsOwners = pick(r.ops) || owners;
+      pmOwners = pick(r.pm || r.ops) || owners;
+      ownerOwners = pick(r.owner || r.ops) || owners;
+      officeOwners = pick(r.office) || pmOwners;
     }
   } catch (e) { console.warn('notifyRouting read failed:', e.message); }
+  const hatOf = list => list === salesOwners ? 'sales' : list === officeOwners ? 'office' : list === ownerOwners ? 'owner' : 'pm';
 
   // PlannerXD ownerUid — same lookup the client-side pulse/notification
   // bridges use. If it's not set, we just skip the PlannerXD push and
@@ -3800,7 +3809,7 @@ async function runSLATriggers(db, companyId) {
   const slaExists = async (slaKey) => {
     const existing = await todosRef
       .where('slaKey', '==', slaKey)
-      .where('slaDate', '==', todayStr)
+      .where('done', '==', false)
       .limit(1).get();
     return !existing.empty;
   };
@@ -3830,7 +3839,7 @@ async function runSLATriggers(db, companyId) {
     } catch(e) { console.warn('PlannerXD push failed:', e.message); }
   };
 
-  const createTodo = async (jobId, jobName, text, priority, assignees, slaKey) => {
+  const createTodo = async (jobId, jobName, text, priority, assignees, slaKey, hat) => {
     if (await slaExists(slaKey)) return;
     await todosRef.add({
       text,
@@ -3838,6 +3847,9 @@ async function runSLATriggers(db, companyId) {
       jobName,
       priority,
       assignees,
+      assignee: (assignees && assignees[0] && assignees[0].email) || '',
+      assigneeName: (assignees && assignees[0] && assignees[0].name) || '',
+      hat: hat || hatOf(assignees),
       slaKey,
       slaDate: todayStr,
       source: 'sla',
@@ -3854,7 +3866,8 @@ async function runSLATriggers(db, companyId) {
   for (const jobDoc of jobsSnap.docs) {
     const job = jobDoc.data();
     const jobId = jobDoc.id;
-    const jobName = job.name || jobId;
+    const _street = String(job.address || '').split(',')[0].trim();
+    const jobName = [job.jobNumber || '', _street].filter(Boolean).join(' \u00b7 ') || job.name || jobId;
     const status = job.status || '';
 
     if (job.archived) continue;
@@ -3867,11 +3880,11 @@ async function runSLATriggers(db, companyId) {
       if (days >= 7) {
         await createTodo(jobId, jobName,
           `Estimate at risk of going cold — ${jobName} (${days} days)`,
-          'high', salesOwners, `${jobId}_estimate_cold`);
+          'high', salesOwners, `${jobId}_estimate_cold`, 'sales');
       } else if (days >= 3) {
         await createTodo(jobId, jobName,
           `Follow up on ${jobName} estimate — sent ${days} days ago`,
-          'med', salesOwners, `${jobId}_estimate_followup`);
+          'med', salesOwners, `${jobId}_estimate_followup`, 'sales');
       }
     }
 
@@ -3882,11 +3895,11 @@ async function runSLATriggers(db, companyId) {
       if (days >= 10) {
         await createTodo(jobId, jobName,
           `URGENT: ${jobName} still unscheduled after ${days} days`,
-          'high', opsOwners, `${jobId}_schedule_escalation`);
+          'high', pmOwners, `${jobId}_schedule_escalation`, 'pm');
       } else if (days >= 5) {
         await createTodo(jobId, jobName,
           `Schedule crew for ${jobName} — ${days} days since approval`,
-          'med', opsOwners, `${jobId}_schedule_crew`);
+          'med', pmOwners, `${jobId}_schedule_crew`, 'pm');
       }
     }
 
@@ -3897,11 +3910,11 @@ async function runSLATriggers(db, companyId) {
       if (days >= 5) {
         await createTodo(jobId, jobName,
           `URGENT: Inspection pending ${days} days on ${jobName}`,
-          'high', opsOwners, `${jobId}_inspection_escalation`);
+          'high', pmOwners, `${jobId}_inspection_escalation`, 'pm');
       } else if (days >= 2) {
         await createTodo(jobId, jobName,
           `Follow up on inspection for ${jobName} — ${days} days pending`,
-          'med', opsOwners, `${jobId}_inspection_followup`);
+          'med', pmOwners, `${jobId}_inspection_followup`, 'pm');
       }
     }
 
@@ -3912,15 +3925,15 @@ async function runSLATriggers(db, companyId) {
       if (days >= 45) {
         await createTodo(jobId, jobName,
           `Invoice 15 days past due — ${jobName} (${days} days since completion)`,
-          'high', opsOwners, `${jobId}_invoice_pastdue15`);
+          'high', officeOwners, `${jobId}_invoice_pastdue15`, 'office');
       } else if (days >= 30) {
         await createTodo(jobId, jobName,
           `Invoice overdue — ${jobName} (${days} days since completion)`,
-          'high', opsOwners, `${jobId}_invoice_overdue`);
+          'high', officeOwners, `${jobId}_invoice_overdue`, 'office');
       } else if (days >= 25) {
         await createTodo(jobId, jobName,
           `Invoice due in 5 days — ${jobName}`,
-          'med', opsOwners, `${jobId}_invoice_due5`);
+          'med', officeOwners, `${jobId}_invoice_due5`, 'office');
       }
     }
 
@@ -3929,7 +3942,7 @@ async function runSLATriggers(db, companyId) {
     // table, just surfaced proactively instead of only-if-you-look.
     if (!['Closed Completed', 'Closed Lost', 'Submitted', 'Awaiting Deposit', 'To Be Scheduled', 'Permitting'].includes(status)) {
       const logDays = daysSince(job.lastLogDate);
-      if (logDays !== null && logDays >= 3) {
+      if (false && logDays !== null && logDays >= 3) { // TODO_HATS_V1: replaced by the next-morning daily log check
         await createTodo(jobId, jobName,
           `No daily log on ${jobName} in ${logDays} days`,
           'high', opsOwners, `${jobId}_no_log_${todayStr}`);
@@ -3957,7 +3970,7 @@ async function runSLATriggers(db, companyId) {
     if (unprocessedCOCount >= 3) {
       await createTodo(companyId, 'Company-wide',
         `${unprocessedCOCount} change orders awaiting your review`,
-        'high', opsOwners, `${companyId}_unprocessed_cos_${todayStr}`);
+        'high', pmOwners, `${companyId}_unprocessed_cos`, 'pm');
     }
   } catch(e) {}
 
@@ -3966,8 +3979,53 @@ async function runSLATriggers(db, companyId) {
   if (outstandingInvoiceTotal >= 10000) {
     await createTodo(companyId, 'Company-wide',
       `Outstanding invoices total $${Math.round(outstandingInvoiceTotal).toLocaleString()} — above your $10k threshold`,
-      'high', opsOwners, `${companyId}_outstanding_threshold_${todayStr}`);
+      'high', ownerOwners, `${companyId}_outstanding_threshold`, 'owner');
   }
+
+  // TODO_HATS_V1 #11: each unpaid invoice 7+ days past its due date -> Office.
+  try {
+    const cut = new Date(today.getTime() - 7 * 86400000).toISOString().split('T')[0];
+    for (const jobDoc of jobsSnap.docs) {
+      const job = jobDoc.data();
+      if (job.archived || job.status === 'Closed Lost') continue;
+      const _st = String(job.address || '').split(',')[0].trim();
+      const label = [job.jobNumber || '', _st].filter(Boolean).join(' \u00b7 ') || job.name || jobDoc.id;
+      const invs = await jobDoc.ref.collection('invoices').get();
+      for (const d of invs.docs) {
+        const inv = d.data();
+        const st = String(inv.status || '').toLowerCase();
+        if (!inv.dueDate || ['paid', 'draft', 'void', 'voided', 'cancelled'].includes(st)) continue;
+        if (inv.dueDate > cut) continue;
+        const owed = (Number(inv.total) || 0) - (Number(inv.amtPaid) || 0);
+        if (owed <= 0.5) continue;
+        await createTodo(jobDoc.id, label,
+          `Call ${job.client || 'the customer'} about invoice ${inv.number || ''} — $${owed.toLocaleString(undefined, { maximumFractionDigits: 2 })} past due since ${inv.dueDate} — ${label}`,
+          'high', officeOwners, `${d.id}_inv_pastdue7`, 'office');
+      }
+    }
+  } catch (e) { console.warn('past-due invoice check failed:', e.message); }
+
+  // TODO_HATS_V1 #13: yesterday's work day (Saturday when today is Monday):
+  // someone clocked in on a job but no crew Daily Log was saved -> Office.
+  try {
+    const ct = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+    const back = ct.getDay() === 1 ? 2 : 1;
+    const y = new Date(ct.getTime() - back * 86400000);
+    const yStr = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, '0')}-${String(y.getDate()).padStart(2, '0')}`;
+    const te = await db.collection('companies').doc(companyId).collection('timeentries').where('date', '==', yStr).get();
+    const jobIds = [...new Set(te.docs.map(d => d.data().jobId).filter(id => id && id !== '__office__'))];
+    for (const jid of jobIds) {
+      const jref = db.collection('companies').doc(companyId).collection('jobs').doc(jid);
+      const logs = await jref.collection('logs').where('date', '==', yStr).get();
+      if (logs.docs.some(d => !d.data().type)) continue;
+      const jd = (await jref.get()).data() || {};
+      const _st = String(jd.address || '').split(',')[0].trim();
+      const label = [jd.jobNumber || '', _st].filter(Boolean).join(' \u00b7 ') || jd.name || jid;
+      await createTodo(jid, label,
+        `Daily log missing for ${yStr} — ${label}. Call the team lead and get it entered.`,
+        'high', officeOwners, `${jid}_nolog_${yStr}`, 'office');
+    }
+  } catch (e) { console.warn('missing daily log check failed:', e.message); }
 
   console.log(`SLA triggers complete for ${companyId}`);
 }
@@ -5067,3 +5125,108 @@ async function kl2InboundText(fromRaw, text) {
   }
   return hit;
 }
+
+
+// ═══════════════════════════════════════════════════════════
+// TODO_HATS_V1 (Travis 11/9/26): to-dos route by hat.
+// Hats live in settings/notifyRouting: pm, owner, sales, super, office
+// (emails). A to-do created anywhere with a `hat` and no assignee gets the
+// person wearing that hat filled in here -- this is how the customer
+// portal (which can't read the team list) still lands to-dos on a person.
+// ═══════════════════════════════════════════════════════════
+async function hatRouting(db, companyId) {
+  const r = await db.collection('companies').doc(companyId).collection('settings').doc('notifyRouting').get().catch(() => null);
+  const d = (r && r.exists) ? (r.data() || {}) : {};
+  return { pm: d.pm || d.ops || '', owner: d.owner || d.ops || '', sales: d.sales || '', super: d.super || '', office: d.office || d.pm || d.ops || '' };
+}
+async function hatPerson(db, companyId, hat) {
+  const r = await hatRouting(db, companyId);
+  const email = r[hat] || '';
+  if (!email) return { email: '', name: '' };
+  let name = email;
+  try {
+    const q = await db.collection('companies').doc(companyId).collection('team').where('email', '==', email).limit(1).get();
+    if (!q.empty) name = q.docs[0].data().name || email;
+  } catch (e) {}
+  return { email, name };
+}
+function hatJobLabel(job, id) {
+  const st = String(job.address || '').split(',')[0].trim();
+  return [job.jobNumber || '', st].filter(Boolean).join(' \u00b7 ') || job.name || id;
+}
+
+exports.todoHatAssign = functions.firestore
+  .document('companies/{companyId}/todos/{todoId}')
+  .onCreate(async (snap, context) => {
+    const t = snap.data() || {};
+    if (!t.hat || t.assignee) return null;
+    const p = await hatPerson(admin.firestore(), context.params.companyId, t.hat);
+    if (!p.email) return null;
+    return snap.ref.update({ assignee: p.email, assigneeName: p.name });
+  });
+
+exports.todoHatJobStatus = functions.firestore
+  .document('companies/{companyId}/jobs/{jobId}')
+  .onUpdate(async (change, context) => {
+    const { companyId, jobId } = context.params;
+    const a = change.after.data() || {}, b = change.before.data() || {};
+    if (a.status === b.status) return null;
+    const db = admin.firestore();
+    const todos = db.collection('companies').doc(companyId).collection('todos');
+    const label = hatJobLabel(a, jobId);
+    const add = async (key, hat, text) => {
+      const ex = await todos.where('slaKey', '==', key).where('done', '==', false).limit(1).get();
+      if (!ex.empty) return;
+      const p = await hatPerson(db, companyId, hat);
+      await todos.add({
+        text, jobId, jobName: label, priority: 'high', hat, slaKey: key,
+        assignee: p.email, assigneeName: p.name, done: false,
+        source: 'job_status', createdBy: 'system',
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    };
+    // #2b: deposit paid (job moves to To Be Scheduled) -> PM schedules it.
+    if (a.status === 'To Be Scheduled' && !['Permitting', 'In Progress', 'Inspection Pending', 'Complete', 'Closed Completed'].includes(b.status)) {
+      await add(`${jobId}_schedule_after_deposit`, 'pm', `Schedule job — ${label} (deposit paid)`);
+    }
+    // #12: job marked Complete -> Office sends the final invoice and lien waiver.
+    if (a.status === 'Complete' && b.status !== 'Closed Completed') {
+      await add(`${jobId}_final_invoice`, 'office', `Send final invoice and lien waiver — ${label}`);
+    }
+    return null;
+  });
+
+// TODO_HATS_V1 #3: a change order is approved (customer signed it in the
+// portal, or it was approved in the app) -> Office collects the payment
+// (change orders are due on receipt) and PM adds it to the scope and tells
+// the crew.
+exports.todoHatCOApproved = functions.firestore
+  .document('companies/{companyId}/jobs/{jobId}/changeorders/{coId}')
+  .onWrite(async (change, context) => {
+    const { companyId, jobId, coId } = context.params;
+    if (!change.after.exists) return null;
+    const before = change.before.exists ? change.before.data() : {};
+    const after = change.after.data() || {};
+    if (!CO_APPROVED.includes(after.status) || CO_APPROVED.includes(before.status)) return null;
+    const db = admin.firestore();
+    const todos = db.collection('companies').doc(companyId).collection('todos');
+    const job = (await db.collection('companies').doc(companyId).collection('jobs').doc(jobId).get()).data() || {};
+    const label = hatJobLabel(job, jobId);
+    const title = after.title || 'Change Order';
+    const amt = Number(after.amount) || 0;
+    const amtStr = amt ? ' ($' + amt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ')' : '';
+    const add = async (key, hat, text) => {
+      const ex = await todos.where('slaKey', '==', key).limit(1).get();
+      if (!ex.empty) return;
+      const p = await hatPerson(db, companyId, hat);
+      await todos.add({
+        text, jobId, jobName: label, coId, priority: 'high', hat, slaKey: key,
+        assignee: p.email, assigneeName: p.name, done: false,
+        source: 'co_approved', category: 'Change Order', createdBy: 'system',
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    };
+    await add(`${coId}_co_collect`, 'office', `Collect payment for change order "${title}"${amtStr}, due on receipt — ${label}`);
+    await add(`${coId}_co_scope`, 'pm', `Change order "${title}" approved — add it to the scope and tell the crew — ${label}`);
+    return null;
+  });

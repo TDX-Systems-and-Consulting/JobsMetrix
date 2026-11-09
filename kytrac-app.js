@@ -2319,13 +2319,13 @@ function getTeamMemberOptsEmail(selected, placeholder) {
 function renderJobTodos(jobId) {
   // Populate assignee dropdown
   const asgn = document.getElementById('jobTodoAssignee');
-  if (asgn) asgn.innerHTML = getTeamMemberOptsEmail('', 'Assign to…');
+  if (asgn) asgn.innerHTML = getTeamMemberOptsEmail(conCurrentUser?.email || '', 'Assign to…'); // TODO_HATS_V1 #7
 
   const list = document.getElementById('jobTodoList');
   const stats = document.getElementById('jobTodoStats');
   if (!list) return;
   const today = new Date().toISOString().split('T')[0];
-  const todos = (allTodos || []).filter(t => t.jobId === jobId);
+  const todos = (allTodos || []).filter(t => t.jobId === jobId && (canSeeAllTodos() || isMyTodo(t)));
   const open = todos.filter(t => !t.done).length;
   const done = todos.filter(t => t.done).length;
   const overdue = todos.filter(t => !t.done && t.dueDate && t.dueDate < today).length;
@@ -2351,6 +2351,7 @@ function renderJobTodos(jobId) {
       <div style="flex:1;min-width:0">
         <div style="font-size:.9rem;font-weight:${todo.done?'400':'600'};color:${todo.done?'var(--muted)':'#eaf0fb'};${todo.done?'text-decoration:line-through':''}">${esc(todo.text||'')}</div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:5px">
+          ${todoHatTag(todo)}
           ${todo.priority==='high'?'<span style="font-size:.68rem;background:#ef535022;color:#fca5a5;border-radius:999px;padding:1px 7px;font-weight:700">HIGH</span>':''}
           ${todo.priority==='med'?'<span style="font-size:.68rem;background:#f9731622;color:#fed7aa;border-radius:999px;padding:1px 7px;font-weight:700">MED</span>':''}
           ${todo.assignee?`<span style="font-size:.72rem;color:var(--muted)">👤 ${esc(todo.assigneeName||todo.assignee)}</span>`:''}
@@ -2681,6 +2682,30 @@ function routedOwner(teamMembers, seat) {
   return (teamMembers || []).find(m => m.role === 'Owner') || null;
 }
 window.routedOwner = routedOwner;
+// TODO_HATS_V1 (Travis 11/9/26): every automatic to-do carries a hat --
+// the job it belongs to -- and goes to the one person wearing that hat.
+// settings/notifyRouting = { pm, owner, sales, super, office, ops(=pm) }.
+const TODO_HATS = [
+  { key: 'pm',     label: 'PM',             color: '#3b82f6', help: 'Change orders to review, scheduling after the deposit, inspections, approved change orders' },
+  { key: 'owner',  label: 'Owner',          color: '#f59e0b', help: 'Company-level money alerts' },
+  { key: 'sales',  label: 'Sales',          color: '#f97316', help: 'Proposal follow-ups (Submitted 3+ days) and cold estimates (7+ days)' },
+  { key: 'super',  label: 'Superintendent', color: '#0891b2', help: 'Field coordination (reserved; nothing automatic yet)' },
+  { key: 'office', label: 'Office',         color: '#8b5cf6', help: 'Deposits, change order payments, sub payments, receipts, past-due invoices, final invoices and lien waivers, missing daily logs' },
+];
+window.TODO_HATS = TODO_HATS;
+function hatEmail(hat) {
+  const r = window._notifyRouting || {};
+  if (hat === 'pm') return r.pm || r.ops || '';
+  if (hat === 'owner') return r.owner || r.ops || '';
+  if (hat === 'office') return r.office || r.pm || r.ops || '';
+  return r[hat] || '';
+}
+function hatPersonClient(hat) {
+  const em = hatEmail(hat);
+  const m = (_lastTeamMemberList || allTeamMembers || []).find(x => (x.email || '').toLowerCase() === em.toLowerCase());
+  return { email: em, name: (m && m.name) || em };
+}
+window.hatEmail = hatEmail; window.hatPersonClient = hatPersonClient;
 function renderNotifyRouting() {
   const sec = document.getElementById('notifyRoutingSection');
   if (!sec) return;
@@ -2688,29 +2713,36 @@ function renderNotifyRouting() {
   sec.style.display = '';
   const team = (_lastTeamMemberList || []).filter(m => m.email);
   const r = window._notifyRouting || {};
-  const owners = team.filter(m => ['Owner', 'Full Access'].includes(m.role) || m.fullAccessOverride);
-  const findBy = word => (owners.find(m => (m.name || '').toLowerCase().includes(word)) || {}).email || '';
-  const salesDefault = r.sales || findBy('jason') || (owners[0] || {}).email || '';
-  const opsDefault = r.ops || findBy('travis') || (owners[0] || {}).email || '';
+  const byWord = w => (team.find(m => (m.name || '').toLowerCase().includes(w)) || {}).email || '';
+  const defaults = {
+    pm: r.pm || r.ops || byWord('travis'),
+    owner: r.owner || r.ops || byWord('travis'),
+    sales: r.sales || byWord('jason'),
+    super: r.super || byWord('jason'),
+    office: r.office || (team.find(m => m.role === 'Office Manager') || {}).email || '',
+  };
   const opts = sel => team.map(m => `<option value="${esc(m.email)}" ${m.email === sel ? 'selected' : ''}>${esc(m.name || m.email)} — ${esc(m.role || '')}</option>`).join('');
-  const sEl = document.getElementById('routeSalesSelect');
-  const oEl = document.getElementById('routeOpsSelect');
-  if (sEl) sEl.innerHTML = opts(salesDefault);
-  if (oEl) oEl.innerHTML = opts(opsDefault);
+  const box = document.getElementById('hatRoutingGrid');
+  if (box) box.innerHTML = TODO_HATS.map(h => `<div>
+      <label class="small muted" style="display:block;margin-bottom:5px"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${h.color};margin-right:6px"></span>${h.label} to-dos go to</label>
+      <select id="hatSel_${h.key}" style="width:100%">${opts(defaults[h.key])}</select>
+      <div class="small muted" style="margin-top:4px">${h.help}</div>
+    </div>`).join('');
   const st = document.getElementById('routeStatus');
-  if (st) st.textContent = (r.sales || r.ops) ? 'Saved routing is active.' : 'Not saved yet — alerts still go to every Owner. Check the picks and press Save.';
+  if (st) st.textContent = r.pm ? 'Saved hats are active.' : 'Not saved yet. Check the picks and press Save.';
 }
 window.renderNotifyRouting = renderNotifyRouting;
 async function saveNotifyRouting() {
   if (currentUserRole !== 'Owner') { alert('Only an Owner can change this.'); return; }
-  const sales = document.getElementById('routeSalesSelect')?.value || '';
-  const ops = document.getElementById('routeOpsSelect')?.value || '';
-  if (!sales || !ops) { alert('Pick a person for both.'); return; }
+  const v = {};
+  TODO_HATS.forEach(h => { v[h.key] = document.getElementById('hatSel_' + h.key)?.value || ''; });
+  if (TODO_HATS.some(h => h.key !== 'super' && !v[h.key])) { alert('Pick a person for every hat.'); return; }
+  v.ops = v.pm; // older code reads "ops"
   try {
-    await coll('settings').doc('notifyRouting').set({ sales, ops, updatedAt: firebase.firestore.FieldValue.serverTimestamp(), updatedBy: conCurrentUser?.email || '' }, { merge: true });
-    window._notifyRouting = { sales, ops };
+    await coll('settings').doc('notifyRouting').set({ ...v, updatedAt: firebase.firestore.FieldValue.serverTimestamp(), updatedBy: conCurrentUser?.email || '' }, { merge: true });
+    window._notifyRouting = { ...(window._notifyRouting || {}), ...v };
     const st = document.getElementById('routeStatus');
-    if (st) st.textContent = 'Saved. New alerts route by seat starting now.';
+    if (st) st.textContent = 'Saved. New to-dos route by hat starting now.';
   } catch (e) { alert('Could not save: ' + e.message); }
 }
 window.saveNotifyRouting = saveNotifyRouting;
@@ -8193,13 +8225,11 @@ async function autoCreateCOTodo(jobId, coId, coTitle, coAmount) {
   if (!conDb || !jobId || !currentCompanyId) return;
   const job = conJobs.find(j => j.id === jobId);
 
-  // Find Team Lead assigned to this job
-  const teamMembers = await fetchTeamMembersFlat(conDb, currentCompanyId);
-  const teamLead = teamMembers.find(m => m.role === 'Team Lead' || m.role === 'Superintendent');
+  // TODO_HATS_V1 #1: change order to review -> PM hat only.
   await loadNotifyRouting();
-  const owner = routedOwner(teamMembers, 'ops');
+  const owner = hatPersonClient('pm');
 
-  const todoText = `Process Change Order: ${coTitle || 'Change Order'}${coAmount ? ' — $' + Number(coAmount).toLocaleString() : ''} on ${job?.name || 'job'}`;
+  const todoText = `Process Change Order: ${coTitle || 'Change Order'}${coAmount ? ' — $' + Number(coAmount).toLocaleString() : ''} on ${job ? jobTitle(job) : 'job'}`;
 
   // Create To-Do assigned to Owner
   const todoData = {
@@ -8214,18 +8244,11 @@ async function autoCreateCOTodo(jobId, coId, coTitle, coAmount) {
     createdBy: conCurrentUser?.email || '',
     coId,
     category: 'Change Order',
+    hat: 'pm',
+    done: false,
   };
 
   await coll('todos').add(todoData).catch(() => {});
-
-  // If team lead exists, create a second To-Do for them
-  if (teamLead && teamLead.email !== owner?.email) {
-    await coll('todos').add({
-      ...todoData,
-      assignee: teamLead.email,
-      assigneeName: teamLead.name || '',
-    }).catch(() => {});
-  }
 
   // Refresh CO badge
   refreshNotificationBadges();
@@ -13211,7 +13234,8 @@ async function commitMarkPaid(jobId, invId, total) {
       const unpaidDocs = [];
       subPaySnap.forEach(d => { if ((d.data().status || 'Agreed') !== 'Paid') unpaidDocs.push(d); });
       if (unpaidDocs.length) {
-        const jobLabel = (job && (job.address || job.name)) || 'Job';
+        await loadNotifyRouting();
+        const jobLabel = job ? jobTitle(job) : 'Job';
         const todoWrites = [];
         unpaidDocs.forEach(d => {
           const p = d.data();
@@ -13222,8 +13246,9 @@ async function commitMarkPaid(jobId, invId, total) {
             dueDate: '',
             jobId,
             jobName: jobLabel,
-            assignee: '',
-            assigneeName: '',
+            assignee: hatEmail('office'),
+            assigneeName: hatPersonClient('office').name,
+            hat: 'office',
             done: false,
             createdAt: firebase.firestore.FieldValue.serverTimestamp(),
             createdBy: conCurrentUser?.email || '',
@@ -16053,6 +16078,36 @@ window.applyRolePermissions = applyRolePermissions;
 // ════════════════════════════════════════════════════
 let allTodos = [];
 let _todoFilter = 'all';
+let _todoScope = 'mine';
+// TODO_HATS_V1: who a to-do belongs to, and who can see everyone's.
+function todoEmails(t) {
+  const out = [];
+  if (t.assignee) out.push(String(t.assignee).toLowerCase());
+  (t.assignees || []).forEach(a => { if (a && a.email) out.push(String(a.email).toLowerCase()); });
+  return out;
+}
+function isMyTodo(t) {
+  const me = (conCurrentUser?.email || '').toLowerCase();
+  if (!me) return false;
+  const em = todoEmails(t);
+  if (em.length) return em.includes(me);
+  return (t.createdBy || '').toLowerCase() === me;
+}
+function canSeeAllTodos() {
+  return isOwnerOrAdmin() || ['Owner', 'Office Manager'].includes(currentUserRole);
+}
+function todoHatTag(t) {
+  const h = (window.TODO_HATS || []).find(x => x.key === t.hat);
+  return h ? `<span style="font-size:.66rem;background:${h.color}22;color:${h.color};border:1px solid ${h.color}55;border-radius:999px;padding:1px 7px;font-weight:800;flex-shrink:0">${h.label}</span>` : '';
+}
+function setTodoScope(scope) {
+  _todoScope = canSeeAllTodos() ? scope : 'mine';
+  const m = document.getElementById('todoScopeMine'), a = document.getElementById('todoScopeAll');
+  if (m) m.classList.toggle('active', _todoScope === 'mine');
+  if (a) a.classList.toggle('active', _todoScope === 'all');
+  renderTodos();
+}
+window.setTodoScope = setTodoScope; window.isMyTodo = isMyTodo;
 
 function loadTodos() {
   if (!conDb) return;
@@ -16074,7 +16129,7 @@ function loadTodos() {
 }
 
 function updateTodoBadge() {
-  const open = allTodos.filter(t => !t.done).length;
+  const open = allTodos.filter(t => !t.done && isMyTodo(t)).length;
   const badge = document.getElementById('navTodoBadge');
   if (badge) {
     badge.style.display = open > 0 ? 'inline-flex' : 'none';
@@ -16098,16 +16153,20 @@ function populateTodoAssigneeFilter() {
     const members = extractTeamMembers(doc.data());
     const sel = document.getElementById('newTodoAssignee');
     if (!sel) return;
+    const cur = sel.value;
+    const me = conCurrentUser?.email || '';
     sel.innerHTML = '<option value="">Unassigned</option>' +
       Object.values(members).map(m =>
         `<option value="${esc(m.email)}">${esc(m.name||m.email)}</option>`
       ).join('');
+    // TODO_HATS_V1 #6: defaults to whoever is adding it.
+    sel.value = sel.dataset.touched ? cur : (cur || me);
   }).catch(() => {});
 }
 
 function filterTodos(filter, btn) {
   _todoFilter = filter;
-  document.querySelectorAll('.todo-filter-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.todo-status-btn').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   renderTodos();
 }
@@ -16119,17 +16178,23 @@ function renderTodos() {
   const today = new Date().toISOString().split('T')[0];
   const myEmail = conCurrentUser?.email || '';
 
-  let todos = [...allTodos];
-  if (_todoFilter === 'mine') todos = todos.filter(t => t.assignee === myEmail || t.createdBy === myEmail);
+  const seeAll = canSeeAllTodos();
+  if (!seeAll) _todoScope = 'mine';
+  ['todoScopeAll', 'todoHatFilter'].forEach(id => { const e = document.getElementById(id); if (e) e.style.display = seeAll ? '' : 'none'; });
+  const visible = (_todoScope === 'all' && seeAll) ? [...allTodos] : allTodos.filter(isMyTodo);
+  let todos = [...visible];
+  const hatF = seeAll ? (document.getElementById('todoHatFilter')?.value || '') : '';
+  if (hatF) todos = todos.filter(t => t.hat === hatF);
+  if (_todoFilter === 'mine') todos = todos.filter(isMyTodo);
   if (_todoFilter === 'open') todos = todos.filter(t => !t.done);
   if (_todoFilter === 'done') todos = todos.filter(t => t.done);
   if (_todoFilter === 'high') todos = todos.filter(t => t.priority === 'high' && !t.done);
   if (_todoFilter === 'today') todos = todos.filter(t => t.dueDate === today && !t.done);
 
   // Stats
-  const open = allTodos.filter(t => !t.done).length;
-  const done = allTodos.filter(t => t.done).length;
-  const overdue = allTodos.filter(t => !t.done && t.dueDate && t.dueDate < today).length;
+  const open = visible.filter(t => !t.done).length;
+  const done = visible.filter(t => t.done).length;
+  const overdue = visible.filter(t => !t.done && t.dueDate && t.dueDate < today).length;
   const setEl = (id, v) => { const e = document.getElementById(id); if(e) e.textContent = v; };
   setEl('todoStatOpen', `${open} open`);
   setEl('todoStatDone', `${done} completed`);
@@ -16168,11 +16233,11 @@ function renderTodos() {
           <span style="font-size:.88rem;font-weight:${todo.done?'400':'600'};color:${todo.done?'var(--muted)':'#eaf0fb'};${todo.done?'text-decoration:line-through':''};flex:1">${esc(todo.text||'')}</span>
           ${todo.priority==='high'?`<span style="font-size:.68rem;background:#ef535022;color:#fca5a5;border:1px solid #ef535044;border-radius:999px;padding:1px 6px;font-weight:700;flex-shrink:0">HIGH</span>`:''}
           ${todo.priority==='med'?`<span style="font-size:.68rem;background:#f9731622;color:#fed7aa;border:1px solid #f9731644;border-radius:999px;padding:1px 6px;font-weight:700;flex-shrink:0">MED</span>`:''}
-          ${todo.source==='sla'?`<span style="font-size:.68rem;background:rgba(59,130,246,.15);color:#93c5fd;border:1px solid rgba(59,130,246,.3);border-radius:999px;padding:1px 6px;font-weight:700;flex-shrink:0">SLA</span>`:''}
+          ${todoHatTag(todo)}
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px">
-          ${linkedJob?`<span style="font-size:.72rem;color:var(--amber)">🔧 ${esc(linkedJob.name)}</span>`:''}
-          ${todo.assignee?`<span style="font-size:.72rem;color:var(--muted)">👤 ${esc(todo.assigneeName||todo.assignee)}</span>`:''}
+          ${linkedJob?`<span style="font-size:.72rem;color:var(--amber)">🔧 ${esc(jobTitle(linkedJob))}</span>`:''}
+          ${(todo.assignee||(todo.assignees||[]).length)?`<span style="font-size:.72rem;color:var(--muted)">👤 ${esc(todo.assigneeName||todo.assignee||((todo.assignees||[])[0]||{}).name||'')}</span>`:''}
           ${todo.dueDate?`<span style="font-size:.72rem;color:${isOverdue?'#fca5a5':'var(--muted)'}">📅 ${todo.dueDate}${isOverdue?' ⚠️':''}</span>`:''}
           <span style="font-size:.7rem;color:rgba(110,145,210,.3)">${todo.createdByName||''}</span>
         </div>
@@ -16246,6 +16311,7 @@ function addTodo() {
   const data = {
     text,
     priority: document.getElementById('newTodoPriority')?.value || 'normal',
+    dueDate: document.getElementById('newTodoDue')?.value || '',
     jobId: document.getElementById('newTodoJobLink')?.value || '',
     assignee: assigneeEmail,
     assigneeName: assigneeEmail ? assigneeName : '',
@@ -16258,6 +16324,7 @@ function addTodo() {
   coll('todos').add(data)
     .then(() => {
       if (input) input.value = '';
+      const due = document.getElementById('newTodoDue'); if (due) due.value = '';
     })
     .catch(e => alert('Error: ' + e.message));
 }
@@ -20650,7 +20717,9 @@ function submitPortalCOSignature(coId, jobId, action) {
       // To-Do: matches the "Schedule job" to-do proposals create on
       // signature, scoped to what a signed change order actually needs
       // — someone on the team to notice and act on it.
-      db.collection('companies').doc(companyId).collection('todos').add({
+      // TODO_HATS_V1 #3: the server now creates the Office (collect payment)
+      // and PM (add to scope) to-dos when a change order is approved.
+      if (false) db.collection('companies').doc(companyId).collection('todos').add({
         text: `Customer signed Change Order "${coTitle}" — ${jobNameForLog}`,
         priority: 'high',
         dueDate: '',
@@ -20854,13 +20923,14 @@ function submitPortalSignature(proposalId, jobId, action) {
         try {
           const jobNameForTodo = _portalJobName || jobId;
           db.collection('companies').doc(companyId).collection('todos').add({
-            text: 'Schedule job — ' + jobNameForTodo + ' (customer signed proposal)',
+            text: 'Collect deposit — ' + jobNameForTodo + ' (customer signed proposal)',
             priority: 'high',
             dueDate: '',
             jobId,
             jobName: jobNameForTodo,
             assignee: '',
             assigneeName: '',
+            hat: 'office', // TODO_HATS_V1 #2a: the server fills in who wears the Office hat
             done: false,
             companyId,
             createdAt: now,
@@ -20869,7 +20939,7 @@ function submitPortalSignature(proposalId, jobId, action) {
           }).then(() => {
             jobRef.collection('logs').add({
               type: 'todo_created',
-              notes: 'Schedule to-do created automatically (customer signed proposal).',
+              notes: 'Collect-deposit to-do created automatically (customer signed proposal).',
               jobId, companyId, createdAt: now, createdMs: nowMs, date: todayDateStr, createdBy: 'customer-portal'
             }).catch(()=>{});
           }).catch(()=>{});
@@ -25905,7 +25975,7 @@ window.assignSuggestedCrewToJob = assignSuggestedCrewToJob;
 // (4) emails the Owner an alert with the photo link. The Owner then marks
 // it Logged (copied into Materials Purchases), Reimbursed, or Reconciled,
 // which also checks off the linked To-Do.
-const RECEIPT_ALERT_FALLBACK_EMAIL = 'travis@7pillarsgroup.org';
+const RECEIPT_ALERT_FALLBACK_EMAIL = 'officemanager@7pillarsgroup.org';
 let _rcPendingFile = null;
 let _rcReceipts = [];
 let _rcUnsub = null;
@@ -26008,14 +26078,14 @@ async function submitReceipt() {
     try {
       const team = await fetchTeamMembersFlat(conDb, currentCompanyId);
       await loadNotifyRouting();
-      owner = routedOwner(team, 'ops');
+      owner = hatPersonClient('office'); // TODO_HATS_V1 #5: receipts belong to the Office
     } catch (e) {}
     const ownerEmail = owner?.email || RECEIPT_ALERT_FALLBACK_EMAIL;
     const action = isReturn ? 'Return credit' : needsReimburse ? 'REIMBURSE' : 'Reconcile';
     const todoText = `${action} receipt: ${rcMoney(amount)}${vendor ? ' at ' + vendor : ''} — ${who} (${paidWith}) on ${jobNumSt(job) || job?.name || 'job'}`;
     try {
       const todoRef = await coll('todos').add({
-        text: todoText, priority: 'high', category: 'Receipt',
+        text: todoText, priority: 'high', category: 'Receipt', hat: 'office',
         jobId, jobName: job?.name || '', receiptId: rcRef.id, receiptUrl: photoUrl,
         assignee: ownerEmail, assigneeName: owner?.name || '',
         done: false,
@@ -26044,7 +26114,7 @@ async function submitReceipt() {
     } catch (e) { console.warn('Receipt email alert failed', e); }
 
     rcResetForm();
-    alert((isReturn ? 'Return saved' : 'Receipt uploaded') + '. Travis has been notified.');
+    alert((isReturn ? 'Return saved' : 'Receipt uploaded') + '. The office has been notified.');
   } catch (e) {
     alert('Could not upload receipt: ' + e.message);
   } finally {
