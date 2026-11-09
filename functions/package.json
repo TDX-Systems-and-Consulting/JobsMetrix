@@ -2,7 +2,7 @@
   "name": "jobspan-functions",
   "description": "Cloud Functions for JOBSpan - SMS mention/customer-message routing, QuickBooks integration",
   "engines": {
-    "node": "20"
+    "node": "22"
   },
   "main": "index.js",
   "dependencies": {
