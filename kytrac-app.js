@@ -106,6 +106,18 @@ function jobNumSt(job) {
   return st && !num.toLowerCase().includes(st.toLowerCase()) ? num + ' \u00b7 ' + st : num;
 }
 window.jobStreet = jobStreet; window.jobLabelParts = jobLabelParts; window.jobNumSt = jobNumSt;
+// JOB_TITLE_V1 (Travis 11/9/26): one label for a job everywhere inside the
+// app -- "JOB-2026-561 · 1088 Riverwood Pl · Contractor Grade Option".
+// Display only; customer emails and stored jobName fields are unchanged.
+function jobTitle(job) {
+  if (!job) return '';
+  const num = job.jobNumber || '';
+  const rest = jobLabelParts(job);
+  if (!num) return rest || job.name || job.address || '';
+  return rest ? num + ' \u00b7 ' + rest : (job.name && job.name !== num ? num + ' \u00b7 ' + job.name : num);
+}
+window.jobTitle = jobTitle;
+
 const esc = s => ((s==null?'':s)).toString().replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 // For embedding a value as a JS string-literal ARGUMENT inside an
 // onclick="..." HTML attribute -- a genuinely different job from esc()
@@ -1926,7 +1938,7 @@ function conRenderSchedule() {
   el.innerHTML = jobsWithDates.sort((a,b) => a.startDate.localeCompare(b.startDate)).map(j => `
     <div class="fin-row">
       <div>
-        <div style="font-weight:700">${j.name}</div>
+        <div style="font-weight:700">${esc(jobTitle(j))}</div>
         <div class="small muted">${j.client} · ${j.status}</div>
       </div>
       <div style="text-align:right">
@@ -6353,16 +6365,16 @@ function renderJCDAlerts(containerId) {
 
     // Over budget
     if (ac > 0 && ec > 0 && ac > ec * 0.9) {
-      alerts.push({ type: ac > ec ? 'bad' : 'warn', msg: `⚠️ ${j.name}: Actual cost ${ac > ec ? 'exceeds' : 'approaching'} estimate ($${Math.round(ac).toLocaleString()} vs $${Math.round(ec).toLocaleString()})` });
+      alerts.push({ type: ac > ec ? 'bad' : 'warn', msg: `⚠️ ${jobTitle(j)}: Actual cost ${ac > ec ? 'exceeds' : 'approaching'} estimate ($${Math.round(ac).toLocaleString()} vs $${Math.round(ec).toLocaleString()})` });
     }
     // Thin margin
     if (cv && ec) {
       const m = (cv - ec) / cv * 100;
-      if (m < 10) alerts.push({ type: 'bad', msg: `🔴 ${j.name}: Estimated margin is ${m.toFixed(1)}% — below 10% threshold` });
-      else if (m < 15) alerts.push({ type: 'warn', msg: `🟡 ${j.name}: Estimated margin is ${m.toFixed(1)}% — watch closely` });
+      if (m < 10) alerts.push({ type: 'bad', msg: `🔴 ${jobTitle(j)}: Estimated margin is ${m.toFixed(1)}% — below 10% threshold` });
+      else if (m < 15) alerts.push({ type: 'warn', msg: `🟡 ${jobTitle(j)}: Estimated margin is ${m.toFixed(1)}% — watch closely` });
     }
     // No estimate
-    if (cv > 0 && !ec) alerts.push({ type: 'warn', msg: `📋 ${j.name}: No estimated cost set — margin unknown` });
+    if (cv > 0 && !ec) alerts.push({ type: 'warn', msg: `📋 ${jobTitle(j)}: No estimated cost set — margin unknown` });
   });
 
   if (!alerts.length) {
@@ -7948,7 +7960,7 @@ async function loadGlobalNotes() {
   results.forEach(r => {
     if (r.status !== 'fulfilled' || !r.value) return;
     const { job, snap } = r.value;
-    snap.forEach(d => allNotes.push({ id: d.id, ...d.data(), jobId: job.id, jobName: job.name }));
+    snap.forEach(d => allNotes.push({ id: d.id, ...d.data(), jobId: job.id, jobName: jobTitle(job) }));
   });
   allNotes.sort((a, b) => (b.createdMs || 0) - (a.createdMs || 0));
 
@@ -8040,7 +8052,7 @@ async function loadGlobalMessages() {
     try {
       const snap = await coll('jobs').doc(job.id).collection('messages')
         .orderBy('createdMs', 'desc').limit(50).get();
-      snap.forEach(d => allMsgs.push({ id: d.id, ...d.data(), jobId: job.id, jobName: job.name }));
+      snap.forEach(d => allMsgs.push({ id: d.id, ...d.data(), jobId: job.id, jobName: jobTitle(job) }));
     } catch(e) {}
   }
   allMsgs.sort((a, b) => (b.createdMs || 0) - (a.createdMs || 0));
@@ -8106,11 +8118,11 @@ async function loadGlobalChangeOrders() {
     try {
       const snap = await coll('jobs').doc(job.id).collection('changeorders')
         .orderBy('createdAt', 'desc').limit(20).get();
-      snap.forEach(d => allCOs.push({ id: d.id, ...d.data(), jobId: job.id, jobName: job.name }));
+      snap.forEach(d => allCOs.push({ id: d.id, ...d.data(), jobId: job.id, jobName: jobTitle(job) }));
     } catch(e) {
       try {
         const snap2 = await coll('jobs').doc(job.id).collection('changeorders').limit(20).get();
-        snap2.forEach(d => allCOs.push({ id: d.id, ...d.data(), jobId: job.id, jobName: job.name }));
+        snap2.forEach(d => allCOs.push({ id: d.id, ...d.data(), jobId: job.id, jobName: jobTitle(job) }));
       } catch(e2) {}
     }
   }
@@ -10700,7 +10712,7 @@ async function renderMasterSchedulePage() {
 
     rowsHtml += `<div data-master-row="job" data-job-id="${job.id}" class="gantt-left-row phase-row" style="min-height:${ROW_H}px;background:rgba(245,158,11,.06)" onclick="toggleMasterRow('job','${job.id}')">
       ${sixCols(
-        `<span id="masterArrowJob_${job.id}" style="flex-shrink:0">${jobCollapsed?'▶':'▼'}</span><span class="gantt-task-name-text" style="color:var(--amber)" title="${esc(job.name)}">🏠 ${esc(job.name)}</span>${isOwner?`<button onclick="event.stopPropagation();clearMasterAllJobDates('${job.id}')" title="Clear ALL dates on this job -- job, every phase, room, and task" style="background:none;border:1px dashed rgba(248,113,113,.4);border-radius:4px;color:#f87171;cursor:pointer;font-size:.62rem;margin-left:8px;padding:0 5px;flex-shrink:0">🗑 Clear All</button><button onclick="event.stopPropagation();simplifySchedule('${job.id}')" title="Hides material/product tasks (tape, screws, fixtures) that don't represent progress. Keeps labor tasks visible and trackable, since those DO drive completion percent." style="background:none;border:1px dashed rgba(110,145,210,.4);border-radius:4px;color:var(--muted);cursor:pointer;font-size:.62rem;margin-left:4px;padding:0 5px;flex-shrink:0">📋 Simplify</button>`:''}`,
+        `<span id="masterArrowJob_${job.id}" style="flex-shrink:0">${jobCollapsed?'▶':'▼'}</span><span class="gantt-task-name-text" style="color:var(--amber)" title="${esc(jobTitle(job))}">🏠 ${esc(jobTitle(job))}</span>${isOwner?`<button onclick="event.stopPropagation();clearMasterAllJobDates('${job.id}')" title="Clear ALL dates on this job -- job, every phase, room, and task" style="background:none;border:1px dashed rgba(248,113,113,.4);border-radius:4px;color:#f87171;cursor:pointer;font-size:.62rem;margin-left:8px;padding:0 5px;flex-shrink:0">🗑 Clear All</button><button onclick="event.stopPropagation();simplifySchedule('${job.id}')" title="Hides material/product tasks (tape, screws, fixtures) that don't represent progress. Keeps labor tasks visible and trackable, since those DO drive completion percent." style="background:none;border:1px dashed rgba(110,145,210,.4);border-radius:4px;color:var(--muted);cursor:pointer;font-size:.62rem;margin-left:4px;padding:0 5px;flex-shrink:0">📋 Simplify</button>`:''}`,
         jobDays !== null ? jobDays + 'd' : null,
         isOwner ? `<input type="date" value="${job.startDate||''}" onchange="updateMasterJobDate('${job.id}','startDate',this.value)">` : esc(job.startDate || '—'),
         isOwner ? `<input type="date" value="${job.endDate||''}" onchange="updateMasterJobDate('${job.id}','endDate',this.value)">` : esc(job.endDate || '—'),
@@ -10926,13 +10938,13 @@ function renderMasterGantt() {
            onclick="masterGanttOpenJob('${job.id}')" onmouseover="this.style.background='rgba(245,158,11,.05)'" onmouseout="this.style.background=''">
         <!-- Label -->
         <div style="width:${LABEL_W}px;flex-shrink:0;padding:6px 10px;font-size:.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-right:1px solid rgba(110,145,210,.1)">
-          <div style="font-weight:700;color:#eaf0fb;overflow:hidden;text-overflow:ellipsis">${esc(job.name)}</div>
+          <div style="font-weight:700;color:#eaf0fb;overflow:hidden;text-overflow:ellipsis">${esc(jobTitle(job))}</div>
           <div style="font-size:.68rem;color:var(--muted)">${esc(job.status)} · ${days}d</div>
         </div>
         <!-- Bar row -->
         <div style="flex:1;min-width:${totalWidth}px;height:${ROW_H}px;position:relative">
           <div style="position:absolute;left:${left - LABEL_W}px;width:${width}px;height:22px;top:9px;${barColor};border-radius:4px;display:flex;align-items:center;overflow:hidden">
-            ${width > 60 ? `<span style="font-size:.65rem;font-weight:700;color:#fff;padding:0 8px;white-space:nowrap;overflow:hidden;max-width:${width-16}px">${esc(job.name)}</span>` : ''}
+            ${width > 60 ? `<span style="font-size:.65rem;font-weight:700;color:#fff;padding:0 8px;white-space:nowrap;overflow:hidden;max-width:${width-16}px">${esc(jobTitle(job))}</span>` : ''}
           </div>
         </div>
       </div>`;
@@ -10944,7 +10956,7 @@ function renderMasterGantt() {
       <div class="master-gantt-row" style="display:flex;align-items:center;border-bottom:1px solid rgba(110,145,210,.07);min-height:${ROW_H}px;cursor:pointer;opacity:.6;transition:background .1s"
            onclick="masterGanttOpenJob('${job.id}')" onmouseover="this.style.background='rgba(245,158,11,.05)'" onmouseout="this.style.background=''">
         <div style="width:${LABEL_W}px;flex-shrink:0;padding:6px 10px;font-size:.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-right:1px solid rgba(110,145,210,.1)">
-          <div style="font-weight:700;color:#eaf0fb;overflow:hidden;text-overflow:ellipsis">${esc(job.name)}</div>
+          <div style="font-weight:700;color:#eaf0fb;overflow:hidden;text-overflow:ellipsis">${esc(jobTitle(job))}</div>
           <div style="font-size:.68rem;color:var(--muted)">${esc(job.status)} · <span style="color:#f59e0b">No dates set</span></div>
         </div>
         <div style="flex:1;min-width:${totalWidth||600}px;height:${ROW_H}px;display:flex;align-items:center;padding-left:12px">
@@ -11068,7 +11080,7 @@ async function renderFieldTechWeather() {
   if (!jobs.length) { box.innerHTML = '<div class="small muted">No job assigned yet</div>'; if (sel) sel.style.display = 'none'; return; }
   if (sel) {
     const cur = sel.value;
-    sel.innerHTML = jobs.map(j => `<option value="${j.id}">${esc(j.name || j.address)}</option>`).join('');
+    sel.innerHTML = jobs.map(j => `<option value="${j.id}">${esc(jobTitle(j))}</option>`).join('');
     if (jobs.some(j => j.id === cur)) sel.value = cur;
     sel.style.display = jobs.length > 1 ? '' : 'none';
   }
@@ -11372,7 +11384,7 @@ function renderRecentLogs() {
         coll('jobs').doc(job.id).collection('logs')
           .orderBy('date','desc').limit(3).get()
           .then(snap => {
-            snap.forEach(doc => allLogs.push({ ...doc.data(), jobId: job.id, jobName: job.name }));
+            snap.forEach(doc => allLogs.push({ ...doc.data(), jobId: job.id, jobName: jobTitle(job) }));
           })
           .catch(() => {})
           .finally(() => {
@@ -11448,7 +11460,7 @@ function renderUpcomingPhases() {
       conJobs.forEach(job => {
         coll('jobs').doc(job.id).collection('sprints')
           .where('startDate','>=',today).where('startDate','<=',in7).get()
-          .then(snap => { snap.forEach(doc => allSprints.push({ ...doc.data(), jobId: job.id, jobName: job.name })); })
+          .then(snap => { snap.forEach(doc => allSprints.push({ ...doc.data(), jobId: job.id, jobName: jobTitle(job) })); })
           .catch(() => {})
           .finally(() => {
             pending--;
@@ -11609,7 +11621,7 @@ function renderActivityFeed(targetElId, itemCap) {
         const m = doc.data();
         const jobId = doc.ref.parent.parent.id;
         const job = conJobs.find(j => j.id === jobId);
-        items.push({ icon:'💬', text: (m.authorName||'Someone') + ': ' + (m.text||''), sub: job ? job.name : '', jobId, ms: m.createdMs||0 });
+        items.push({ icon:'💬', text: (m.authorName||'Someone') + ': ' + (m.text||''), sub: job ? jobTitle(job) : '', jobId, ms: m.createdMs||0 });
       });
       finish();
     })
@@ -11621,7 +11633,7 @@ function renderActivityFeed(targetElId, itemCap) {
         coll('jobs').doc(job.id).collection('messages').orderBy('createdMs','desc').limit(10).get()
           .then(snap => snap.forEach(doc => {
             const m = doc.data();
-            items.push({ icon:'💬', text: (m.authorName||'Someone') + ': ' + (m.text||''), sub: job.name, jobId: job.id, ms: m.createdMs||0 });
+            items.push({ icon:'💬', text: (m.authorName||'Someone') + ': ' + (m.text||''), sub: jobTitle(job), jobId: job.id, ms: m.createdMs||0 });
           }))
           .catch(() => {})
           .finally(() => { jp--; if (jp === 0) finish(); });
@@ -11637,7 +11649,7 @@ function renderActivityFeed(targetElId, itemCap) {
         const jobId = doc.ref.parent.parent.id;
         const job = conJobs.find(j => j.id === jobId);
         const ms = d.uploadedAt?.toDate ? d.uploadedAt.toDate().getTime() : 0;
-        items.push({ icon:'📎', text: d.name||'Document uploaded', sub: job ? job.name : '', jobId, ms });
+        items.push({ icon:'📎', text: d.name||'Document uploaded', sub: job ? jobTitle(job) : '', jobId, ms });
       });
       finish();
     })
@@ -11650,7 +11662,7 @@ function renderActivityFeed(targetElId, itemCap) {
           .then(snap => snap.forEach(doc => {
             const d = doc.data();
             const ms = d.uploadedAt?.toDate ? d.uploadedAt.toDate().getTime() : 0;
-            items.push({ icon:'📎', text: d.name||'Document uploaded', sub: job.name, jobId: job.id, ms });
+            items.push({ icon:'📎', text: d.name||'Document uploaded', sub: jobTitle(job), jobId: job.id, ms });
           }))
           .catch(() => {})
           .finally(() => { jp--; if (jp === 0) finish(); });
@@ -11667,37 +11679,37 @@ function renderActivityFeed(targetElId, itemCap) {
         const job = conJobs.find(j => j.id === jobId);
         const ms = l.createdAt?.toDate ? l.createdAt.toDate().getTime() : 0;
         if (l.type === 'status_change') {
-          items.push({ icon: l.toStatus === 'Closed Lost' ? '🔴' : '🔄', text: l.notes || 'Status changed', sub: job ? job.name : '', jobId, ms });
+          items.push({ icon: l.toStatus === 'Closed Lost' ? '🔴' : '🔄', text: l.notes || 'Status changed', sub: job ? jobTitle(job) : '', jobId, ms });
         } else if (l.type === 'proposal_emailed') {
-          items.push({ icon: '📧', text: l.notes || 'Proposal emailed to customer', sub: job ? job.name : '', jobId, ms });
+          items.push({ icon: '📧', text: l.notes || 'Proposal emailed to customer', sub: job ? jobTitle(job) : '', jobId, ms });
         } else if (l.type === 'proposal_viewed') {
-          items.push({ icon: '👁', text: 'Customer opened proposal in portal', sub: job ? job.name : '', jobId, ms });
+          items.push({ icon: '👁', text: 'Customer opened proposal in portal', sub: job ? jobTitle(job) : '', jobId, ms });
         } else if (l.type === 'proposal_signed') {
-          items.push({ icon: '📎', text: l.notes || 'Customer signed proposal', sub: job ? job.name : '', jobId, ms, docId: l.docId || null });
+          items.push({ icon: '📎', text: l.notes || 'Customer signed proposal', sub: job ? jobTitle(job) : '', jobId, ms, docId: l.docId || null });
         } else if (l.type === 'invoice_created') {
-          items.push({ icon: '🧾', text: l.notes || 'Invoice created', sub: job ? job.name : '', jobId, ms });
+          items.push({ icon: '🧾', text: l.notes || 'Invoice created', sub: job ? jobTitle(job) : '', jobId, ms });
         } else if (l.type === 'invoice_emailed') {
-          items.push({ icon: '📧', text: l.notes || 'Invoice emailed to customer', sub: job ? job.name : '', jobId, ms });
+          items.push({ icon: '📧', text: l.notes || 'Invoice emailed to customer', sub: job ? jobTitle(job) : '', jobId, ms });
         } else if (l.type === 'invoice_paid') {
-          items.push({ icon: '💰', text: l.notes || 'Invoice paid', sub: job ? job.name : '', jobId, ms });
+          items.push({ icon: '💰', text: l.notes || 'Invoice paid', sub: job ? jobTitle(job) : '', jobId, ms });
         } else if (l.type === 'co_emailed') {
-          items.push({ icon: '📝', text: l.notes || 'Change order emailed to customer', sub: job ? job.name : '', jobId, ms });
+          items.push({ icon: '📝', text: l.notes || 'Change order emailed to customer', sub: job ? jobTitle(job) : '', jobId, ms });
         } else if (l.type === 'co_viewed') {
-          items.push({ icon: '👁', text: l.notes || 'Customer opened change order in portal', sub: job ? job.name : '', jobId, ms });
+          items.push({ icon: '👁', text: l.notes || 'Customer opened change order in portal', sub: job ? jobTitle(job) : '', jobId, ms });
         } else if (l.type === 'co_signed') {
-          items.push({ icon: '📎', text: l.notes || 'Customer signed change order', sub: job ? job.name : '', jobId, ms });
+          items.push({ icon: '📎', text: l.notes || 'Customer signed change order', sub: job ? jobTitle(job) : '', jobId, ms });
         } else if (l.type === 'co_declined') {
-          items.push({ icon: '❌', text: l.notes || 'Customer declined change order', sub: job ? job.name : '', jobId, ms });
+          items.push({ icon: '❌', text: l.notes || 'Customer declined change order', sub: job ? jobTitle(job) : '', jobId, ms });
         } else if (l.type === 'materials_purchase') {
-          items.push({ icon: '🧱', text: l.notes || 'Materials purchase logged', sub: job ? job.name : '', jobId, ms });
+          items.push({ icon: '🧱', text: l.notes || 'Materials purchase logged', sub: job ? jobTitle(job) : '', jobId, ms });
         } else if (l.type === 'subcontractor_payment') {
-          items.push({ icon: '💼', text: l.notes || 'Subcontractor payment logged', sub: job ? job.name : '', jobId, ms });
+          items.push({ icon: '💼', text: l.notes || 'Subcontractor payment logged', sub: job ? jobTitle(job) : '', jobId, ms });
         } else if (l.type === 'vendor_bill') {
-          items.push({ icon: '👷', text: l.notes || 'Vendor bill added', sub: job ? job.name : '', jobId, ms });
+          items.push({ icon: '👷', text: l.notes || 'Vendor bill added', sub: job ? jobTitle(job) : '', jobId, ms });
         } else if (l.type === 'photos_uploaded') {
-          items.push({ icon: '📸', text: l.notes || 'Photos uploaded', sub: job ? job.name : '', jobId, ms });
+          items.push({ icon: '📸', text: l.notes || 'Photos uploaded', sub: job ? jobTitle(job) : '', jobId, ms });
         } else {
-          items.push({ icon:'📋', text: l.notes ? (l.notes.length > 60 ? l.notes.slice(0,60)+'…' : l.notes) : 'Daily log added', sub: job ? job.name : '', jobId, ms });
+          items.push({ icon:'📋', text: l.notes ? (l.notes.length > 60 ? l.notes.slice(0,60)+'…' : l.notes) : 'Daily log added', sub: job ? jobTitle(job) : '', jobId, ms });
         }
       });
       finish();
@@ -11711,37 +11723,37 @@ function renderActivityFeed(targetElId, itemCap) {
             const l = doc.data();
             const ms = l.createdAt?.toDate ? l.createdAt.toDate().getTime() : 0;
             if (l.type === 'status_change') {
-              items.push({ icon: l.toStatus === 'Closed Lost' ? '🔴' : '🔄', text: l.notes || 'Status changed', sub: job.name, jobId: job.id, ms });
+              items.push({ icon: l.toStatus === 'Closed Lost' ? '🔴' : '🔄', text: l.notes || 'Status changed', sub: jobTitle(job), jobId: job.id, ms });
             } else if (l.type === 'proposal_emailed') {
-              items.push({ icon: '📧', text: l.notes || 'Proposal emailed to customer', sub: job.name, jobId: job.id, ms });
+              items.push({ icon: '📧', text: l.notes || 'Proposal emailed to customer', sub: jobTitle(job), jobId: job.id, ms });
             } else if (l.type === 'proposal_viewed') {
-              items.push({ icon: '👁', text: 'Customer opened proposal in portal', sub: job.name, jobId: job.id, ms });
+              items.push({ icon: '👁', text: 'Customer opened proposal in portal', sub: jobTitle(job), jobId: job.id, ms });
             } else if (l.type === 'proposal_signed') {
-              items.push({ icon: '📎', text: l.notes || 'Customer signed proposal', sub: job.name, jobId: job.id, ms, docId: l.docId || null });
+              items.push({ icon: '📎', text: l.notes || 'Customer signed proposal', sub: jobTitle(job), jobId: job.id, ms, docId: l.docId || null });
             } else if (l.type === 'invoice_created') {
-              items.push({ icon: '🧾', text: l.notes || 'Invoice created', sub: job.name, jobId: job.id, ms });
+              items.push({ icon: '🧾', text: l.notes || 'Invoice created', sub: jobTitle(job), jobId: job.id, ms });
             } else if (l.type === 'invoice_emailed') {
-              items.push({ icon: '📧', text: l.notes || 'Invoice emailed to customer', sub: job.name, jobId: job.id, ms });
+              items.push({ icon: '📧', text: l.notes || 'Invoice emailed to customer', sub: jobTitle(job), jobId: job.id, ms });
             } else if (l.type === 'invoice_paid') {
-              items.push({ icon: '💰', text: l.notes || 'Invoice paid', sub: job.name, jobId: job.id, ms });
+              items.push({ icon: '💰', text: l.notes || 'Invoice paid', sub: jobTitle(job), jobId: job.id, ms });
             } else if (l.type === 'co_emailed') {
-              items.push({ icon: '📝', text: l.notes || 'Change order emailed to customer', sub: job.name, jobId: job.id, ms });
+              items.push({ icon: '📝', text: l.notes || 'Change order emailed to customer', sub: jobTitle(job), jobId: job.id, ms });
             } else if (l.type === 'co_viewed') {
-              items.push({ icon: '👁', text: l.notes || 'Customer opened change order in portal', sub: job.name, jobId: job.id, ms });
+              items.push({ icon: '👁', text: l.notes || 'Customer opened change order in portal', sub: jobTitle(job), jobId: job.id, ms });
             } else if (l.type === 'co_signed') {
-              items.push({ icon: '📎', text: l.notes || 'Customer signed change order', sub: job.name, jobId: job.id, ms });
+              items.push({ icon: '📎', text: l.notes || 'Customer signed change order', sub: jobTitle(job), jobId: job.id, ms });
             } else if (l.type === 'co_declined') {
-              items.push({ icon: '❌', text: l.notes || 'Customer declined change order', sub: job.name, jobId: job.id, ms });
+              items.push({ icon: '❌', text: l.notes || 'Customer declined change order', sub: jobTitle(job), jobId: job.id, ms });
             } else if (l.type === 'materials_purchase') {
-              items.push({ icon: '🧱', text: l.notes || 'Materials purchase logged', sub: job.name, jobId: job.id, ms });
+              items.push({ icon: '🧱', text: l.notes || 'Materials purchase logged', sub: jobTitle(job), jobId: job.id, ms });
             } else if (l.type === 'subcontractor_payment') {
-              items.push({ icon: '💼', text: l.notes || 'Subcontractor payment logged', sub: job.name, jobId: job.id, ms });
+              items.push({ icon: '💼', text: l.notes || 'Subcontractor payment logged', sub: jobTitle(job), jobId: job.id, ms });
             } else if (l.type === 'vendor_bill') {
-              items.push({ icon: '👷', text: l.notes || 'Vendor bill added', sub: job.name, jobId: job.id, ms });
+              items.push({ icon: '👷', text: l.notes || 'Vendor bill added', sub: jobTitle(job), jobId: job.id, ms });
             } else if (l.type === 'photos_uploaded') {
-              items.push({ icon: '📸', text: l.notes || 'Photos uploaded', sub: job.name, jobId: job.id, ms });
+              items.push({ icon: '📸', text: l.notes || 'Photos uploaded', sub: jobTitle(job), jobId: job.id, ms });
             } else {
-              items.push({ icon:'📋', text: l.notes ? (l.notes.length > 60 ? l.notes.slice(0,60)+'…' : l.notes) : 'Daily log added', sub: job.name, jobId: job.id, ms });
+              items.push({ icon:'📋', text: l.notes ? (l.notes.length > 60 ? l.notes.slice(0,60)+'…' : l.notes) : 'Daily log added', sub: jobTitle(job), jobId: job.id, ms });
             }
           }))
           .catch(() => {})
@@ -11794,7 +11806,7 @@ function renderWhatsChanged_OLD_UNUSED() {
         if (!isToday(m.createdMs)) return;
         const jobId = doc.ref.parent.parent.id;
         const job = conJobs.find(j => j.id === jobId);
-        items.push({ icon:'💬', text: (m.authorName||'Someone') + ': ' + (m.text||''), sub: job ? job.name : '', jobId, ms: m.createdMs||0 });
+        items.push({ icon:'💬', text: (m.authorName||'Someone') + ': ' + (m.text||''), sub: job ? jobTitle(job) : '', jobId, ms: m.createdMs||0 });
       });
       finish();
     })
@@ -11807,7 +11819,7 @@ function renderWhatsChanged_OLD_UNUSED() {
           .then(snap => snap.forEach(doc => {
             const m = doc.data();
             if (!isToday(m.createdMs)) return;
-            items.push({ icon:'💬', text: (m.authorName||'Someone') + ': ' + (m.text||''), sub: job.name, jobId: job.id, ms: m.createdMs||0 });
+            items.push({ icon:'💬', text: (m.authorName||'Someone') + ': ' + (m.text||''), sub: jobTitle(job), jobId: job.id, ms: m.createdMs||0 });
           }))
           .catch(() => {})
           .finally(() => { jp--; if (jp === 0) finish(); });
@@ -11824,7 +11836,7 @@ function renderWhatsChanged_OLD_UNUSED() {
         const jobId = doc.ref.parent.parent.id;
         const job = conJobs.find(j => j.id === jobId);
         const ms = d.uploadedAt?.toDate ? d.uploadedAt.toDate().getTime() : 0;
-        items.push({ icon:'📎', text: d.name||'Document uploaded', sub: job ? job.name : '', jobId, ms });
+        items.push({ icon:'📎', text: d.name||'Document uploaded', sub: job ? jobTitle(job) : '', jobId, ms });
       });
       finish();
     })
@@ -11837,7 +11849,7 @@ function renderWhatsChanged_OLD_UNUSED() {
             const d = doc.data();
             if (!isToday(d.uploadedAt)) return;
             const ms = d.uploadedAt?.toDate ? d.uploadedAt.toDate().getTime() : 0;
-            items.push({ icon:'📎', text: d.name||'Document uploaded', sub: job.name, jobId: job.id, ms });
+            items.push({ icon:'📎', text: d.name||'Document uploaded', sub: jobTitle(job), jobId: job.id, ms });
           }))
           .catch(() => {})
           .finally(() => { jp--; if (jp === 0) finish(); });
@@ -12137,7 +12149,7 @@ function loadAllInvoices() {
         // Remove old invoices for this job
         allInvoices = allInvoices.filter(inv => inv.jobId !== job.id);
         snap.forEach(doc => {
-          allInvoices.push({ id: doc.id, jobId: job.id, jobName: job.name, jobClient: job.client || '', ...doc.data() });
+          allInvoices.push({ id: doc.id, jobId: job.id, jobName: jobTitle(job), jobClient: job.client || '', ...doc.data() });
         });
         renderInvoicingPage();
         // Update badge
@@ -12164,7 +12176,7 @@ function renderInvoicingPage() {
   if (jobFilter) {
     const cur = jobFilter.value;
     jobFilter.innerHTML = '<option value="">All Jobs</option>' +
-      conJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(j.name)}</option>`).join('');
+      conJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(jobTitle(j))}</option>`).join('');
   }
 
   const statusFilter = document.getElementById('invStatusFilter')?.value || '';
@@ -16072,7 +16084,7 @@ function populateTodoJobFilter() {
   if (!sel) return;
   const cur = sel.value;
   sel.innerHTML = '<option value="">No job linked</option>' +
-    conJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(j.name)}</option>`).join('');
+    conJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(jobTitle(j))}</option>`).join('');
 }
 
 function populateTodoAssigneeFilter() {
@@ -17296,7 +17308,7 @@ function populateTimeFilters() {
   if (jobSel) {
     const cur = jobSel.value;
     jobSel.innerHTML = '<option value="">Select a job...</option>' +
-      activeJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(j.jobNumber?'#'+jobNumSt(j)+' ':'')}${esc(j.name)}</option>`).join('');
+      activeJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(jobTitle(j))}</option>`).join('');
   }
 
   // Manual entry job selector
@@ -17304,7 +17316,7 @@ function populateTimeFilters() {
   if (manualJobSel) {
     const cur = manualJobSel.value;
     manualJobSel.innerHTML = '<option value="">Select job...</option>' +
-      conJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(j.jobNumber?'#'+jobNumSt(j)+' ':'')}${esc(j.name)}</option>`).join('');
+      conJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(jobTitle(j))}</option>`).join('');
   }
 
   // Manual entry crew selector -- real team roster instead of free
@@ -17326,7 +17338,7 @@ function populateTimeFilters() {
   if (filterJobSel) {
     const cur2 = filterJobSel.value;
     filterJobSel.innerHTML = '<option value="">All Jobs</option>' +
-      conJobs.map(j => `<option value="${j.id}" ${j.id===cur2?'selected':''}>${esc(j.name)}</option>`).join('');
+      conJobs.map(j => `<option value="${j.id}" ${j.id===cur2?'selected':''}>${esc(jobTitle(j))}</option>`).join('');
   }
 }
 
@@ -18409,7 +18421,7 @@ function openAddBillModal(billId, presetJobId) {
   if (jobSel) {
     const preselectJob = bill?.jobId || presetJobId || '';
     jobSel.innerHTML = '<option value="">No job linked</option>' +
-      conJobs.map(j => `<option value="${j.id}" ${j.id===preselectJob?'selected':''}>${esc(j.name)}</option>`).join('');
+      conJobs.map(j => `<option value="${j.id}" ${j.id===preselectJob?'selected':''}>${esc(jobTitle(j))}</option>`).join('');
   }
   kOpen('addBillModal');
 }
@@ -18554,7 +18566,7 @@ function populateDocJobFilter() {
   if (!sel) return;
   const cur = sel.value;
   sel.innerHTML = '<option value="">All Jobs</option>' +
-    conJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(j.name)}</option>`).join('');
+    conJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(jobTitle(j))}</option>`).join('');
 }
 
 function renderDocuments() {
@@ -21236,7 +21248,7 @@ function openCalEventModal(id, prefilledDate) {
   const jobSel = document.getElementById('calEventJob');
   if (jobSel) {
     jobSel.innerHTML = '<option value="">No job linked</option>' +
-      conJobs.map(j => `<option value="${j.id}" ${j.id===(ev?.jobId||'')?'selected':''}>${esc(j.name)}</option>`).join('');
+      conJobs.map(j => `<option value="${j.id}" ${j.id===(ev?.jobId||'')?'selected':''}>${esc(jobTitle(j))}</option>`).join('');
     // Selecting a job auto-fills the address, but ONLY if location is
     // currently blank - never overwrites something typed on purpose.
     // Re-attaching this fresh each time the modal opens (not addEventListener)
@@ -22189,7 +22201,7 @@ function renderInvoicesReport(el, f) {
   conJobs.forEach(job => {
     coll('jobs').doc(job.id).collection('invoices').get()
       .then(snap => {
-        snap.forEach(d => allInvs.push({ ...d.data(), jobName: job.name, jobId: job.id }));
+        snap.forEach(d => allInvs.push({ ...d.data(), jobName: jobTitle(job), jobId: job.id }));
       }).catch(() => {})
       .finally(() => {
         pending--;
@@ -22390,7 +22402,7 @@ function populatePOFilters() {
   if (jobSel) {
     const cur = jobSel.value;
     jobSel.innerHTML = '<option value="">All Jobs</option>' +
-      conJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(j.name)}</option>`).join('');
+      conJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(jobTitle(j))}</option>`).join('');
   }
 }
 
@@ -22441,7 +22453,7 @@ function renderPOs() {
           </div>
           <div style="font-weight:700;font-size:.92rem;margin-top:4px">${esc(po.vendorName||'No vendor')}</div>
           <div style="font-size:.78rem;color:var(--muted);margin-top:2px;display:flex;gap:10px;flex-wrap:wrap">
-            ${job?`<span>🔧 ${esc(job.name)}</span>`:''}
+            ${job?`<span>🔧 ${esc(jobTitle(job))}</span>`:''}
             ${po.date?`<span>📅 ${po.date}</span>`:''}
             ${po.deliveryDate?`<span style="color:${isOverdue?'#fca5a5':'var(--muted)'}">🚚 Due: ${po.deliveryDate}</span>`:''}
             <span>${itemCount} item${itemCount!==1?'s':''}</span>
@@ -22488,7 +22500,7 @@ function openPOModal(id) {
   const jobSel = document.getElementById('poJob');
   if (jobSel) {
     jobSel.innerHTML = '<option value="">No job linked</option>' +
-      conJobs.map(j => `<option value="${j.id}" ${j.id===(po?.jobId||'')?'selected':''}>${esc(j.name)}</option>`).join('');
+      conJobs.map(j => `<option value="${j.id}" ${j.id===(po?.jobId||'')?'selected':''}>${esc(jobTitle(j))}</option>`).join('');
     if (po?.jobId) jobSel.value = po.jobId;
   }
 
