@@ -11167,7 +11167,8 @@ function renderHomeDashboard() {
   // anywhere in the HTML -- harmless (nothing to leak since nothing
   // renders), but dead/orphaned code, removed rather than left sitting
   // here looking like it does something.
-  toggle('homeInfoGrid', fullAccess);
+  // HOME_ACTIVITY_OM_V1: the Office Manager sees the company activity feed too.
+  toggle('homeInfoGrid', fullAccess || currentUserRole === 'Office Manager');
 
   const myJobIds = fullAccess ? null : getMyJobIds();
   const closedStatuses = ['Closed Completed','Closed Lost'];
@@ -16650,7 +16651,7 @@ async function renderCrewMapFromLive() {
   // by a pin correction made after the fact.
   const entries = await Promise.all(rawEntries.map(async e => {
     if (typeof e.clockInLat !== 'number' || typeof e.clockInLon !== 'number' || !e.jobId) return e;
-    const job = conJobs.find(j => j.id === e.jobId);
+    const job = clockPlaceFor(e.jobId);
     const coords = await getJobCoordinates(job);
     if (!coords) return e; // no current coords available -- fall back to the stored snapshot
     const distanceFt = Math.round(haversineDistanceFeet(e.clockInLat, e.clockInLon, coords.lat, coords.lon));
@@ -16855,7 +16856,7 @@ async function getJobCoordinates(job) {
     const lat = parseFloat(results[0].lat), lon = parseFloat(results[0].lon);
     if (isNaN(lat) || isNaN(lon)) return null;
     _geoCache[addr] = { lat, lon };
-    if (conDb) coll('jobs').doc(job.id).update({ geoLat: lat, geoLon: lon }).catch(() => {});
+    if (conDb && job.id !== OFFICE_CLOCK_ID) coll('jobs').doc(job.id).update({ geoLat: lat, geoLon: lon }).catch(() => {});
     return { lat, lon };
   } catch(e) {
     return null;
@@ -16864,12 +16865,29 @@ async function getJobCoordinates(job) {
 
 const OFFSITE_THRESHOLD_FEET = 500;
 
+// OFFICE_CLOCK_V1 (Travis 11/9/26): "Office" is a place people can clock in
+// and out of, alongside jobs. GPS is still required and checked against the
+// office address; no Daily Log or photo is required to clock out of Office.
+const OFFICE_CLOCK_ID = '__office__';
+function officeClockJob() {
+  const addr = (companyProfile && companyProfile.address) || '2205 Droste Rd, Saint Charles, MO 63301';
+  return { id: OFFICE_CLOCK_ID, name: 'Office', jobNumber: '', address: addr };
+}
+function officeClockOption(cur) {
+  const street = (officeClockJob().address.split(',')[0] || '').trim();
+  return `<option value="${OFFICE_CLOCK_ID}" ${cur === OFFICE_CLOCK_ID ? 'selected' : ''}>\ud83c\udfe2 Office${street ? ' \u00b7 ' + esc(street) : ''}</option>`;
+}
+function clockPlaceFor(jobId) {
+  return jobId === OFFICE_CLOCK_ID ? officeClockJob() : conJobs.find(j => j.id === jobId);
+}
+window.OFFICE_CLOCK_ID = OFFICE_CLOCK_ID;
+
 async function clockIn() {
   const jobId = document.getElementById('clockJobSelect')?.value || '';
-  if (!jobId) { alert('Please select a job first.'); return; }
+  if (!jobId) { alert('Please select a job or Office first.'); return; }
   if (!conDb || !conCurrentUser) return;
 
-  const job = conJobs.find(j => j.id === jobId);
+  const job = clockPlaceFor(jobId);
   const selVal = document.getElementById('clockPhaseSelect')?.value || '';
   const [epicId, featureId] = selVal ? selVal.split('|') : ['', ''];
   const feature = featureId ? _clockFeatures.find(f => f.id === featureId) : null;
@@ -16906,6 +16924,7 @@ async function clockIn() {
     userName: conCurrentUser.displayName || conCurrentUser.email || '',
     jobId,
     jobName: job?.name || '',
+    isOffice: jobId === OFFICE_CLOCK_ID,
     phaseId: featureId || '', // Feature id — kept as "phaseId" so existing hour-rollup code needs no changes
     phaseName: feature?.name || '',
     clockIn: firebase.firestore.FieldValue.serverTimestamp(),
@@ -16956,6 +16975,7 @@ async function hasTodayDailyLog(jobId, dateStr) {
 async function clockOut() {
   if (!_clockedInEntry || !conDb) return;
   const jobId = _clockedInEntry.jobId;
+  if (jobId === OFFICE_CLOCK_ID) { await performClockOut(_clockedInEntry); return; }
   const dateStr = _clockedInEntry.date || new Date().toISOString().split('T')[0];
 
   const clockBtn = document.getElementById('clockBtn');
@@ -17046,7 +17066,7 @@ async function performClockOut(entry, extra) {
   const userLon = position.coords.longitude;
   let offSiteOut = false;
   let distanceFtOut = null;
-  const job = conJobs.find(j => j.id === entry.jobId);
+  const job = clockPlaceFor(entry.jobId);
   const siteCoords = await getJobCoordinates(job);
   if (siteCoords) {
     distanceFtOut = Math.round(haversineDistanceFeet(userLat, userLon, siteCoords.lat, siteCoords.lon));
@@ -17071,7 +17091,7 @@ async function performClockOut(entry, extra) {
     // manually-added Daily Log — push it into that same collection so it
     // shows up in the Daily Logs tab/feed and counts toward "logged
     // today" staleness checks, not just the Time Log table.
-    if (notesValue && entry.jobId) {
+    if (notesValue && entry.jobId && entry.jobId !== OFFICE_CLOCK_ID) {
       coll('jobs').doc(entry.jobId).collection('logs').add(subDoc({
         date: entry.date || now.toISOString().split('T')[0],
         weather: '',
@@ -17096,7 +17116,7 @@ async function loadClockPhases(jobId) {
   if (!sel) return;
   sel.innerHTML = '<option value="">No Feature selected</option>';
   _clockFeatures = [];
-  if (!jobId) return;
+  if (!jobId || jobId === OFFICE_CLOCK_ID) return;
 
   try {
     const epics = await loadEpicTree(jobId);
@@ -17121,7 +17141,7 @@ async function loadManualPhases(jobId) {
   const sel = document.getElementById('manualPhaseSelect');
   if (!sel) return;
   sel.innerHTML = '<option value="">No Feature</option>';
-  if (!jobId) return;
+  if (!jobId || jobId === OFFICE_CLOCK_ID) return;
   try {
     const epics = await loadEpicTree(jobId);
     epics.forEach(epic => {
@@ -17146,7 +17166,7 @@ function saveManualTimeEntry() {
   const [epicId, featureId] = selVal ? selVal.split('|') : ['', ''];
   const crew = document.getElementById('manualCrew')?.value.trim();
   const notes = document.getElementById('manualNotes')?.value.trim();
-  const job = conJobs.find(j => j.id === jobId);
+  const job = clockPlaceFor(jobId);
 
   const entry = {
     userId: crew ? '' : (conCurrentUser?.uid || ''),
@@ -17307,7 +17327,7 @@ function populateTimeFilters() {
   const jobSel = document.getElementById('clockJobSelect');
   if (jobSel) {
     const cur = jobSel.value;
-    jobSel.innerHTML = '<option value="">Select a job...</option>' +
+    jobSel.innerHTML = '<option value="">Select a job or Office...</option>' + officeClockOption(cur) +
       activeJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(jobTitle(j))}</option>`).join('');
   }
 
@@ -17315,7 +17335,7 @@ function populateTimeFilters() {
   const manualJobSel = document.getElementById('manualJobSelect');
   if (manualJobSel) {
     const cur = manualJobSel.value;
-    manualJobSel.innerHTML = '<option value="">Select job...</option>' +
+    manualJobSel.innerHTML = '<option value="">Select job...</option>' + officeClockOption(cur) +
       conJobs.map(j => `<option value="${j.id}" ${j.id===cur?'selected':''}>${esc(jobTitle(j))}</option>`).join('');
   }
 
@@ -17337,7 +17357,7 @@ function populateTimeFilters() {
   const filterJobSel = document.getElementById('timeFilterJob');
   if (filterJobSel) {
     const cur2 = filterJobSel.value;
-    filterJobSel.innerHTML = '<option value="">All Jobs</option>' +
+    filterJobSel.innerHTML = '<option value="">All Jobs</option>' + officeClockOption(cur2) +
       conJobs.map(j => `<option value="${j.id}" ${j.id===cur2?'selected':''}>${esc(jobTitle(j))}</option>`).join('');
   }
 }
