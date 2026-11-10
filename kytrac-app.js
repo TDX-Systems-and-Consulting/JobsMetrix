@@ -36227,6 +36227,7 @@ let _wcStream = null, _wcRecorder = null, _wcAudioChunks = [];
 let _wcStartTime = null, _wcTimerInterval = null, _wcCapturedPhotos = [], _wcJobId = null;
 
 function openWalkCapture() {
+  if (typeof isCoreTenant === 'function' && isCoreTenant()) return; // LICENSED_TENANT_V1: ScopeWalk is JTXD-only
   if (!conCurrentJobId) { alert('Open a job first.'); return; }
   _wcJobId = conCurrentJobId;
   _wcStream = null; _wcRecorder = null; _wcAudioChunks = [];
