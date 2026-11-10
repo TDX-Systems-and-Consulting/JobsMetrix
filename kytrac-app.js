@@ -3309,7 +3309,13 @@ function refreshJobFinancials(job) {
 
 function jobCollectedAmount(job) {
   const jobInvs = (allInvoices || []).filter(i => i.jobId === job.id);
-  const inApp = jobInvs.reduce((s, i) => s + (i.amtPaid || 0), 0);
+  let inApp = jobInvs.reduce((s, i) => s + (i.amtPaid || 0), 0);
+  // CO_PAID_MONEY_V1: change orders paid on their own (card, or marked paid
+  // with the amount), not through one of this job's invoices, count too.
+  if (job.id === conCurrentJobId && Array.isArray(conCOs)) {
+    const billed = new Set(jobInvs.map(i => i.changeOrderId).filter(Boolean));
+    conCOs.forEach(c => { if (!billed.has(c.id) && !c.invoiceId && Number(c.amtPaid) > 0) inApp += Number(c.amtPaid); });
+  }
   return (typeof job.collected === 'number') ? job.collected : inApp;
 }
 
@@ -9215,13 +9221,26 @@ async function markCOPaid(coId) {
   if (!isOwnerOrAdmin()) { alert('Only Owner/PM can mark a change order paid.'); return; }
   const co = conCOs.find(c => c.id === coId); if (!co) return;
   const amt = Number(co.amount || 0);
+  // CO_PAID_MONEY_V1 (Travis 11/10/26): "Paid" must carry the money. Before,
+  // this only flipped the status, so the payment never counted as collected
+  // and the job showed a balance that wasn't real (707 Karon).
+  if (co.invoiceId) {
+    alert('This change order has its own invoice. Mark that invoice paid (Invoices tab) so the payment is counted once.');
+    return;
+  }
+  if (Number(co.amtPaid) > 0) { alert('This change order already has a payment recorded.'); return; }
   const xeroNote = (typeof xeroReady === 'function' && xeroReady()) ? '\n\nHeads up: marking it paid here does NOT put it in Xero. To bill it through Xero, use 🧾 Create Invoice instead and email that invoice.' : '';
   const how = prompt(`Mark "${co.title || 'Change order'}" (${amt < 0 ? 'credit ' : ''}$${Math.abs(amt).toLocaleString()}) as PAID?${xeroNote}\n\nHow was it paid? (e.g. Stripe, check #1234, cash)`, 'Stripe');
   if (how === null) return;
+  const today = new Date().toISOString().split('T')[0];
+  const when = prompt('Date it was paid (YYYY-MM-DD)', today);
+  if (when === null) return;
+  const paidDate = /^\d{4}-\d{2}-\d{2}$/.test(when.trim()) ? when.trim() : today;
   try {
     await applyCOToEstimate(conCurrentJobId, coId, {
+      amtPaid: Math.abs(amt), paidDate,
       paidVia: how.trim() || 'QuickBooks',
-      paidAt: new Date().toISOString().split('T')[0],
+      paidAt: paidDate,
       paidMarkedBy: conCurrentUser ? (conCurrentUser.displayName || conCurrentUser.email) : 'Unknown',
     });
     if (typeof logInvoiceActivity === 'function') logInvoiceActivity(conCurrentJobId, 'co_paid', `Change order paid (${how.trim() || 'QuickBooks'}) — ${co.title || ''}: $${Math.abs(amt).toLocaleString()}`);
