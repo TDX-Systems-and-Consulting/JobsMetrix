@@ -1839,18 +1839,40 @@ function conRenderStats() {
     let collectedFromInvoices = 0;
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-    const invPromises = conJobs.map(j =>
-      coll('jobs').doc(j.id).collection('invoices').get()
-        .then(s => s.forEach(d => {
-          const inv = d.data();
-          if (inv.status !== 'Paid') outstanding += (inv.total || 0) - (inv.amtPaid || 0);
-          // paidDate is stamped as YYYY-MM-DD on Mark Paid — string
-          // comparison against monthStart works fine for that format.
-          if (inv.paidDate && inv.paidDate >= monthStart && inv.amtPaid > 0) {
-            collectedFromInvoices += inv.amtPaid;
-          }
-        })).catch(() => {})
-    );
+    // DASH_MONEY_V2 (Travis 11/9/26): a change order paid by card is
+    // recorded by Stripe on the change order itself, not on its invoice.
+    // Count that money as collected, and don't keep its invoice in
+    // Outstanding. Never count the same dollars twice.
+    const invPromises = conJobs.map(j => Promise.all([
+      coll('jobs').doc(j.id).collection('invoices').get(),
+      coll('jobs').doc(j.id).collection('changeorders').get().catch(() => null),
+    ]).then(([s, coSnap]) => {
+      const cos = {};
+      if (coSnap) coSnap.forEach(d => { cos[d.id] = d.data(); });
+      const coPaid = co => co && (String(co.status || '') === 'Paid' || ((Number(co.amtPaid) || 0) > 0 && (Number(co.amtPaid) || 0) >= Math.abs(Number(co.amount) || 0)));
+      const coCountedViaInvoice = new Set();
+      s.forEach(d => {
+        const inv = d.data();
+        const co = inv.changeOrderId ? cos[inv.changeOrderId] : null;
+        const invPaid = inv.status === 'Paid';
+        if (!invPaid && coPaid(co)) {
+          // Paid on the change order by card: not outstanding; count it once below.
+          return;
+        }
+        if (inv.changeOrderId) coCountedViaInvoice.add(inv.changeOrderId);
+        if (!invPaid) outstanding += (inv.total || 0) - (inv.amtPaid || 0);
+        // paidDate is stamped as YYYY-MM-DD on Mark Paid — string
+        // comparison against monthStart works fine for that format.
+        if (inv.paidDate && inv.paidDate >= monthStart && inv.amtPaid > 0) {
+          collectedFromInvoices += inv.amtPaid;
+        }
+      });
+      Object.entries(cos).forEach(([id, co]) => {
+        if (coCountedViaInvoice.has(id)) return;
+        const amt = Number(co.amtPaid) || 0;
+        if (amt > 0 && co.paidDate && co.paidDate >= monthStart) collectedFromInvoices += amt;
+      });
+    }).catch(() => {}));
     Promise.all(invPromises).then(() => {
       const outColor = outstanding === 0 ? '#1dbb87' : outstanding <= 10000 ? '#f59e0b' : '#ef5350';
       setTile('statOutstanding', 'statOutstandingTile',
@@ -1889,13 +1911,26 @@ function conRenderStats() {
       );
       return Promise.all(billPromises).then(() => spent);
     }).catch(() => 0);
-    const materialsPromise = Promise.all(conJobs.map(j =>
-      coll('jobs').doc(j.id).collection('expenses').get()
-        .then(eSnap => {
+    // DASH_MONEY_V2: receipts count too. A receipt closed with "Mark
+    // reconciled" never became a materials purchase, so it was missing
+    // here even though the job's own numbers count it. Same rule as the
+    // job page: a receipt counts unless it was already logged as one.
+    const materialsPromise = Promise.all(conJobs.map(j => Promise.all([
+      coll('jobs').doc(j.id).collection('expenses').get(),
+      coll('jobs').doc(j.id).collection('receipts').get().catch(() => null),
+    ]).then(([eSnap, rSnap]) => {
           let s = 0;
+          const logged = new Set();
           eSnap.forEach(eDoc => {
             const m = eDoc.data();
+            if (m.receiptId) logged.add(m.receiptId);
             if (m.date && m.date >= monthStart2 && m.amount) s += m.amount; // RECEIPT_RETURNS_V1: returns are negative
+          });
+          if (rSnap) rSnap.forEach(rDoc => {
+            const r = rDoc.data();
+            if (logged.has(rDoc.id) || r.expenseId || !Number(r.amount)) return;
+            const d = r.date || (r.createdAt?.toDate ? r.createdAt.toDate().toISOString().split('T')[0] : '');
+            if (d && d >= monthStart2) s += Number(r.amount);
           });
           return s;
         }).catch(() => 0)
@@ -26166,6 +26201,15 @@ async function rcSetStatus(receiptId, status, extra) {
   const jobId = conCurrentJobId;
   const r = _rcReceipts.find(x => x.id === receiptId);
   if (!r || !rcCanManage()) return;
+  // DASH_MONEY_V2: closing a receipt always puts its dollars in job cost.
+  // "Mark reconciled" used to close it without ever logging the expense,
+  // so the cost never reached the job or the dashboard.
+  if (!r.expenseId && !(extra && extra.expenseId)) {
+    try {
+      const expId = await rcEnsureExpense(jobId, r);
+      if (expId) extra = { ...(extra || {}), expenseId: expId, loggedAsMaterials: true };
+    } catch (e) { alert('Could not record the cost: ' + e.message); return; }
+  }
   try {
     await coll('jobs').doc(jobId).collection('receipts').doc(receiptId).update({
       status, ...(extra || {}),
@@ -26174,6 +26218,28 @@ async function rcSetStatus(receiptId, status, extra) {
     if (r.todoId) await coll('todos').doc(r.todoId).update({ done: true, completedAt: firebase.firestore.FieldValue.serverTimestamp() }).catch(() => {});
   } catch (e) { alert('Could not update receipt: ' + e.message); }
 }
+
+// DASH_MONEY_V2: one place that turns a receipt into a materials purchase.
+async function rcEnsureExpense(jobId, r, descOverride) {
+  if (!jobId || !r || r.expenseId || !(Number(r.amount))) return r && r.expenseId || null;
+  const job = conJobs.find(j => j.id === jobId);
+  const d = r.date || (r.createdAt?.toDate ? r.createdAt.toDate().toISOString().split('T')[0] : new Date().toISOString().split('T')[0]);
+  const ref = await coll('jobs').doc(jobId).collection('expenses').add({
+    purchasedFrom: r.vendor || 'Receipt',
+    desc: descOverride || (r.amount < 0 ? 'Return' : 'Materials') + (r.note ? ' — ' + r.note : ''),
+    amount: Number(r.amount), date: d,
+    paidBy: r.needsReimbursement ? 'Personal (reimburse)' : 'Debit Card',
+    purchasedBy: r.uploadedByName || '',
+    notes: [job?.address, job?.jobNumber].filter(Boolean).join(' ') + (r.photoUrl ? ' · receipt ' + r.photoUrl : ''),
+    receiptId: r.id, companyId: currentCompanyId,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp(), updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+  await coll('jobs').doc(jobId).collection('receipts').doc(r.id).update({ expenseId: ref.id, loggedAsMaterials: true });
+  r.expenseId = ref.id; r.loggedAsMaterials = true;
+  return ref.id;
+}
+window.rcEnsureExpense = rcEnsureExpense;
+
 
 // Copies the receipt into this job's Materials Purchases (Financials),
 // so it lands in job costing, then marks the receipt Logged.
