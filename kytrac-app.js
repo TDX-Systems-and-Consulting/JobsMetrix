@@ -310,6 +310,7 @@ const KT_PAGES = {
   contractors:        { el:'ktPageContractors',        title:'👷 Contractors' },
   companyreceipts:    { el:'ktPageCompanyReceipts',    title:'🧾 Company Receipts' },
   owner:              { el:'ktPageOwner',              title:'🛡 Owner Portal' },
+  weekly:             { el:'ktPageWeekly',             title:'📈 Weekly Numbers' },
   settings:           { el:'ktPageSettings',           title:'⚙️ Company Settings' },
 };
 
@@ -794,6 +795,8 @@ function ktNav(key, btn) {
   if (key === 'companyreceipts' && !canViewFinancialsTab()) { key = 'dashboard'; btn = document.querySelector('.kt-nav-item'); }
   if (key === 'companyreceipts' && canViewFinancialsTab()) { key = 'owner'; btn = document.querySelector('.kt-nav-item[onclick*="\'owner\'"]'); opTab = 'financials'; } // receipts live in the portal now
   if (key === 'owner' && !canViewFinancialsTab()) { key = 'dashboard'; btn = document.querySelector('.kt-nav-item'); }
+  if ((key === 'owner' || key === 'companyreceipts') && isCoreTenant()) { key = 'weekly'; btn = document.querySelector('.kt-nav-item[onclick*="\'weekly\'"]'); }
+  if (key === 'weekly' && !canViewFinancialsTab()) { key = 'dashboard'; btn = document.querySelector('.kt-nav-item'); }
   if (key === 'crewmap' && !canViewCrewMap()) {
     key = 'dashboard';
     btn = document.querySelector('.kt-nav-item');
@@ -840,6 +843,7 @@ function ktNav(key, btn) {
   if(key==='globalChangeOrders') loadGlobalChangeOrders();
   if(key==='costing') renderJobCostDashboard();
   if(key==='leads' && typeof openLeadsPage === 'function') openLeadsPage(); // KYTLEAD_V1
+  if(key==='weekly') renderWeeklyNumbers(); // WEEKLY_NUMBERS_V1
 
   if(key==='jobs') {
     if(_jobsView === 'kanban') renderJobsBoard();
@@ -6867,8 +6871,15 @@ const FINANCIALS_TAB_ALLOWED_EMAILS = new Set([
   'travis@7pillarsgroup.org',
   'jason@7pillarsgroup.org',
 ]);
+// LICENSED_TENANT_V1: JTXD keeps its two-person allowlist; in any other
+// company, that company's Owners see their own financials.
+const JTXD_COMPANY_ID = 'mtOiSAzppjVbxKdHRJBH';
+function isJTXDCompany() { return currentCompanyId === JTXD_COMPANY_ID; }
+function isCoreTenant() { return !!currentCompanyId && !isJTXDCompany() && !(companyProfile && companyProfile.fullSuite); }
+window.isJTXDCompany = isJTXDCompany; window.isCoreTenant = isCoreTenant;
 function canViewFinancialsTab() {
   if (window._viewAsRole && window._viewAsRole !== 'Owner') return false; // VIEW_AS_V1 preview
+  if (currentCompanyId && !isJTXDCompany()) return currentUserRole === 'Owner';
   return FINANCIALS_TAB_ALLOWED_EMAILS.has((conCurrentUser?.email || '').toLowerCase());
 }
 
@@ -14026,7 +14037,7 @@ async function pickSubScopeExhibit(jobId, sub) {
 window.pickSubScopeExhibit = pickSubScopeExhibit;
 
 function buildSubAgreementText(sub, job, co, scopeExhibit) {
-  const companyName = co.companyName || co.legalName || 'TDX Holdings LLC dba JTXD Contracting';
+  const companyName = co.companyName || co.legalName || '';
   const jobName = job.name || 'Project';
   const jobAddress = job.address || 'Address on File';
   const subName = sub.name || 'Subcontractor';
@@ -14234,7 +14245,7 @@ async function printSubAgreement(jobId, subId) {
   } catch (e) {}
   if (!sub) { alert('Subcontractor record not found.'); return; }
   const co = companyProfile || {};
-  const companyName = co.companyName || co.legalName || 'TDX Holdings LLC dba JTXD Contracting';
+  const companyName = co.companyName || co.legalName || '';
   const scopeExhibit = await pickSubScopeExhibit(jobId, sub);
   if (scopeExhibit === null) return; // cancelled at the room picker
   const text = buildSubAgreementText(sub, job, co, scopeExhibit).replace(/electronic signature/gi, 'signature');
@@ -14522,7 +14533,7 @@ let companyProfile = {};
 
 // Default profile — used only if no company settings doc exists yet in Firestore
 const DEFAULT_COMPANY_PROFILE = {
-  companyName: 'TDX Holdings, LLC',
+  companyName: '',
   phone: '',
   email: '',
   website: '',
@@ -14554,6 +14565,7 @@ function loadCompanyProfile() {
     .then(doc => {
       if (doc.exists) {
         companyProfile = { ...DEFAULT_COMPANY_PROFILE, ...doc.data() };
+        setTimeout(() => { try { applyTenantMode(); } catch (e) {} }, 0); // LICENSED_TENANT_V1
         // NOTE: this used to auto-set ownerUid to conCurrentUser.uid here
         // (the JOBSMETRIX login's own Firebase UID, from the kytrac-72d91
         // project) every time this loaded. That's the wrong UID entirely —
@@ -15262,7 +15274,7 @@ window.clearLogo = clearLogo;
 // create your own" path that let uninvited strangers spin up companies.
 // Enforced server-side too (firestore.rules, companies create rule), so
 // keep this list and the rules pattern in sync when adding domains.
-const SIGNUP_ALLOWED_DOMAINS = ['7pillarsgroup.org', 'jtxdgroup.com'];
+const SIGNUP_ALLOWED_DOMAINS = ['7pillarsgroup.org', 'jtxdgroup.com', 'tdx-group.com'];
 
 function canCreateCompany(email) {
   const domain = (email || '').toLowerCase().split('@')[1] || '';
@@ -15924,7 +15936,8 @@ function applyRolePermissions() {
     'settings': canSeeSettings,
     'crewmap': canViewCrewMap(),
     'companyreceipts': false, // moved inside the Owner Portal
-    'owner': canViewFinancialsTab(), // Travis + Jason only
+    'owner': canViewFinancialsTab() && !isCoreTenant(), // Travis + Jason only
+    'weekly': canViewFinancialsTab(),
   };
 
   // Field Technician sidebar allowlist -- confirmed with Travis directly
@@ -16974,7 +16987,7 @@ const OFFSITE_THRESHOLD_FEET = 500;
 // office address; no Daily Log or photo is required to clock out of Office.
 const OFFICE_CLOCK_ID = '__office__';
 function officeClockJob() {
-  const addr = (companyProfile && companyProfile.address) || '2205 Droste Rd, Saint Charles, MO 63301';
+  const addr = (companyProfile && companyProfile.address) || (isJTXDCompany() ? '2205 Droste Rd, Saint Charles, MO 63301' : '');
   return { id: OFFICE_CLOCK_ID, name: 'Office', jobNumber: '', address: addr };
 }
 function officeClockOption(cur) {
@@ -18109,7 +18122,7 @@ function openVendorRequestModal() {
   const jobSelect = document.getElementById('vrqJobSelect');
   jobSelect.innerHTML = '<option value="">— No specific job —</option>' +
     conJobs.map(j => `<option value="${j.id}">${esc(jobNumSt(j) || j.name)} — ${esc(j.name)}</option>`).join('');
-  document.getElementById('vrqSubject').value = `Request from ${companyProfile?.companyName || 'JTXD Contracting'}`;
+  document.getElementById('vrqSubject').value = `Request from ${companyProfile?.companyName || ''}`;
   document.getElementById('vrqMessage').value = '';
   kOpen('vendorRequestModal');
 }
@@ -26115,7 +26128,7 @@ async function submitReceipt() {
       await loadNotifyRouting();
       owner = hatPersonClient('office'); // TODO_HATS_V1 #5: receipts belong to the Office
     } catch (e) {}
-    const ownerEmail = owner?.email || RECEIPT_ALERT_FALLBACK_EMAIL;
+    const ownerEmail = owner?.email || (isJTXDCompany() ? RECEIPT_ALERT_FALLBACK_EMAIL : (companyProfile?.email || ''));
     const action = isReturn ? 'Return credit' : needsReimburse ? 'REIMBURSE' : 'Reconcile';
     const todoText = `${action} receipt: ${rcMoney(amount)}${vendor ? ' at ' + vendor : ''} — ${who} (${paidWith}) on ${jobNumSt(job) || job?.name || 'job'}`;
     try {
@@ -27819,7 +27832,7 @@ async function emailRangeProposal() {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) { alert('That doesn\'t look like a valid email address.'); return; }
   const toName = (prompt('Their name (for the greeting):', to === job.email ? (job.client || '') : (_reData.lastSentToName || '')) || '').trim();
   const g = reRoundedGrand(rooms);
-  const co = companyProfile?.companyName || 'JTXD Contracting';
+  const co = companyProfile?.companyName || '';
   const where = job.address ? ` for ${esc(job.address)}` : '';
   if (!confirm(`Email the Range Proposal${job.address ? ' for ' + job.address : ''} to ${to}?\n\nTotal range: ${reMoney(g.low)} – ${reMoney(g.high)}`)) return;
 
@@ -28961,7 +28974,7 @@ async function resendProposalEmail(proposalId) {
   }
 
   const toName = job.client || job.name || 'Valued Customer';
-  const co = companyProfile?.companyName || 'JTXD Contracting';
+  const co = companyProfile?.companyName || '';
   const jobNum = jobNumSt(job);
   const isRevised = status === 'draft';
   const subject = isRevised
@@ -29338,7 +29351,7 @@ function sendProposalViaEmail(btn) {
     const jobNum = jobNumSt(job);
     const prop = conProposals && conProposals[0];
     const total = prop?.snapshot?.grandTotal || 0;
-    const co = companyProfile?.companyName || 'JTXD Contracting';
+    const co = companyProfile?.companyName || '';
     const subject = `Your Proposal from ${co}${jobNum ? ' — Job ' + jobNum : ''}`;
     const bodyHtml = `
       <p>Hi ${toName},</p>
@@ -29680,10 +29693,10 @@ async function emailChangeOrderToCustomer(coId) {
   const jobNum = jobNumSt(job);
   const amt = Number(co.amount || 0);
   const amtDisplay = (amt < 0 ? '-$' + Math.abs(amt).toLocaleString() : '$' + amt.toLocaleString());
-  const subject = `Change Order from ${companyProfile?.companyName || 'JTXD Contracting'}${jobNum ? ' — Job ' + jobNum : ''}`;
+  const subject = `Change Order from ${companyProfile?.companyName || ''}${jobNum ? ' — Job ' + jobNum : ''}`;
   const bodyHtml = `
     <p>Hi ${toName},</p>
-    <p>${companyProfile?.companyName || 'JTXD Contracting'} has sent you a Change Order${jobNum ? ' for job <strong>' + jobNum + '</strong>' : ''}: <strong>${esc(co.title||'')}</strong>.</p>
+    <p>${companyProfile?.companyName || ''} has sent you a Change Order${jobNum ? ' for job <strong>' + jobNum + '</strong>' : ''}: <strong>${esc(co.title||'')}</strong>.</p>
     <p><strong>Amount: ${amtDisplay}</strong>${co.days ? ` &nbsp;·&nbsp; +${co.days} day${co.days!=1?'s':''} to schedule` : ''}</p>
     <p>Please see the attached document for full details.</p>
     ${amt < 0 ? `<p>This credit will be applied to your final invoice.</p>` : `<p><strong>Payment is due upon receipt.</strong> Once you approve this change, we'll send an invoice for the full amount with a secure online payment link.</p>`}
@@ -29693,7 +29706,7 @@ async function emailChangeOrderToCustomer(coId) {
         💳 Pay Now (Card or Bank/ACH)
       </a>
     </div>` : ''}
-    <p>Thank you for choosing ${companyProfile?.companyName || 'JTXD Contracting'}.</p>
+    <p>Thank you for choosing ${companyProfile?.companyName || ''}.</p>
   `;
 
   const coHtml = renderChangeOrderDocumentHtml({ ...co, paymentLink: '' }, job, companyProfile, false);
@@ -37815,3 +37828,196 @@ window.qbAssignUnmatched = qbAssignUnmatched;
 
 setInterval(() => { qbSyncPaymentsNow(false, 15 * 60 * 1000); }, 60 * 1000);
 window.qbSyncPaymentsNow = qbSyncPaymentsNow;
+
+// ════════════════════════════════════════════════════
+// WEEKLY_NUMBERS_V1 (Travis 11/9/26): owner's weekly P&L.
+// One screen an owner can read in a minute: what sold, what came in,
+// what went out, what's left, per week, with the last 8 weeks beside it.
+// Cash view: money in = payments received that week; money out =
+// materials/receipts, subcontractor payments marked Paid, vendor bills
+// paid. Weeks run Monday to Sunday.
+// ════════════════════════════════════════════════════
+let _wnOffset = 0; // 0 = this week, -1 = last week ...
+function wnMonday(d) { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); const dow = (x.getDay() + 6) % 7; x.setDate(x.getDate() - dow); return x; }
+function wnKey(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+function wnMoney(v) { const n = Math.round(Number(v) || 0); return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString(); }
+function wnToKey(v) {
+  if (!v) return '';
+  if (typeof v === 'string') return v.slice(0, 10);
+  if (typeof v === 'number') return wnKey(new Date(v));
+  if (v.toDate) return wnKey(v.toDate());
+  return '';
+}
+function wnShift(n) { _wnOffset = n === 0 ? 0 : Math.min(0, _wnOffset + n); renderWeeklyNumbers(); }
+window.wnShift = wnShift;
+
+async function wnLoadAll() {
+  const jobs = conJobs.filter(j => !j.archived);
+  const per = await Promise.all(jobs.map(async j => {
+    const ref = coll('jobs').doc(j.id);
+    const [inv, cos, exp, rc, subs, props] = await Promise.all([
+      ref.collection('invoices').get().catch(() => null),
+      ref.collection('changeorders').get().catch(() => null),
+      ref.collection('expenses').get().catch(() => null),
+      ref.collection('receipts').get().catch(() => null),
+      ref.collection('subcontractorPayments').get().catch(() => null),
+      ref.collection('proposals').get().catch(() => null),
+    ]);
+    const rows = [];
+    const add = (date, type, amt, extra) => { const k = wnToKey(date); if (k && Number(amt)) rows.push({ date: k, type, amt: Number(amt), jobId: j.id, ...(extra || {}) }); };
+    const coMap = {}; if (cos) cos.forEach(d => { coMap[d.id] = d.data(); });
+    const coPaid = co => co && (String(co.status || '') === 'Paid' || ((Number(co.amtPaid) || 0) > 0 && (Number(co.amtPaid) || 0) >= Math.abs(Number(co.amount) || 0)));
+    const coViaInv = new Set();
+    let outstanding = 0;
+    if (inv) inv.forEach(d => {
+      const x = d.data();
+      const co = x.changeOrderId ? coMap[x.changeOrderId] : null;
+      if (x.status !== 'Paid' && coPaid(co)) return;
+      if (x.changeOrderId) coViaInv.add(x.changeOrderId);
+      if (x.status !== 'Paid' && !['Draft', 'Void'].includes(x.status)) outstanding += (Number(x.total) || 0) - (Number(x.amtPaid) || 0);
+      if (x.paidDate && Number(x.amtPaid) > 0) add(x.paidDate, 'in', x.amtPaid, { label: 'Invoice ' + (x.number || '') });
+    });
+    Object.entries(coMap).forEach(([id, co]) => {
+      if (coViaInv.has(id)) return;
+      if (co.paidDate && Number(co.amtPaid) > 0) add(co.paidDate, 'in', co.amtPaid, { label: 'Change order ' + (co.title || '') });
+    });
+    const logged = new Set();
+    if (exp) exp.forEach(d => { const x = d.data(); if (x.receiptId) logged.add(x.receiptId); add(x.date, 'materials', x.amount); });
+    if (rc) rc.forEach(d => { const x = d.data(); if (logged.has(d.id) || x.expenseId) return; add(x.date || x.createdAt, 'materials', x.amount); });
+    if (subs) subs.forEach(d => { const x = d.data(); if (x.status === 'Paid') add(x.paidDate || x.date, 'subs', x.amount); });
+    if (props) props.forEach(d => {
+      const p = d.data();
+      const val = (p.snapshot && p.snapshot.grandTotal) || 0;
+      if (p.sentAt) add(p.sentAt, 'sent', val || 0.0001, { label: 'Proposal' });
+      if (p.status === 'approved') add(p.respondedAt || p.updatedAt || p.sentAt, 'signed', val || 0.0001, { label: 'Signed' });
+    });
+    return { job: j, rows, outstanding };
+  }));
+  let billRows = [];
+  try {
+    const vSnap = await coll('vendors').get();
+    await Promise.all(vSnap.docs.map(v => v.ref.collection('bills').get().then(b => b.forEach(d => {
+      const x = d.data(); const k = wnToKey(x.paidDate || x.billDate);
+      if (k && Number(x.amtPaid) > 0) billRows.push({ date: k, type: 'bills', amt: Number(x.amtPaid), jobId: x.jobId || '' });
+    })).catch(() => {})));
+  } catch (e) {}
+  let leads = [];
+  try { const ls = await coll('leads').get(); ls.forEach(d => leads.push(d.data())); } catch (e) {}
+  const rows = per.flatMap(p => p.rows).concat(billRows);
+  const outstanding = per.reduce((s, p) => s + p.outstanding, 0);
+  return { rows, leads, outstanding, jobs };
+}
+
+async function renderWeeklyNumbers() {
+  const page = document.getElementById('ktPageWeekly');
+  if (!page) return;
+  if (!canViewFinancialsTab()) { page.innerHTML = '<div class="small muted" style="padding:20px">Not available.</div>'; return; }
+  if (!page.dataset.loaded) page.innerHTML = '<div class="small muted" style="padding:20px">Adding up the week…</div>';
+  const data = await wnLoadAll();
+  page.dataset.loaded = '1';
+  const mon0 = wnMonday(new Date());
+  const weeks = [];
+  for (let i = 7; i >= 0; i--) {
+    const s = new Date(mon0); s.setDate(s.getDate() - 7 * (i - _wnOffset));
+    const e = new Date(s); e.setDate(e.getDate() + 6);
+    weeks.push({ start: wnKey(s), end: wnKey(e), s, e });
+  }
+  const sum = (w, type, jobId) => data.rows.filter(r => r.type === type && r.date >= w.start && r.date <= w.end && (jobId === undefined || r.jobId === jobId)).reduce((a, r) => a + r.amt, 0);
+  const cnt = (w, type) => data.rows.filter(r => r.type === type && r.date >= w.start && r.date <= w.end).length;
+  const calc = w => {
+    const moneyIn = sum(w, 'in'), mat = sum(w, 'materials'), subs = sum(w, 'subs'), bills = sum(w, 'bills');
+    const out = mat + subs + bills;
+    const leadsNew = data.leads.filter(l => { const k = wnToKey(l.createdMs || l.createdAt); return k && k >= w.start && k <= w.end; }).length;
+    return { moneyIn, mat, subs, bills, out, net: moneyIn - out, signed: sum(w, 'signed'), signedCt: cnt(w, 'signed'), sent: sum(w, 'sent'), sentCt: cnt(w, 'sent'), leadsNew };
+  };
+  const W = weeks[weeks.length - 1];
+  const c = calc(W);
+  const fmtD = d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const margin = c.moneyIn > 0 ? Math.round(c.net / c.moneyIn * 100) : null;
+  const tile = (label, val, color, sub) => `<div class="kt-card" style="padding:14px 16px;margin:0">
+      <div style="font-size:1.5rem;font-weight:900;color:${color};font-variant-numeric:tabular-nums">${val}</div>
+      <div style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:2px">${label}</div>
+      ${sub ? `<div class="small muted" style="margin-top:4px">${sub}</div>` : ''}</div>`;
+  // per-job for the selected week
+  const jobIds = [...new Set(data.rows.filter(r => r.date >= W.start && r.date <= W.end && ['in', 'materials', 'subs', 'bills'].includes(r.type) && r.jobId).map(r => r.jobId))];
+  const jobRows = jobIds.map(id => {
+    const j = data.jobs.find(x => x.id === id);
+    const i = sum(W, 'in', id), o = sum(W, 'materials', id) + sum(W, 'subs', id) + sum(W, 'bills', id);
+    return { j, i, o, n: i - o };
+  }).sort((a, b) => b.i - a.i);
+  const maxIn = Math.max(1, ...weeks.map(w => Math.max(calc(w).moneyIn, calc(w).out)));
+  const trend = weeks.map(w => { const x = calc(w); return { w, ...x }; });
+  const td = 'padding:8px 10px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums';
+  page.innerHTML = `
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+    <div>
+      <div style="font-size:1.15rem;font-weight:900">Week of ${fmtD(W.s)} – ${fmtD(W.e)}</div>
+      <div class="small muted">Cash in and cash out for the week, Monday to Sunday.</div>
+    </div>
+    <div style="display:flex;gap:6px">
+      <button class="btn" onclick="wnShift(-1)">‹ Previous</button>
+      <button class="btn" onclick="wnShift(0)" ${_wnOffset === 0 ? 'disabled' : ''}>This week</button>
+      <button class="btn" onclick="wnShift(1)" ${_wnOffset === 0 ? 'disabled' : ''}>Next ›</button>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:14px">
+    ${tile('Sold this week', wnMoney(c.signed), 'var(--amber)', `${c.signedCt} proposal${c.signedCt === 1 ? '' : 's'} signed`)}
+    ${tile('Money in', wnMoney(c.moneyIn), '#1dbb87', 'Payments received')}
+    ${tile('Money out', wnMoney(c.out), '#f59e0b', 'Materials, subs, bills')}
+    ${tile('Profit this week', wnMoney(c.net), c.net >= 0 ? '#1dbb87' : '#ef5350', margin === null ? 'No money in yet' : margin + '% of money in')}
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:14px">
+    <div class="kt-card" style="margin:0"><div class="kt-card-head" style="padding:12px 16px 8px"><h3 style="font-size:.9rem">🎯 Sales this week</h3></div>
+      <div style="padding:6px 16px 14px;display:grid;grid-template-columns:1fr auto;gap:6px 12px;font-size:.88rem">
+        <span>New leads</span><strong>${c.leadsNew}</strong>
+        <span>Proposals sent</span><strong>${c.sentCt} · ${wnMoney(c.sent)}</strong>
+        <span>Proposals signed</span><strong>${c.signedCt} · ${wnMoney(c.signed)}</strong>
+        <span>Unpaid invoices (today)</span><strong>${wnMoney(data.outstanding)}</strong>
+      </div></div>
+    <div class="kt-card" style="margin:0"><div class="kt-card-head" style="padding:12px 16px 8px"><h3 style="font-size:.9rem">💸 Where the money went</h3></div>
+      <div style="padding:6px 16px 14px;display:grid;grid-template-columns:1fr auto;gap:6px 12px;font-size:.88rem">
+        <span>Materials and receipts</span><strong>${wnMoney(c.mat)}</strong>
+        <span>Subcontractors paid</span><strong>${wnMoney(c.subs)}</strong>
+        <span>Vendor bills paid</span><strong>${wnMoney(c.bills)}</strong>
+        <span style="border-top:1px solid var(--line);padding-top:6px;font-weight:700">Total out</span><strong style="border-top:1px solid var(--line);padding-top:6px">${wnMoney(c.out)}</strong>
+      </div></div>
+  </div>
+  <div class="kt-card" style="margin-bottom:14px"><div class="kt-card-head" style="padding:12px 16px 8px"><h3 style="font-size:.9rem">🔧 By job this week</h3></div>
+    <div style="overflow-x:auto;padding:0 6px 10px">${jobRows.length ? `<table style="width:100%;border-collapse:collapse;font-size:.84rem">
+      <thead><tr style="text-align:left;color:var(--muted);font-size:.72rem;text-transform:uppercase"><th style="${td}">Job</th><th style="${td};text-align:right">In</th><th style="${td};text-align:right">Out</th><th style="${td};text-align:right">Net</th></tr></thead>
+      <tbody>${jobRows.map(r => `<tr onclick="openJobDetail('${r.j ? r.j.id : ''}')" style="cursor:pointer"><td style="${td}">${esc(r.j ? jobTitle(r.j) : 'Other')}</td><td style="${td};text-align:right">${wnMoney(r.i)}</td><td style="${td};text-align:right">${wnMoney(r.o)}</td><td style="${td};text-align:right;color:${r.n >= 0 ? '#1dbb87' : '#ef5350'};font-weight:700">${wnMoney(r.n)}</td></tr>`).join('')}</tbody></table>`
+      : '<div class="small muted" style="padding:10px">No money moved on any job this week.</div>'}</div></div>
+  <div class="kt-card" style="margin-bottom:14px"><div class="kt-card-head" style="padding:12px 16px 8px"><h3 style="font-size:.9rem">📈 Last 8 weeks</h3></div>
+    <div style="overflow-x:auto;padding:0 6px 10px"><table style="width:100%;border-collapse:collapse;font-size:.84rem;min-width:560px">
+      <thead><tr style="text-align:left;color:var(--muted);font-size:.72rem;text-transform:uppercase"><th style="${td}">Week of</th><th style="${td};text-align:right">Sold</th><th style="${td};text-align:right">In</th><th style="${td};text-align:right">Out</th><th style="${td};text-align:right">Profit</th><th style="${td}">In vs. out</th></tr></thead>
+      <tbody>${trend.slice().reverse().map(t => `<tr style="${t.w === W ? 'background:rgba(217,119,6,.08)' : ''}"><td style="${td}">${fmtD(t.w.s)}</td><td style="${td};text-align:right">${wnMoney(t.signed)}</td><td style="${td};text-align:right">${wnMoney(t.moneyIn)}</td><td style="${td};text-align:right">${wnMoney(t.out)}</td><td style="${td};text-align:right;font-weight:700;color:${t.net >= 0 ? '#1dbb87' : '#ef5350'}">${wnMoney(t.net)}</td>
+        <td style="${td};min-width:140px"><div style="height:6px;border-radius:3px;background:#1dbb87;width:${Math.round(t.moneyIn / maxIn * 100)}%;margin-bottom:3px"></div><div style="height:6px;border-radius:3px;background:#f59e0b;width:${Math.round(t.out / maxIn * 100)}%"></div></td></tr>`).join('')}</tbody></table></div></div>
+  <div class="small muted" style="padding:0 4px 20px">How it's counted: money in is payments received (invoices and card-paid change orders) on the day they were paid. Money out is materials purchases and receipts, subcontractor payments marked Paid, and vendor bills paid. Overhead like rent isn't included unless it's entered as a vendor bill.</div>`;
+}
+window.renderWeeklyNumbers = renderWeeklyNumbers;
+
+// ════════════════════════════════════════════════════
+// LICENSED_TENANT_V1 (Travis 11/9/26): JobsMetrix for companies other
+// than JTXD. JTXD keeps everything; every other company gets the core
+// product with its own name, its own owner access, and nothing that is
+// specific to JTXD (Jason's pay lines, the EOS Owner Portal).
+// ════════════════════════════════════════════════════
+function applyTenantMode() {
+  const core = isCoreTenant();
+  document.body.classList.toggle('core-tenant', core);
+  if (core) {
+    // Partner pay lines are JTXD's arrangement; another company's job
+    // math starts without them.
+    JTXD_LOCKED_RATES.jasonCommissionPct = 0;
+    JTXD_LOCKED_RATES.superintendentPct = 0;
+    JTXD_LOCKED_RATES.consultantPct = 0;
+    const r = companyProfile || {};
+    if (Number(r.billedPerCrewHour) > 0) JTXD_LOCKED_RATES.billedPerCrewHour = Number(r.billedPerCrewHour);
+    if (Number(r.materialsMarkupPct) > 0) JTXD_LOCKED_RATES.materialsMarkupPct = Number(r.materialsMarkupPct) / (Number(r.materialsMarkupPct) > 1 ? 100 : 1);
+    document.querySelectorAll('.est-kpi-label, .fin-bar-label').forEach(el => {
+      if (/JTXD Pool/.test(el.textContent)) el.textContent = el.textContent.replace('JTXD Pool', 'Company Pool');
+    });
+  }
+  try { applyRolePermissions(); } catch (e) {}
+}
+window.applyTenantMode = applyTenantMode;

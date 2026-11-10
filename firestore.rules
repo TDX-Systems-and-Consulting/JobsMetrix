@@ -28,6 +28,7 @@ service cloud.firestore {
       return signedIn() && (
         myEmail().lower().matches('.*@7pillarsgroup[.]org') ||
         myEmail().lower().matches('.*@jtxdgroup[.]com')
+        || myEmail().lower().matches('.*@tdx-group[.]com')
       );
     }
 

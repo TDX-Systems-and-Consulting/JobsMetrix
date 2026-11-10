@@ -2980,7 +2980,7 @@ async function sendPaymentConfirmationEmail(companyId, job, inv, amountPaidNow, 
         </td></tr>
         <tr><td style="padding:32px;color:#1a1a1a;font-size:15px;line-height:1.6">${bodyHtml}</td></tr>
         <tr><td style="background:#f9f9f9;padding:20px 32px;text-align:center;font-size:12px;color:#888;border-top:1px solid #eee">
-          This email was sent by ${companyName} via JOBSpan.
+          This email was sent by ${companyName} via JobsMetrix.
         </td></tr>
       </table>
     </td></tr>
@@ -3175,7 +3175,7 @@ exports.sendJobspanEmailSendGridBackup = functions.https.onCall(async (data, con
         </td></tr>
         <!-- Footer -->
         <tr><td style="background:#f9f9f9;padding:20px 32px;text-align:center;font-size:12px;color:#888;border-top:1px solid #eee">
-          This email was sent by ${companyName} via JOBSpan.<br>
+          This email was sent by ${companyName} via JobsMetrix.<br>
           Questions? Reply to this email or contact us directly.
         </td></tr>
       </table>
@@ -3371,14 +3371,21 @@ exports.sendJobspanEmail = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCOUNT_
   const db = admin.firestore();
   let companyName = 'JTXD Contracting';
   let companyLogo = '';
+  let companyEmail = '';
   try {
     const settDoc = await db.collection('companies').doc(companyId)
       .collection('settings').doc('company').get();
     if (settDoc.exists) {
       companyName = settDoc.data().companyName || companyName;
       companyLogo = settDoc.data().logoUrl || '';
+      companyEmail = settDoc.data().email || '';
     }
   } catch (e) {}
+  // LICENSED_TENANT_V1: another company's customers reply to that company,
+  // and its audit copy goes to that company -- never to JTXD's inbox.
+  const isJTXD = companyId === 'mtOiSAzppjVbxKdHRJBH';
+  const replyToFinal = replyTo || (isJTXD ? '' : companyEmail);
+  const bccFinal = isJTXD ? EMAIL_SEND_AS : (companyEmail || '');
 
   const brandedHtml = `<!DOCTYPE html>
 <html>
@@ -3395,7 +3402,7 @@ exports.sendJobspanEmail = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCOUNT_
           ${bodyHtml || `<p>${bodyText}</p>`}
         </td></tr>
         <tr><td style="background:#f9f9f9;padding:20px 32px;text-align:center;font-size:12px;color:#888;border-top:1px solid #eee">
-          This email was sent by ${companyName} via JOBSpan.<br>
+          This email was sent by ${companyName} via JobsMetrix.<br>
           Questions? Reply to this email or contact us directly.
         </td></tr>
       </table>
@@ -3413,8 +3420,8 @@ exports.sendJobspanEmail = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCOUNT_
   }
 
   const raw = buildRawMessage({
-    to, toName, replyTo,
-    bccEmail: EMAIL_SEND_AS, // audit copy of every send, same purpose as the
+    to, toName, replyTo: replyToFinal,
+    bccEmail: bccFinal, // audit copy of every send, same purpose as the
                               // real function's BCC -- now going to the new
                               // sending address itself rather than jtxdgroup.com;
                               // confirm that's actually what you want.
