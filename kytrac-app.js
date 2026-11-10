@@ -33725,7 +33725,7 @@ const BATHROOM_GUIDED_FLOW = [
   { id:'showerDoor', label:'Shower Door', questions:[
       { key:'doorType', label:'Door type?', options:['Sliding Glass Door','Curtain Rod'], shareKey:'showerDoorType' },
       { key:'grade', label:'What grade level?', options:GRADE_OPTIONS, isGrade:true, skipIf: ctx => ctx.showerDoorType === 'Curtain Rod', skipValue:'N/A (curtain rod)' },
-      { key:'suppliedBy', label:'Who supplies the door?', options:['JTXD Supplies & Installs','Customer Supplies (labor only)'], shareKey:'showerDoorSuppliedBy', skipIf: ctx => ctx.showerDoorType === 'Curtain Rod', skipValue:'N/A (curtain rod)' },
+      { key:'suppliedBy', label:'Who supplies the door?', options:['We Supply & Install','Customer Supplies (labor only)'], shareKey:'showerDoorSuppliedBy', skipIf: ctx => ctx.showerDoorType === 'Curtain Rod', skipValue:'N/A (curtain rod)' },
       { key:'frameType', label:'Framed or Frameless glass?', options:['Framed','Frameless'], skipIf: ctx => ctx.showerDoorType === 'Curtain Rod' || ctx.showerDoorSuppliedBy === 'Customer Supplies (labor only)', skipValue:'N/A' }
   ], note:'Frame Type (Framed/Frameless) is independent of Grade -- any grade can be either. Labor is driven by frame type and who supplies the door, not by grade.' },
   { id:'flooring', label:'Flooring', questions:[
@@ -38014,8 +38014,11 @@ function applyTenantMode() {
     const r = companyProfile || {};
     if (Number(r.billedPerCrewHour) > 0) JTXD_LOCKED_RATES.billedPerCrewHour = Number(r.billedPerCrewHour);
     if (Number(r.materialsMarkupPct) > 0) JTXD_LOCKED_RATES.materialsMarkupPct = Number(r.materialsMarkupPct) / (Number(r.materialsMarkupPct) > 1 ? 100 : 1);
-    document.querySelectorAll('.est-kpi-label, .fin-bar-label').forEach(el => {
-      if (/JTXD Pool/.test(el.textContent)) el.textContent = el.textContent.replace('JTXD Pool', 'Company Pool');
+    document.querySelectorAll('.est-kpi-label, .fin-bar-label, .kt-stat-label').forEach(el => {
+      if (/JTXD/.test(el.textContent)) el.textContent = el.textContent.replace(/JTXD/g, 'Company');
+    });
+    document.querySelectorAll('[title*="Jason"], [title*="JTXD"]').forEach(el => {
+      el.title = el.title.replace(/\s*(and|\+|−|-)?\s*Jason'?s?[^,.;)]*/g, '').replace(/JTXD/g, 'company');
     });
   }
   try { applyRolePermissions(); } catch (e) {}
