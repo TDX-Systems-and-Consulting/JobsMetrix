@@ -1201,7 +1201,7 @@
         <span class="kt-nav-icon">📋</span> Notes
         <span class="kt-nav-badge" id="navNotesBadge" style="display:none">0</span>
       </button>
-      <button class="kt-nav-item" onclick="ktNav('globalMessages',this)">
+      <button class="kt-nav-item jtxd-only" onclick="ktNav('globalMessages',this)">
         <span class="kt-nav-icon">💬</span> Messages
         <span class="kt-nav-badge" id="navMessagesBadge" style="display:none">0</span>
       </button>
@@ -1357,7 +1357,7 @@
           <div style="color:var(--muted);font-size:.82rem;margin-top:4px">Your schedule</div>
         </div>
 
-        <div onclick="ktNav('globalMessages', null)" class="kt-card" style="padding:24px;cursor:pointer;text-align:center;transition:transform .1s" onmousedown="this.style.transform='scale(.97)'" onmouseup="this.style.transform=''" onmouseleave="this.style.transform=''">
+        <div onclick="ktNav('globalMessages', null)" class="kt-card jtxd-only" style="padding:24px;cursor:pointer;text-align:center;transition:transform .1s" onmousedown="this.style.transform='scale(.97)'" onmouseup="this.style.transform=''" onmouseleave="this.style.transform=''">
           <div style="font-size:2.2rem;margin-bottom:8px">💬</div>
           <div style="font-size:1.15rem;font-weight:800">Messages</div>
           <div style="color:var(--muted);font-size:.82rem;margin-top:4px">Talk to the office</div>
@@ -4543,7 +4543,7 @@
         <button class="con-subtab" onclick="switchDetailTab('activity',this)">📡 Activity</button>
         <button class="con-subtab" onclick="switchDetailTab('documents',this)">📁 Files</button>
         <button class="con-subtab" onclick="switchDetailTab('financials',this)">💰 Financials</button>
-        <button class="con-subtab" onclick="switchDetailTab('messages',this)">💬 Messages</button>
+        <button class="con-subtab jtxd-only" onclick="switchDetailTab('messages',this)">💬 Messages</button>
         <button class="con-subtab" onclick="switchDetailTab('reports',this)">📊 Reports</button>
         <button class="con-subtab" onclick="switchDetailTab('retrospective',this)">📈 Retrospective</button>
         <button class="con-subtab" id="entryInfoTabBtn" onclick="switchDetailTab('entryinfo',this)">🔑 Entry Info</button>
@@ -5291,7 +5291,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202611111110"></script>
+<script src="kytrac-app.js?v=202611111200"></script>
 <script src="kytlead.js?v=202611111110"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell

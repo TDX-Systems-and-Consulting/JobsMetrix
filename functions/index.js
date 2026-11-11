@@ -2507,7 +2507,7 @@ exports.createStripePaymentLinkForCO = functions.https.onCall(async (data, conte
 // Raw HTTP endpoint - Stripe calls this directly (no Firebase Auth
 // context at all), so this must verify the request really came from
 // Stripe using the webhook signing secret, not rely on any auth check.
-exports.stripeWebhook = functions.runWith({ secrets: ['XERO_CLIENT_ID', 'XERO_CLIENT_SECRET'] }).https.onRequest(async (req, res) => { // XERO_V1: secrets for the Xero sync after a card payment
+exports.stripeWebhook = functions.runWith({ secrets: ['XERO_CLIENT_ID', 'XERO_CLIENT_SECRET', 'GMAIL_SERVICE_ACCOUNT_KEY'] }).https.onRequest(async (req, res) => { // XERO_V1: secrets for the Xero sync after a card payment
   // Which company this event belongs to determines which webhook
   // secret verifies it -- so peek at the unverified payload first just
   // to find companyId, then verify properly with that company's own
@@ -2992,6 +2992,17 @@ async function sendPaymentConfirmationEmail(companyId, job, inv, amountPaidNow, 
   </table>
 </body></html>`;
 
+  if (!_pcJTXD) {
+    if (!customerEmail) return;
+    try {
+      const gmail = await getGmailClient(TENANT_SEND_AS);
+      const raw = buildRawMessage({ to: customerEmail, toName: customerName, bccEmail: _pcBcc || undefined, replyTo: _pcCoEmail || undefined,
+        fromName: companyName, fromEmail: TENANT_SEND_AS, subject: `Payment Received — ${invNum}`, bodyHtml: brandedHtml,
+        bodyText: `Hi ${customerName}, this confirms we've received your payment of $${amtStr} toward ${invNum}. Thank you!` });
+      await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
+    } catch (e) { console.error('sendPaymentConfirmationEmail (tenant) failed', companyId, e.message); }
+    return;
+  }
   const payload = {
     personalizations: [{ to: [{ email: customerEmail, name: customerName }], ...(_pcBcc && _pcBcc.toLowerCase() !== String(customerEmail).toLowerCase() ? { bcc: [{ email: _pcBcc }] } : {}) }],
     from: { email: 'travis@jtxdgroup.com', name: companyName },
@@ -3018,7 +3029,7 @@ exports.sendMessageNotificationSms = functions.firestore
       return null;
     }
 
-    const plivoSetup = getPlivoClient();
+    const plivoSetup = context.params.companyId === JTXD_COMPANY_ID ? getPlivoClient() : null;
     if (!plivoSetup) {
       console.warn('Plivo not configured (PLIVO_AUTH_ID/PLIVO_AUTH_TOKEN/PLIVO_FROM missing) - skipping SMS, marking as skipped.');
       return snap.ref.update({ notifyStatus: 'skipped_no_plivo_config' });
@@ -3298,20 +3309,37 @@ exports.sendJobspanEmailSendGridBackup = functions.https.onCall(async (data, con
 const GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.send'];
 const EMAIL_SEND_AS = 'travis@7pillarsgroup.org';
 
-let _gmailClient = null;
-async function getGmailClient() {
-  if (_gmailClient) return _gmailClient;
+// LICENSED_TENANT_V1: JTXD sends as its own mailbox. Every other company's
+// email goes out from the neutral TDX platform mailbox, with the company's
+// name as the display name and the company's own email as Reply-To.
+const TENANT_SEND_AS = 'itadmin@tdx-group.com';
+const JTXD_COMPANY_ID = 'mtOiSAzppjVbxKdHRJBH';
+function sendAsFor(companyId) { return (!companyId || companyId === JTXD_COMPANY_ID) ? EMAIL_SEND_AS : TENANT_SEND_AS; }
+const _gmailClients = {};
+async function getGmailClient(subject) {
+  subject = subject || EMAIL_SEND_AS;
+  if (_gmailClients[subject]) return _gmailClients[subject];
   const key = JSON.parse(process.env.GMAIL_SERVICE_ACCOUNT_KEY);
   const auth = new google.auth.JWT({
     email: key.client_email,
     key: key.private_key,
     scopes: GMAIL_SCOPES,
-    subject: EMAIL_SEND_AS, // domain-wide delegation: send AS this Workspace user
+    subject, // domain-wide delegation: send AS this Workspace user
   });
   await auth.authorize();
-  _gmailClient = google.gmail({ version: 'v1', auth });
-  return _gmailClient;
+  _gmailClients[subject] = google.gmail({ version: 'v1', auth });
+  return _gmailClients[subject];
 }
+
+// Admin check: can the platform send as the tenant mailbox? Authorizes only;
+// sends nothing.
+exports.tenantSenderCheck = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCOUNT_KEY'] }).https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be signed in.');
+  const em = String(context.auth.token.email || '').toLowerCase();
+  if (!/@(tdx-group\.com|7pillarsgroup\.org)$/.test(em)) throw new functions.https.HttpsError('permission-denied', 'Platform admins only.');
+  try { await getGmailClient(TENANT_SEND_AS); return { ok: true, sender: TENANT_SEND_AS }; }
+  catch (e) { return { ok: false, sender: TENANT_SEND_AS, error: e.message }; }
+});
 
 function encodeSubject(subject) {
   return `=?utf-8?B?${Buffer.from(subject, 'utf-8').toString('base64')}?=`;
@@ -3320,15 +3348,16 @@ function encodeSubject(subject) {
 // Builds a raw RFC 2822 message with To/Bcc/Reply-To headers -- Gmail's API
 // takes a full base64url-encoded MIME message, not a convenience object
 // like SendGrid's {to, subject, html}.
-function buildRawMessage({ to, toName, bccEmail, replyTo, fromName, subject, bodyHtml, bodyText }) {
+function buildRawMessage({ to, toName, bccEmail, replyTo, fromName, fromEmail, subject, bodyHtml, bodyText }) {
+  fromEmail = fromEmail || EMAIL_SEND_AS;
   const toHeader = toName ? `"${toName}" <${to}>` : to;
   const boundary = `bnd_${Date.now()}`;
 
   const headers = [
-    `From: "${fromName}" <${EMAIL_SEND_AS}>`,
+    `From: "${fromName}" <${fromEmail}>`,
     `To: ${toHeader}`,
     bccEmail ? `Bcc: ${bccEmail}` : null,
-    `Reply-To: "${fromName}" <${replyTo || EMAIL_SEND_AS}>`,
+    `Reply-To: "${fromName}" <${replyTo || fromEmail}>`,
     `Subject: ${encodeSubject(subject)}`,
     'MIME-Version: 1.0',
     `Content-Type: multipart/alternative; boundary="${boundary}"`,
@@ -3418,7 +3447,7 @@ exports.sendJobspanEmail = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCOUNT_
 
   let gmail;
   try {
-    gmail = await getGmailClient();
+    gmail = await getGmailClient(sendAsFor(companyId));
   } catch (e) {
     console.error('sendJobspanEmailGmail: Gmail client setup failed', e.message);
     throw new functions.https.HttpsError('internal', `Gmail auth failed: ${e.message}`);
@@ -3430,7 +3459,7 @@ exports.sendJobspanEmail = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCOUNT_
                               // real function's BCC -- now going to the new
                               // sending address itself rather than jtxdgroup.com;
                               // confirm that's actually what you want.
-    fromName: companyName,
+    fromName: companyName, fromEmail: sendAsFor(companyId),
     subject, bodyHtml: brandedHtml, bodyText,
   });
 
@@ -4639,8 +4668,6 @@ exports.kytleadMorningDigest = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCO
   .timeZone('America/Chicago')
   .onRun(async () => {
     let gmail;
-    try { gmail = await getGmailClient(); }
-    catch (e) { console.error('kytleadMorningDigest: Gmail setup failed', e.message); return null; }
     const db = admin.firestore();
     const ct = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }));
     const today = `${ct.getFullYear()}-${String(ct.getMonth() + 1).padStart(2, '0')}-${String(ct.getDate()).padStart(2, '0')}`;
@@ -4663,6 +4690,8 @@ exports.kytleadMorningDigest = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCO
         (byOwner[owner] = byOwner[owner] || { overdue: [], today: [], none: [] })[bucket].push(l);
       });
       const companyName = co.data().name || 'JTXD Contracting';
+      try { gmail = await getGmailClient(sendAsFor(co.id)); }
+      catch (e) { console.error('kytleadMorningDigest: Gmail setup failed', co.id, e.message); continue; }
       for (const [email, g] of Object.entries(byOwner)) {
         const total = g.overdue.length + g.today.length + g.none.length;
         if (!total) continue;
@@ -4678,7 +4707,7 @@ exports.kytleadMorningDigest = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCO
           <p style="font-size:12px;color:#999">${esc(companyName)} · KYTLEAD morning follow-ups</p></div>`;
         try {
           const raw = buildRawMessage({
-            to: email, fromName: companyName + ' Leads',
+            to: email, fromName: companyName + ' Leads', fromEmail: sendAsFor(co.id),
             subject: `Today's follow-ups: ${g.overdue.length} overdue, ${g.today.length} due today`,
             bodyHtml: html, bodyText: `${total} leads need follow-up today. Open JobsMetrix → Leads → Today.`,
           });
@@ -4832,7 +4861,7 @@ async function kl2Context(db, companyId, lead, cfg) {
     } catch (e) {}
     if (!ownerName) ownerName = owner.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
   }
-  return { company, ownerName, ownerEmail: owner, reviewUrl: cfg.reviewUrl || '', companyOwnerEmail: (cd.ownerEmail || '').toLowerCase() };
+  return { companyId, company, ownerName, ownerEmail: owner, reviewUrl: cfg.reviewUrl || '', companyOwnerEmail: (cd.ownerEmail || '').toLowerCase() };
 }
 function kl2Enroll(cad, startMs) {
   const first = cad.steps[0];
@@ -4841,23 +4870,23 @@ function kl2Enroll(cad, startMs) {
 function kl2Act(type, note, extra) { return { type, note, at: Date.now(), by: 'auto', ...(extra || {}) }; }
 
 async function kl2SendEmail(to, toName, subject, text, ctx, unsubUrl) {
-  const gmail = await getGmailClient();
+  const gmail = await getGmailClient(sendAsFor(ctx.companyId));
   const esc = v => String(v == null ? '' : v).replace(/[&<>"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
   const html = `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.55;color:#1a1a1a;max-width:600px">${text.split(/\n\n+/).map(p => '<p>' + esc(p).replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>') + '</p>').join('')}`
     + (unsubUrl ? `<p style="font-size:11px;color:#999;margin-top:24px">Don't want these emails? <a href="${unsubUrl}" style="color:#999">Unsubscribe</a>.</p>` : '') + '</div>';
-  const raw = buildRawMessage({ to, toName, replyTo: ctx.ownerEmail || undefined, fromName: ctx.ownerName ? `${ctx.ownerName} | ${ctx.company}` : ctx.company, subject, bodyHtml: html, bodyText: text + (unsubUrl ? `\n\nUnsubscribe: ${unsubUrl}` : '') });
+  const raw = buildRawMessage({ to, toName, replyTo: ctx.ownerEmail || undefined, fromEmail: sendAsFor(ctx.companyId), fromName: ctx.ownerName ? `${ctx.ownerName} | ${ctx.company}` : ctx.company, subject, bodyHtml: html, bodyText: text + (unsubUrl ? `\n\nUnsubscribe: ${unsubUrl}` : '') });
   await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
 }
 // Internal alert to a salesperson / manager.
-async function kl2Alert(to, subject, lines, companyName) {
+async function kl2Alert(to, subject, lines, companyName, companyId) {
   if (!to) return;
   try {
-    const gmail = await getGmailClient();
+    const gmail = await getGmailClient(sendAsFor(companyId));
     const esc = v => String(v == null ? '' : v).replace(/[&<>"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
     const html = `<div style="font-family:Arial,sans-serif;max-width:600px;color:#1a1a1a">${lines.map(l => '<p style="margin:6px 0">' + esc(l) + '</p>').join('')}
       <p style="margin-top:18px"><a href="https://jobsmetrix.com/" style="background:#d97706;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none">Open Leads in JobsMetrix</a></p>
       <p style="font-size:12px;color:#999">${esc(companyName)} · KYTLEAD</p></div>`;
-    const raw = buildRawMessage({ to, fromName: companyName + ' Leads', subject, bodyHtml: html, bodyText: lines.join('\n') });
+    const raw = buildRawMessage({ to, fromName: companyName + ' Leads', fromEmail: sendAsFor(companyId), subject, bodyHtml: html, bodyText: lines.join('\n') });
     await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
   } catch (e) { console.warn('kl2Alert failed', to, e.message); }
 }
@@ -4915,7 +4944,7 @@ async function kl2RunStep(companyId, leadId, cfgIn) {
       catch (e) { acts.push(kl2Act('note', 'Auto email failed: ' + e.message)); }
     } else acts.push(kl2Act('note', 'Skipped auto email (' + (lead.unsubscribed ? 'unsubscribed' : 'no email address') + ')'));
   } else if (step.action === 'sms') {
-    const plivo = getPlivoClient();
+    const plivo = companyId === JTXD_COMPANY_ID ? getPlivoClient() : null; // LICENSED_TENANT_V1: no shared texting number
     const to = kl2Digits(lead.phone);
     if (lead.smsOptOut || lead.wrongNumber) acts.push(kl2Act('note', 'Skipped text (' + (lead.smsOptOut ? 'customer opted out' : 'marked wrong number') + ')'));
     else if (!to) acts.push(kl2Act('note', 'Skipped text (no phone number)'));
@@ -4997,7 +5026,7 @@ exports.kytleadOnWrite = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCOUNT_KE
           a.notes ? 'Notes: ' + String(a.notes).slice(0, 400) : '',
           dup ? `⚠ Possible duplicate of ${dup.data().name || 'another lead'}` : '',
           'Reach out right away. Leads contacted in the first hour close far more often.',
-        ].filter(Boolean), ctxName);
+        ].filter(Boolean), ctxName, companyId);
       }
     } else {
       // Stage change: stop sales follow-ups, start the stage's own sequence.
@@ -5060,7 +5089,7 @@ exports.kytleadCadenceRunner = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCO
             `${l.name || 'A new lead'} came in ${Math.round((now - l.createdMs) / 36e5)} hours ago and nobody has called, texted or emailed them yet.`,
             `Owner: ${l.owner || 'unassigned'}`, [l.phone, l.email].filter(Boolean).join(' · '),
             'Call now, or reassign the lead in JobsMetrix → Leads.',
-          ], co.data().name || 'JTXD Contracting');
+          ], co.data().name || 'JTXD Contracting', co.id);
           await d.ref.update({ escalatedAt: now, activity: admin.firestore.FieldValue.arrayUnion(kl2Act('note', `Escalated: not contacted within ${hours} hours`)) });
         }
       } catch (e) { console.error('kytleadCadenceRunner failed for', co.id, e.message); }
@@ -5132,7 +5161,7 @@ async function kl2InboundText(fromRaw, text) {
       if (!stop) { patch.nextStep = 'Reply to ' + (String(l.name || '').split(' ')[0] || 'customer') + '\'s text'; patch.nextDue = kl2DateStr(Date.now()); patch.nextAction = { type: 'task', pending: true, at: Date.now() }; }
       if (l.stage === 'new' || l.stage === 'attempted') { patch.stage = 'contacted'; patch.stageChangedAt = Date.now(); }
       await d.ref.update(patch);
-      if (l.owner && !stop) await kl2Alert(l.owner, `💬 ${l.name || 'A lead'} texted back`, [`${l.name || 'A lead'} (${l.phone}) replied:`, `"${String(text).slice(0, 500)}"`, 'Automatic follow-ups are paused. Reply from your phone.'], co.data().name || 'JTXD Contracting');
+      if (l.owner && !stop) await kl2Alert(l.owner, `💬 ${l.name || 'A lead'} texted back`, [`${l.name || 'A lead'} (${l.phone}) replied:`, `"${String(text).slice(0, 500)}"`, 'Automatic follow-ups are paused. Reply from your phone.'], co.data().name || 'JTXD Contracting', co.id);
     }
   }
   return hit;

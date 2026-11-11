@@ -787,6 +787,7 @@ function renderJobsBoard() {
 window.renderJobsBoard = renderJobsBoard;
 
 function ktNav(key, btn) {
+  if (key === 'globalMessages' && typeof isCoreTenant === 'function' && isCoreTenant()) key = 'dashboard'; // LICENSED_TENANT_V1: Messages not offered yet
   // Hard block, checked before anything else renders -- refuses even a
   // direct/forced ktNav('crewmap',...) call from the browser console, not
   // just hiding the nav button. Silently redirects to Dashboard instead of
@@ -6937,6 +6938,7 @@ function isFieldTechRestricted() {
 }
 
 function switchDetailTab(tab, btn) {
+  if (tab === 'messages' && typeof isCoreTenant === 'function' && isCoreTenant()) { tab = 'dashboard'; btn = document.querySelector("#jobDetailModal .con-subtab[onclick*=\"'dashboard'\"]"); } // LICENSED_TENANT_V1
   // Hard block, checked BEFORE anything else renders — refuses even a
   // direct/forced switchDetailTab('financials') call (e.g. from the
   // browser console), not just hiding the button. Silently redirects
@@ -19607,6 +19609,7 @@ function loadPortalJob(db, jobId, tokenData, token) {
   const companyId = tokenData.companyId || null;
   _portalDb = db;
   _portalCompanyId = companyId;
+  if (companyId && companyId !== JTXD_COMPANY_ID) { const ms = document.getElementById('portalMessagesSection'); if (ms) ms.style.display = 'none'; } // LICENSED_TENANT_V1
   _portalJobId = jobId;
 
   // Helper to get company-scoped collection
@@ -19699,7 +19702,9 @@ function loadPortalJob(db, jobId, tokenData, token) {
         // Load customer's own message thread (portal only ever shows
         // customer-originated messages, never internal team chatter -
         // internal replies aren't customer-visible yet, a known v1 gap)
-        loadPortalMessages(portalColl, jobId);
+        // LICENSED_TENANT_V1: customer messaging is JTXD-only for now
+        if (_portalCompanyId && _portalCompanyId !== JTXD_COMPANY_ID) { const ms = document.getElementById('portalMessagesSection'); if (ms) ms.style.display = 'none'; }
+        else loadPortalMessages(portalColl, jobId);
       }
 
       // Load the latest Proposal version (Draft versions are never shown
