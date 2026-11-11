@@ -3337,8 +3337,10 @@ exports.tenantSenderCheck = functions.runWith({ secrets: ['GMAIL_SERVICE_ACCOUNT
   if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be signed in.');
   const em = String(context.auth.token.email || '').toLowerCase();
   if (!/@(tdx-group\.com|7pillarsgroup\.org)$/.test(em)) throw new functions.https.HttpsError('permission-denied', 'Platform admins only.');
-  try { await getGmailClient(TENANT_SEND_AS); return { ok: true, sender: TENANT_SEND_AS }; }
-  catch (e) { return { ok: false, sender: TENANT_SEND_AS, error: e.message }; }
+  let clientId = '';
+  try { clientId = JSON.parse(process.env.GMAIL_SERVICE_ACCOUNT_KEY).client_id || ''; } catch (e) {}
+  try { await getGmailClient(TENANT_SEND_AS); return { ok: true, sender: TENANT_SEND_AS, clientId, scope: GMAIL_SCOPES.join(',') }; }
+  catch (e) { return { ok: false, sender: TENANT_SEND_AS, clientId, scope: GMAIL_SCOPES.join(','), error: e.message }; }
 });
 
 function encodeSubject(subject) {
