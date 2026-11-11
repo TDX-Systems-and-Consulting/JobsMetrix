@@ -909,7 +909,7 @@ function conShowMain(user) {
   const roleEl = document.getElementById('ktUserRole');
   if (roleEl) {
     const roleData = KYTRAC_ROLES[currentUserRole] || {};
-    roleEl.textContent = currentUserRole || 'Loading...';
+    roleEl.textContent = myRoleLabel() || 'Loading...';
     if (roleData.color) roleEl.style.color = roleData.color;
   }
   const nb = document.getElementById('newJobBtn');
@@ -2750,7 +2750,7 @@ function renderNotifyRouting() {
   if (!sec) return;
   if (currentUserRole !== 'Owner') { sec.style.display = 'none'; return; }
   sec.style.display = '';
-  const team = (_lastTeamMemberList || []).filter(m => m.email);
+  const team = (_lastTeamMemberList || []).filter(m => m.email && !m.platformAdmin);
   const r = window._notifyRouting || {};
   const byWord = w => (team.find(m => (m.name || '').toLowerCase().includes(w)) || {}).email || '';
   const defaults = {
@@ -14577,7 +14577,7 @@ function loadCompanyProfile() {
   const roleEl = document.getElementById('ktUserRole');
   if (roleEl && currentUserRole) {
     const roleData = KYTRAC_ROLES[currentUserRole] || {};
-    roleEl.textContent = currentUserRole;
+    roleEl.textContent = myRoleLabel();
     roleEl.style.color = roleData.color || 'var(--muted)';
   }
   coll('settings').doc('company').get()
@@ -15560,7 +15560,7 @@ function loadUserRole(user, callback) {
       const roleEl = document.getElementById('ktUserRole');
       if (roleEl) {
         const roleData = KYTRAC_ROLES[currentUserRole] || {};
-        roleEl.textContent = currentUserRole || 'Member';
+        roleEl.textContent = myRoleLabel() || 'Member';
         roleEl.style.color = roleData.color || 'var(--muted)';
       }
       // Apply role-based permissions to UI
@@ -15703,12 +15703,13 @@ function renderTeamMemberList() {
         </label>
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        ${m.platformAdmin ? `<span style="font-size:.78rem;padding:4px 10px;border:1px solid #64748b66;color:#94a3b8;border-radius:7px;font-weight:700" title="TDX Systems & Consulting support login">TDX Admin</span>${isCurrentUser ? '<span class="small muted">(you)</span>' : ''}` : `
         <select onchange="updateMemberRole('${key}',this.value)"
           style="font-size:.78rem;padding:4px 8px;background:var(--input-bg);border:1px solid ${roleData.color}44;color:${roleData.color};border-radius:7px;font-weight:700"
           ${isCurrentUser && m.role==='Owner' ? 'title="You are the account Owner"' : ''}>
           ${Object.keys(KYTRAC_ROLES).map(r => `<option value="${r}" ${r===m.role?'selected':''}>${r}</option>`).join('')}
         </select>
-        ${!isCurrentUser ? `<button class="btn btn-danger" onclick="removeMember('${key}')" style="padding:4px 8px;font-size:.75rem">Remove</button>` : '<span class="small muted">(you)</span>'}
+        ${!isCurrentUser ? `<button class="btn btn-danger" onclick="removeMember('${key}')" style="padding:4px 8px;font-size:.75rem">Remove</button>` : '<span class="small muted">(you)</span>'}`}
       </div>
     </div>`;
   }).join('');
@@ -15945,6 +15946,13 @@ function myName() {
     || (conCurrentUser && (conCurrentUser.displayName || conCurrentUser.email)) || '';
 }
 window.myName = myName;
+// TDX_ADMIN_V1 (Travis 11/11/26): the software provider's support login in a
+// customer's company keeps Owner-level access but is labeled "TDX Admin",
+// so the customer never sees a second "Owner" of their business.
+function myRoleLabel() {
+  return (typeof currentUserTeamData !== 'undefined' && currentUserTeamData && currentUserTeamData.platformAdmin) ? 'TDX Admin' : (currentUserRole || '');
+}
+window.myRoleLabel = myRoleLabel;
 function refreshMyNameLabels() {
   const n = myName(); if (!n) return;
   const a = document.getElementById('ktUserName'); if (a) a.textContent = n.split(' ')[0] || n;
@@ -16107,7 +16115,7 @@ function setViewAsRole(role) {
   const roleEl = document.getElementById('ktUserRole');
   if (roleEl) {
     const rd = KYTRAC_ROLES[currentUserRole] || {};
-    roleEl.textContent = (window._viewAsRole ? '👁 ' : '') + (currentUserRole || 'Member');
+    roleEl.textContent = (window._viewAsRole ? '👁 ' : '') + ((window._viewAsRole ? currentUserRole : myRoleLabel()) || 'Member');
     roleEl.style.color = rd.color || 'var(--muted)';
   }
   viewAsRenderBanner();
