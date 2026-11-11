@@ -3320,7 +3320,7 @@ function jobCollectedAmount(job) {
 }
 
 function paintJobMoney(job, b) {
-  const fmt = v => (v < 0 ? '-$' : '$') + Math.abs(Math.round(Number(v) || 0)).toLocaleString();
+  const fmt = v => (Math.round(Number(v) || 0) < 0 ? '-$' : '$') + Math.abs(Math.round(Number(v) || 0)).toLocaleString();
   const can = canViewJobMoney();
   const ready = !!(b && b.tmA);
   const pending = !b;
