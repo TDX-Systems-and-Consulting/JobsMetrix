@@ -3364,7 +3364,7 @@ function paintJobMoney(job, b) {
   const profit = ready ? tm.retainedEarnings : null;
   const pct = ready ? tm.reOfRevenuePct * 100 : null;
   const pc = v => v > 0 ? '#a3f2d2' : v < 0 ? '#f87171' : '#f59e0b';
-  put('fbarProfit', ready ? fmt(profit) : wait, ready ? pc(profit) : 'var(--muted)', ready ? 'Retained Earnings after Jason, Overhead, Marketing, Flex and Taxes' : '');
+  put('fbarProfit', ready ? fmt(profit) : wait, ready ? pc(profit) : 'var(--muted)', ready ? 'Retained Earnings after sales pay, Overhead, Marketing, Flex and Taxes' : '');
   put('fbarMargin', ready ? pct.toFixed(1) + '%' : wait, ready ? (pct >= 10 ? '#a3f2d2' : pct >= 5 ? '#f59e0b' : '#f87171') : 'var(--muted)',
     ready ? `Retained Earnings ÷ price. Go/No-Go floor is 10% — this job is ${tm.goNoGo}.` : '');
 
@@ -9634,7 +9634,7 @@ window.saveLog = async function() {
   // never again fail without telling the person something went wrong.
   if (!conDb) { alert('Not connected -- check your internet connection and try again.'); return; }
   if (!conCurrentJobId) {
-    alert('Could not tell which job this log belongs to. Please close this and try again -- if it keeps happening, screenshot this and send it to Travis.');
+    alert('Could not tell which job this log belongs to. Please close this and try again -- if it keeps happening, screenshot this and send it to your administrator.');
     return;
   }
   const date = document.getElementById('logDate').value;
@@ -15419,7 +15419,7 @@ function showCompanyOnboarding(user, callback) {
         <div style="font-size:1.8rem;font-weight:900;color:#f59e0b;margin-bottom:6px">Welcome to JOBSMETRIX</div>
         <div style="color:#94a3b8;font-size:.88rem;margin-bottom:28px">Let's set up your company to get started.</div>
         <label style="display:block;font-size:.78rem;color:#94a3b8;margin-bottom:5px">Company Name *</label>
-        <input id="onboardCompanyName" placeholder="Jason Hudson Construction" style="width:100%;padding:12px 14px;background:rgba(8,19,37,.8);border:1px solid rgba(217,119,6,.3);border-radius:10px;color:#eaf0fb;font-size:.95rem;margin-bottom:16px;box-sizing:border-box" />
+        <input id="onboardCompanyName" placeholder="Your Company LLC" style="width:100%;padding:12px 14px;background:rgba(8,19,37,.8);border:1px solid rgba(217,119,6,.3);border-radius:10px;color:#eaf0fb;font-size:.95rem;margin-bottom:16px;box-sizing:border-box" />
         <label style="display:block;font-size:.78rem;color:#94a3b8;margin-bottom:5px">Your Name *</label>
         <input id="onboardOwnerName" placeholder="${user.displayName || ''}" value="${user.displayName || ''}" style="width:100%;padding:12px 14px;background:rgba(8,19,37,.8);border:1px solid rgba(217,119,6,.3);border-radius:10px;color:#eaf0fb;font-size:.95rem;margin-bottom:16px;box-sizing:border-box" />
         <label style="display:block;font-size:.78rem;color:#94a3b8;margin-bottom:5px">Phone</label>
@@ -24459,7 +24459,27 @@ function buildJobMarginBuckets(tm) {
   ];
 }
 
+// LICENSED_TENANT_V1: the margin panel's line names are written for JTXD
+// (Jason's three pay lines, Travis's pay, the JTXD Pool). In another
+// company those become role names.
+function coreScrub(html) {
+  if (!(typeof isCoreTenant === 'function' && isCoreTenant())) return html;
+  return String(html)
+    .replace(/Jason, all three pieces/g, 'Sales and field pay')
+    .replace(/Jason total pay/gi, 'Sales and field pay total')
+    .replace(/Jason, sales/g, 'Sales commission').replace(/Jason sales commission/gi, 'Sales commission').replace(/Jason sales/gi, 'sales commission')
+    .replace(/Jason, superintendent/g, 'Superintendent pay').replace(/Jason superintendent/gi, 'superintendent pay')
+    .replace(/Jason, consultant/g, 'Consultant pay').replace(/Jason consultant/gi, 'consultant pay')
+    .replace(/Jason pay/g, 'Sales and field pay').replace(/Jason/g, 'Sales')
+    .replace(/Travis W-2 salary/g, 'Owner W-2 salary').replace(/Travis owner draw/g, 'Owner draw')
+    .replace(/Travis\\?'s pay/g, 'owner pay').replace(/Travis's/g, "Owner's").replace(/Travis pay/g, 'Owner pay').replace(/Travis/g, 'Owner')
+    .replace(/JTXD Pool/g, 'Company Pool').replace(/JTXD/g, 'Company');
+}
+window.coreScrub = coreScrub;
 function buildJobMarginHtml(job, tmE, forPrint, tmA, info) {
+  return coreScrub(_buildJobMarginHtml(job, tmE, forPrint, tmA, info));
+}
+function _buildJobMarginHtml(job, tmE, forPrint, tmA, info) {
   tmA = tmA || tmE;
   const money = v => (v < 0 ? '−$' : '$') + Math.abs(Math.round(v)).toLocaleString();
   const go = tmA.goNoGo === 'GO';
@@ -24558,7 +24578,7 @@ async function printJobMarginCalculator(btn) {
   const co = companyProfile;
   const html = `<!DOCTYPE html><html><head><title>Job Margin Calculator — ${esc(job.name||'')}</title>
   <style>body{font-family:Arial,sans-serif;max-width:900px;margin:20px auto;padding:0 16px;color:#111}@media print{@page{margin:.5in}}</style></head><body>
-  <h2 style="margin-bottom:2px">${esc(co.companyName||'JTXD Contracting')} — Job Margin Calculator</h2>
+  <h2 style="margin-bottom:2px">${esc(co.companyName||'')} — Job Margin Calculator</h2>
   <div style="color:#666;margin-bottom:8px">${esc(jobNumSt(job)||job.name||'')} — ${esc(job.name||'')}${job.address?' · '+esc(job.address):''}</div>
   ${buildJobMarginHtml(job, b.tmE, true, b.tmA, b.info)}
   <div style="margin-top:16px;text-align:center;color:#9ca3af;font-size:.75rem">${esc(co.companyName||'')} Job Margin Calculator · ${esc(job.name||'')} · Printed ${new Date().toLocaleString()}</div>
@@ -27325,7 +27345,7 @@ async function jsLoad(jobId) {
     const logged = new Set(exps.map(x => x.receiptId).filter(Boolean));
     const rcpts = list(rcS).filter(r => !logged.has(r.id) && !r.expenseId);
     _jsData = { b, invs, pays, exps, rcpts, hrs };
-    el.innerHTML = jsHtml(_jsData);
+    el.innerHTML = coreScrub(jsHtml(_jsData));
   } catch (e) {
     const el = document.getElementById('jsSheet');
     if (el && seq === _jsSeq) el.innerHTML = `<div class="small" style="padding:16px;color:#ef5350">Could not load this job: ${esc(e.message)}</div>`;
@@ -37625,7 +37645,7 @@ async function depositGateOk(job, newStatus) {
     }
     return ok;
   }
-  alert(`No deposit received on ${label}.\n\nNo deposit, no start date: this job can't move to "${newStatus}" until its deposit invoice is marked Paid. Talk to Travis or Jason.`);
+  alert(`No deposit received on ${label}.\n\nNo deposit, no start date: this job can't move to "${newStatus}" until its deposit invoice is marked Paid. Talk to an Owner.`);
   return false;
 }
 

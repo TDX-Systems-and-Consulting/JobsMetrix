@@ -2435,7 +2435,7 @@
               <div class="settings-grid">
                 <div class="settings-field full" style="grid-column:1/-1">
                   <label>Company Name *</label>
-                  <input id="settCompanyName" placeholder="e.g. 7 Pillars Contracting LLC" />
+                  <input id="settCompanyName" placeholder="e.g. Your Company LLC" />
                 </div>
                 <div class="settings-field">
                   <label>Phone</label>
@@ -2455,7 +2455,7 @@
                 </div>
                 <div class="settings-field" style="grid-column:1/-1">
                   <label>Make Checks Payable To <span style="font-weight:400;color:#8a97ad">(optional — defaults to company name)</span></label>
-                  <input id="settCheckPayableTo" placeholder="JTXD Contracting" />
+                  <input id="settCheckPayableTo" placeholder="Leave blank to use your company name" />
                 </div>
                 <div class="settings-field">
                   <label>License Number</label>
@@ -2884,7 +2884,7 @@
           <button type="button" class="btn" style="margin-top:6px" onclick="addCustomerAddressRow()">+ Add another property</button>
           <input type="hidden" id="custAddress" /></div>
         <div class="full"><label class="small muted" style="display:block;margin-bottom:5px">Referred By</label>
-          <input id="custReferredBy" placeholder="e.g. Jason Hudson (Grass Roots)" /></div>
+          <input id="custReferredBy" placeholder="e.g. past customer, realtor, neighbor" /></div>
         <div><label class="small muted" style="display:block;margin-bottom:5px">Source</label>
           <select id="custSource">
             <option value="">— How did they find you?</option>
@@ -3174,7 +3174,7 @@
           </select></div>
         <div class="full" id="matPurchasedByOtherWrap" style="display:none">
           <label class="small muted" style="display:block;margin-bottom:5px">Name</label>
-          <input id="matPurchasedByOther" placeholder="e.g. Jason Hudson" /></div>
+          <input id="matPurchasedByOther" placeholder="e.g. crew member name" /></div>
         <div class="full"><label class="small muted" style="display:block;margin-bottom:5px">Notes</label>
           <input id="matNotes" placeholder="Receipt #, notes..." /></div>
       </div>
@@ -4817,7 +4817,7 @@
             <div class="est-kpi"><div class="est-kpi-val" id="estKpiLaborCost" style="color:#93c5fd">$0</div><div class="est-kpi-label">Total Labor</div></div>
             <div class="est-kpi"><div class="est-kpi-val" id="estKpiMaterialsCost" style="color:#93c5fd">$0</div><div class="est-kpi-label">Total Materials</div></div>
             <div class="est-kpi"><div class="est-kpi-val" id="estKpiPrice" style="color:var(--amber)">$0</div><div class="est-kpi-label" id="estKpiPriceLabel">Est. Price</div></div>
-            <div class="est-kpi" title="Labor Billed minus Real Subcontractor/Labor Cost and Jason's 5% commission -- the pool that funds Overhead, Marketing, Flex, and Taxes"><div class="est-kpi-val" id="estKpiJtxdActual" style="color:#93c5fd">$0</div><div class="est-kpi-label">JTXD Est.</div></div>
+            <div class="est-kpi" title="Labor Billed minus Real Subcontractor/Labor Cost and sales commission -- the pool that funds Overhead, Marketing, Flex, and Taxes"><div class="est-kpi-val" id="estKpiJtxdActual" style="color:#93c5fd">$0</div><div class="est-kpi-label">JTXD Est.</div></div>
           </div>
           <div class="est-summary-bar jtxd-only" id="estSummaryBar3" style="margin-top:8px">
             <div class="est-kpi" title="Jason's 4% sales commission on Labor Billed -- locked 2026-09-25, split three ways: Sales (this one, taken before Overhead), Superintendent, and Consultant (both paid from Overhead, see the other two tiles)"><div class="est-kpi-val" id="estKpiJasonCommission" style="color:#93c5fd">$0</div><div class="est-kpi-label" id="estKpiJasonCommissionLabel">Jason Sales Commission (6%)</div></div>
@@ -4828,7 +4828,7 @@
           <div class="est-summary-bar" id="estSummaryBar2" style="margin-top:8px">
             <div class="est-kpi" title="Billed Days / Efficiency Days. Billed = Labor Billed ÷ $300/hr ÷ 8 hrs/day, what subs are paid on. Efficiency = Billed ÷ 0.72, the real customer-facing timeline. Efficiency never affects sub pay."><div class="est-kpi-val" id="estKpiDaysToComplete" style="color:#93c5fd;font-size:.92rem">0 / 0</div><div class="est-kpi-label">Days to Complete (Billed / Efficiency)<select id="estKpiDaysToCompleteCrew" onclick="event.stopPropagation()" onchange="setJobCrewSize(this.value, this.dataset.job)" title="Crew size on this job. Changes the days only, not the price or sub pay." style="margin-left:6px;padding:1px 4px;font-size:.7rem;background:rgba(110,145,210,.12);color:#cfe0ff;border:1px solid rgba(110,145,210,.3);border-radius:6px;width:auto"><option value="1">1 guy</option><option value="2">2 guys</option><option value="3" selected>3 guys</option></select></div></div>
             <div class="est-kpi" title="Catalog-derived labor cost -- override with a real negotiated subcontractor amount once known"><div class="est-kpi-val" id="estKpiSubLabor" style="color:#93c5fd">$0</div><div class="est-kpi-label" id="estKpiSubLaborLabel">Est. Subcontractor Labor</div></div>
-            <div class="est-kpi" title="Retained Earnings after Overhead, Marketing, Flex, and Taxes -- the true JTXD bucket calculation, not line-item markup"><div class="est-kpi-val est-profit-pos" id="estKpiProfit">$0</div><div class="est-kpi-label">Profit</div></div>
+            <div class="est-kpi" title="Retained Earnings after Overhead, Marketing, Flex, and Taxes -- the true bucket calculation, not line-item markup"><div class="est-kpi-val est-profit-pos" id="estKpiProfit">$0</div><div class="est-kpi-label">Profit</div></div>
             <div class="est-kpi" title="Retained Earnings as a % of revenue -- the true margin, not line-item markup"><div class="est-kpi-val est-profit-pos" id="estKpiMargin">0%</div><div class="est-kpi-label">Retained Earnings</div></div>
           </div>
 
@@ -5235,7 +5235,7 @@
       <!-- ══ MESSAGES TAB ══ -->
       <div id="detailMessages" style="display:none">
         <div style="font-weight:800;font-size:1.05rem;margin-bottom:2px">💬 Job Messages</div>
-        <div style="font-size:.8rem;color:var(--muted);margin-bottom:14px">Internal thread for the team — Jason, Travis, Shane, and crew leads. Check "Reply to customer" to also put it in their Portal thread and text them.</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-bottom:14px">Internal thread for your team and crew leads. Check "Reply to customer" to also put it in their Portal thread and text them.</div>
         <div id="messagesList" style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px;max-height:52vh;overflow:auto;padding:4px"></div>
         <div class="kt-card" style="padding:12px;position:relative">
           <div id="mentionDropdown" style="display:none;position:absolute;bottom:100%;left:12px;right:12px;background:rgba(6,14,28,.99);border:1px solid var(--amber-border);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.6);z-index:200;max-height:180px;overflow-y:auto;margin-bottom:4px"></div>
@@ -5291,7 +5291,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202611111005"></script>
+<script src="kytrac-app.js?v=202611111030"></script>
 <script src="kytlead.js?v=202610271900"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
