@@ -21933,7 +21933,7 @@ function drawJobsPnL(el) {
           <div>Sub payments entered: <strong>${pnlMoney(info.subPaymentsTotal)}</strong></div>
           <div>Sub agreed amounts: <strong>${info.subFromEstimate ? 'none — using 60% of labor' : pnlMoney(info.subCommitted)}</strong></div>
           ${info.hourlyLabor ? `<div>Hourly labor: <strong>${pnlMoney(info.hourlyLabor)}</strong></div>` : ''}
-          <div>Jason (6+2+2): <strong>${pnlMoney(tm.jasonTotal)}</strong></div>
+          ${isCoreTenant() ? '' : `<div>Jason (6+2+2): <strong>${pnlMoney(tm.jasonTotal)}</strong></div>`}
         </div>
         <div class="small muted">${(info.notes || []).map(n => '• ' + esc(n)).join('<br>')}</div>` : `<div class="small">${esc(problem)}. Open the job and build the estimate (or enter the signed price) so the P&L can figure it.</div>`}
       </td></tr>` : '';
@@ -33882,7 +33882,7 @@ function bqRenderQuestion() {
   const { cat, q } = found;
   const label = typeof q.label === 'function' ? q.label(_bqCtx) : q.label;
   document.getElementById('guidedBreadcrumb').textContent = `${_bqRoom} › ${cat.label}`;
-  let noteHtml = cat.note && _bqQIdx === 0 ? `<div class="small muted" style="margin-bottom:14px;font-style:italic">${esc(cat.note)}</div>` : '';
+  let noteHtml = cat.note && _bqQIdx === 0 && !(typeof isCoreTenant === 'function' && isCoreTenant()) ? `<div class="small muted" style="margin-bottom:14px;font-style:italic">${esc(cat.note)}</div>` : '';
 
   if (q.type === 'number') {
     document.getElementById('guidedBody').innerHTML = `

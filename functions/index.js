@@ -2955,11 +2955,16 @@ async function sendPaymentConfirmationEmail(companyId, job, inv, amountPaidNow, 
   if (!sgKey) return; // Not configured -- skip silently, this is best-effort
 
   const db = admin.firestore();
-  let companyName = 'JTXD Contracting';
+  let companyName = 'JTXD Contracting', _pcCoEmail = '';
   try {
     const settDoc = await db.collection('companies').doc(companyId).collection('settings').doc('company').get();
-    if (settDoc.exists) companyName = settDoc.data().companyName || companyName;
+    if (settDoc.exists) { companyName = settDoc.data().companyName || companyName; _pcCoEmail = settDoc.data().email || ''; }
   } catch(e) {}
+  // LICENSED_TENANT_V1: another company's customer replies to that company,
+  // and the audit copy goes to that company, never to JTXD.
+  const _pcJTXD = companyId === 'mtOiSAzppjVbxKdHRJBH';
+  const _pcBcc = _pcJTXD ? 'travis@jtxdgroup.com' : _pcCoEmail;
+  const _pcReply = _pcJTXD ? 'travis@jtxdgroup.com' : (_pcCoEmail || 'travis@jtxdgroup.com');
 
   const customerEmail = job.email || job.clientEmail || '';
   const customerName = job.client || 'Customer';
@@ -2988,9 +2993,9 @@ async function sendPaymentConfirmationEmail(companyId, job, inv, amountPaidNow, 
 </body></html>`;
 
   const payload = {
-    personalizations: [{ to: [{ email: customerEmail, name: customerName }], bcc: [{ email: 'travis@jtxdgroup.com' }] }],
+    personalizations: [{ to: [{ email: customerEmail, name: customerName }], ...(_pcBcc && _pcBcc.toLowerCase() !== String(customerEmail).toLowerCase() ? { bcc: [{ email: _pcBcc }] } : {}) }],
     from: { email: 'travis@jtxdgroup.com', name: companyName },
-    reply_to: { email: 'travis@jtxdgroup.com', name: companyName },
+    reply_to: { email: _pcReply, name: companyName },
     subject: `Payment Received — ${invNum}`,
     content: [
       { type: 'text/plain', value: `We've received your payment of $${amtStr} toward ${invNum}. Thank you!` },

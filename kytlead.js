@@ -309,7 +309,7 @@ function klScorecardHtml() {
         <thead><tr><th style="text-align:left">Measure</th><th style="text-align:right">Goal</th>${weeks.map((w, i) => `<th style="text-align:right">${i === 0 ? 'This week' : 'Wk of ' + wk(w)}</th>`).join('')}</tr></thead>
         <tbody>${rows.map(([label, fn, goal]) => `<tr><td style="padding:8px">${label}</td><td style="text-align:right;padding:8px;color:var(--muted)">${goal == null ? '—' : goal}</td>${weeks.map(w => cell(fn(w), goal)).join('')}</tr>`).join('')}</tbody>
       </table></div>
-      <div class="small muted" style="margin-top:8px">Goals from the 7 Pillars Scorecard. Green = hit, red = missed. Weeks run Monday–Sunday. Log activity from a lead's card, or use the quick buttons for ones not tied to a lead.</div>
+      <div class="small muted" style="margin-top:8px">Goals from your company Scorecard. Green = hit, red = missed. Weeks run Monday–Sunday. Log activity from a lead's card, or use the quick buttons for ones not tied to a lead.</div>
     </div>`;
 }
 async function klQuickLog(type) {
@@ -335,7 +335,7 @@ function klCaptureHtml() {
     <div class="small muted" style="margin-bottom:12px">Anyone who fills this out lands on the board as a <strong>New Lead</strong> (source: Website), assigned to whoever gets Sales alerts in Settings → Who Gets Alerts, with a next step of "Call within 1 business day".</div>
     <div style="margin-bottom:10px"><div class="small muted">Shareable link (text it, put it on a QR code or a yard sign):</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px"><input readonly value="${esc(url)}" style="flex:1;min-width:220px;font-size:.8rem" onclick="this.select()"/><button class="btn" onclick="navigator.clipboard.writeText('${esc(url)}').then(()=>this.textContent='Copied ✓').catch(()=>{})">Copy</button><a class="btn" href="${esc(url)}" target="_blank">Open</a></div></div>
-    <div><div class="small muted">To put it on the jtxd website, paste this where the form should appear:</div>
+    <div><div class="small muted">To put it on your website, paste this where the form should appear:</div>
       <textarea readonly style="width:100%;min-height:64px;font-size:.76rem;margin-top:4px" onclick="this.select()">${esc(iframe)}</textarea></div>
   </div>`;
 }
@@ -396,7 +396,7 @@ function klOpenLead(id) {
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${KL_ACTS.map(a => `<button class="btn" style="padding:5px 10px;font-size:.78rem" onclick="${a.key === 'call' ? `kl2ShowOutcomes('${id}')` : `klLogActivity('${id}','${a.key}')`}">${a.icon} ${a.label}</button>`).join('')}</div>
       <input id="klActNote" placeholder="What happened? (optional — type before tapping a button)" style="width:100%;font-size:.84rem;margin-bottom:10px"/>
       ${l.email ? `<details style="margin-bottom:10px"><summary style="cursor:pointer;font-weight:700;font-size:.84rem">✉️ Email ${esc(l.name || 'this lead')} from JobsMetrix (Gmail)</summary>
-        <input id="klMailSubj" value="${esc('Your project with ' + ((typeof companyProfile !== 'undefined' && companyProfile && companyProfile.companyName) || 'JTXD Contracting'))}" style="width:100%;margin-top:8px;font-size:.84rem"/>
+        <input id="klMailSubj" value="${esc('Your project with ' + ((typeof companyProfile !== 'undefined' && companyProfile && companyProfile.companyName) || 'us'))}" style="width:100%;margin-top:8px;font-size:.84rem"/>
         <textarea id="klMailBody" style="width:100%;min-height:110px;margin-top:6px;font-size:.84rem">Hi ${esc((l.name || '').split(' ')[0])},
 
 </textarea>
@@ -859,7 +859,7 @@ function kl2SequencesHtml() {
       <div style="font-weight:800;margin-bottom:4px">How sequences work</div>
       <div class="small muted" style="line-height:1.6">Every new lead starts the sequence for its customer type automatically. Emails send on their own from Gmail, with replies going to the lead's owner. ${plivo ? 'Texts send on their own.' : 'Texts show up as a one-tap <b>Send text</b> next step for the salesperson (automatic texting turns on once a business texting number is connected).'} Calls and tasks become the lead's next step on that day.
       Follow-ups stop when the customer texts back, when the lead moves to Appointment Set or later, or when a call is logged as interested / not interested. Moving a lead to a stage can start that stage's sequence: <b>Project Complete</b> starts post-project follow-up, and <b>Long-term Nurture</b> starts nurture. Automatic messages only go out Monday–Saturday during sending hours, never on Sunday.</div>
-      ${cfg.isDefault ? '<div class="small" style="margin-top:6px;color:#f59e0b">Using the starter sequences from Jason\'s requirements. Edit any of them to make them yours.</div>' : ''}
+      ${cfg.isDefault ? '<div class="small" style="margin-top:6px;color:#f59e0b">Using the starter sequences. Edit any of them to make them yours.</div>' : ''}
     </div>
     ${edit ? kl2SettingsHtml(cfg) : ''}
     ${edit ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"><button class="btn-amber" onclick="kl2EditSeq(-1)">+ New sequence</button>${!cfg.isDefault ? '<button class="btn" onclick="kl2ResetSeqs()">Reset to starter sequences</button>' : ''}</div>` : ''}
