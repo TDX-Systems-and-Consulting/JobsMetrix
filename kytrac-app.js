@@ -374,7 +374,7 @@ function logStatusChangeActivity(jobId, prevStatus, newStatus, reason) {
     fromStatus: prevStatus || '',
     toStatus: newStatus,
     reason: reason || '',
-    userName: conCurrentUser?.displayName || conCurrentUser?.email || 'Unknown',
+    userName: myName() || conCurrentUser?.email || 'Unknown',
     companyId: currentCompanyId,
     createdAt: firebase.firestore.FieldValue.serverTimestamp(),
   }).catch(e => console.error('Status change log error:', e));
@@ -389,7 +389,7 @@ function logInvoiceActivity(jobId, eventType, notes) {
     date: new Date().toISOString().split('T')[0],
     notes,
     type: eventType, // 'invoice_created' | 'invoice_emailed' | 'invoice_paid' | 'materials_purchase' | 'vendor_bill'
-    userName: conCurrentUser?.displayName || conCurrentUser?.email || 'Unknown',
+    userName: myName() || conCurrentUser?.email || 'Unknown',
     companyId: currentCompanyId,
     createdAt: firebase.firestore.FieldValue.serverTimestamp(),
   }).catch(e => console.error('Invoice activity log error:', e));
@@ -894,7 +894,7 @@ function conShowMain(user) {
   document.getElementById('ktAuthWall').style.display = 'none';
   document.getElementById('ktApp').style.display = 'flex';
   highlightActiveThemeSwatch();
-  const name = user.displayName || user.email || 'User';
+  const name = myName() || user.displayName || user.email || 'User';
   document.getElementById('ktUserName').textContent = name.split(' ')[0] || name;
   const avatarImg = document.getElementById('ktAvatarImg');
   const avatarInit = document.getElementById('ktAvatarInitial');
@@ -2422,7 +2422,7 @@ function addJobTodo() {
     done: false,
     createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     createdBy: conCurrentUser?.email || '',
-    createdByName: conCurrentUser?.displayName || conCurrentUser?.email || ''
+    createdByName: myName() || conCurrentUser?.email || ''
   }).then(() => {
     if (input) input.value = '';
     const due = document.getElementById('jobTodoDue'); if (due) due.value = '';
@@ -2977,7 +2977,7 @@ function sendJobMessage() {
     const data = {
       text,
       authorEmail: conCurrentUser?.email || '',
-      authorName: conCurrentUser?.displayName || conCurrentUser?.email || 'Unknown',
+      authorName: myName() || conCurrentUser?.email || 'Unknown',
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       createdMs: Date.now(),
       companyId: currentCompanyId,
@@ -8489,7 +8489,7 @@ async function saveJobNote() {
       text,
       category,
       authorEmail: conCurrentUser?.email || '',
-      authorName: conCurrentUser?.displayName || conCurrentUser?.email || '',
+      authorName: myName() || conCurrentUser?.email || '',
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       createdMs: now,
     });
@@ -9022,7 +9022,7 @@ function openAddCOModal() {
   document.getElementById('coStatus').value = 'Submitted';
   document.getElementById('coDays').value = '';
   document.getElementById('coReason').value = '';
-  document.getElementById('coSubmittedBy').value = conCurrentUser ? (conCurrentUser.displayName || conCurrentUser.email) : '';
+  document.getElementById('coSubmittedBy').value = conCurrentUser ? (myName() || conCurrentUser.email) : '';
   document.getElementById('coPricedBy').value = '';
   document.getElementById('coCustomerDecisionBy').value = '';
   document.getElementById('deleteCOBtn').style.display = 'none';
@@ -9131,7 +9131,7 @@ function markCOCustomerApproved(id) {
   if (!confirm('Confirm: the customer said YES to this change order price?\n\nIts invoice is created automatically' + ((typeof xeroReady === 'function' && xeroReady()) ? ' and sent to Xero' : '') + ' — then just Email it from the Invoices tab.')) return;
   coll('jobs').doc(conCurrentJobId).collection('changeorders').doc(id).update({
     status: 'Customer Approved',
-    customerDecisionBy: conCurrentUser ? (conCurrentUser.displayName || conCurrentUser.email) : 'Unknown',
+    customerDecisionBy: conCurrentUser ? (myName() || conCurrentUser.email) : 'Unknown',
     updatedAt: firebase.firestore.FieldValue.serverTimestamp()
   }).catch(e => alert('Error: ' + e.message));
 }
@@ -9141,7 +9141,7 @@ function markCODeclined(id) {
   if (!confirm('Confirm: the customer said NO to this change order?')) return;
   coll('jobs').doc(conCurrentJobId).collection('changeorders').doc(id).update({
     status: 'Customer Declined',
-    customerDecisionBy: conCurrentUser ? (conCurrentUser.displayName || conCurrentUser.email) : 'Unknown',
+    customerDecisionBy: conCurrentUser ? (myName() || conCurrentUser.email) : 'Unknown',
     updatedAt: firebase.firestore.FieldValue.serverTimestamp()
   }).catch(e => alert('Error: ' + e.message));
 }
@@ -9241,7 +9241,7 @@ async function markCOPaid(coId) {
       amtPaid: Math.abs(amt), paidDate,
       paidVia: how.trim() || 'QuickBooks',
       paidAt: paidDate,
-      paidMarkedBy: conCurrentUser ? (conCurrentUser.displayName || conCurrentUser.email) : 'Unknown',
+      paidMarkedBy: conCurrentUser ? (myName() || conCurrentUser.email) : 'Unknown',
     });
     if (typeof logInvoiceActivity === 'function') logInvoiceActivity(conCurrentJobId, 'co_paid', `Change order paid (${how.trim() || 'QuickBooks'}) — ${co.title || ''}: $${Math.abs(amt).toLocaleString()}`);
     const job = conJobs.find(j => j.id === conCurrentJobId);
@@ -13317,7 +13317,7 @@ async function commitMarkPaid(jobId, invId, total) {
             done: false,
             createdAt: firebase.firestore.FieldValue.serverTimestamp(),
             createdBy: conCurrentUser?.email || '',
-            createdByName: conCurrentUser?.displayName || conCurrentUser?.email || '',
+            createdByName: myName() || conCurrentUser?.email || '',
             source: 'invoice_paid_sub_owed'
           }));
         });
@@ -14997,7 +14997,7 @@ function populateSettingsForm() {
 
   // User info on settings page
   if (conCurrentUser) {
-    const name = conCurrentUser.displayName || conCurrentUser.email || '';
+    const name = myName() || conCurrentUser.email || '';
     const sName = document.getElementById('settUserName');
     const sEmail = document.getElementById('settUserEmail');
     const sImg = document.getElementById('settAvatarImg');
@@ -15937,7 +15937,21 @@ function removeMember(key) {
 }
 
 // ── Apply role-based nav visibility ──
+// MY_NAME_V1 (Travis 11/11/26): a person's name in the app is the name on
+// the company's team list, not their Google account name. (A shared or
+// admin login otherwise shows the wrong person.)
+function myName() {
+  return (typeof currentUserTeamData !== 'undefined' && currentUserTeamData && currentUserTeamData.name)
+    || (conCurrentUser && (conCurrentUser.displayName || conCurrentUser.email)) || '';
+}
+window.myName = myName;
+function refreshMyNameLabels() {
+  const n = myName(); if (!n) return;
+  const a = document.getElementById('ktUserName'); if (a) a.textContent = n.split(' ')[0] || n;
+  const b = document.getElementById('settUserName'); if (b) b.textContent = n;
+}
 function applyRolePermissions() {
+  try { refreshMyNameLabels(); } catch (e) {}
   const role = currentUserRole;
   if (!role) return;
 
@@ -16385,7 +16399,7 @@ function addTodo() {
     done: false,
     createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     createdBy: conCurrentUser?.email || '',
-    createdByName: conCurrentUser?.displayName || conCurrentUser?.email || ''
+    createdByName: myName() || conCurrentUser?.email || ''
   };
 
   coll('todos').add(data)
@@ -17057,7 +17071,7 @@ async function clockIn() {
   const entry = {
     userId: conCurrentUser.uid,
     userEmail: conCurrentUser.email || '',
-    userName: conCurrentUser.displayName || conCurrentUser.email || '',
+    userName: myName() || conCurrentUser.email || '',
     jobId,
     jobName: job?.name || '',
     isOffice: jobId === OFFICE_CLOCK_ID,
@@ -17234,7 +17248,7 @@ async function performClockOut(entry, extra) {
         crew: '',
         notes: notesValue,
         issues: '',
-        createdBy: conCurrentUser ? (conCurrentUser.displayName || conCurrentUser.email) : 'unknown',
+        createdBy: conCurrentUser ? (myName() || conCurrentUser.email) : 'unknown',
         createdAt: firebase.firestore.FieldValue.serverTimestamp()
       })).catch(() => {});
     }
@@ -17307,7 +17321,7 @@ function saveManualTimeEntry() {
   const entry = {
     userId: crew ? '' : (conCurrentUser?.uid || ''),
     userEmail: crew ? '' : (conCurrentUser?.email || ''),
-    userName: crew || conCurrentUser?.displayName || conCurrentUser?.email || '',
+    userName: crew || myName() || conCurrentUser?.email || '',
     jobId,
     jobName: job?.name || '',
     phaseId: featureId || '', // Feature id — kept as "phaseId" so existing hour-rollup code needs no changes
@@ -18936,7 +18950,7 @@ async function handleDocUpload(input, context) {
         uploadedAt: firebase.firestore.FieldValue.serverTimestamp(),
         uploadedDate: new Date().toISOString().split('T')[0],
         uploadedBy: conCurrentUser?.email || '',
-        uploadedByName: conCurrentUser?.displayName || conCurrentUser?.email || '',
+        uploadedByName: myName() || conCurrentUser?.email || '',
       };
 
       await coll('documents').add(docData);
@@ -21551,7 +21565,7 @@ async function submitTimeOffRequest() {
       endDate: end,
       note,
       requestedBy: conCurrentUser.email,
-      requestedByName: conCurrentUser.displayName || conCurrentUser.email,
+      requestedByName: myName() || conCurrentUser.email,
       status: 'pending',  // pending | approved | denied
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       companyId: currentCompanyId,
@@ -26126,7 +26140,7 @@ async function submitReceipt() {
     const photoUrl = await uploadToStorage(path, blob);
 
     const job = conJobs.find(j => j.id === jobId);
-    const who = conCurrentUser?.displayName || conCurrentUser?.email || 'Unknown';
+    const who = myName() || conCurrentUser?.email || 'Unknown';
     const needsReimburse = !isReturn && paidWith === 'Personal card / cash';
     const receipt = {
       amount, vendor, paidWith, note, photoUrl, photoPath: path, isReturn,
@@ -26411,7 +26425,7 @@ async function submitCompanyReceipt() {
       paidWith, needsReimbursement: !isReturn && paidWith === 'Personal card / cash', isReturn,
       status: !isReturn && paidWith === 'Personal card / cash' ? 'Reimburse' : 'Logged',
       ...photo,
-      uploadedBy: conCurrentUser?.email || '', uploadedByName: conCurrentUser?.displayName || conCurrentUser?.email || '',
+      uploadedBy: conCurrentUser?.email || '', uploadedByName: myName() || conCurrentUser?.email || '',
       companyId: currentCompanyId, scope: 'company',
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
@@ -26557,7 +26571,7 @@ let opTab = 'dashboard', opUnsubs = [], opLoaded = false;
 
 function opMe() {
   const e = (conCurrentUser?.email || '').toLowerCase();
-  return e.startsWith('jason') ? 'Jason' : e.startsWith('travis') ? 'Travis' : (conCurrentUser?.displayName || '').split(' ')[0] || 'Owner';
+  return e.startsWith('jason') ? 'Jason' : e.startsWith('travis') ? 'Travis' : (myName() || '').split(' ')[0] || 'Owner';
 }
 function opQuarter(d) { d = d ? new Date(d) : new Date(); return d.getFullYear() + '-Q' + (Math.floor(d.getMonth() / 3) + 1); }
 function opQuarterEnd(q) { const [y, n] = q.split('-Q').map(Number); return new Date(y, n * 3, 0).toISOString().slice(0, 10); }
@@ -27876,7 +27890,7 @@ async function emailRangeProposal() {
     ${_reData.assumptions ? `<p style="padding:12px 14px;border:1px solid #fde68a;background:#fffbeb;border-radius:6px;color:#78350f;font-size:13px;white-space:pre-line">${esc(_reData.assumptions)}</p>` : ''}
     <p style="font-size:13px;color:#6b7280">Ranges rounded to the nearest $500.</p>
     <p>Please reach out with any questions.</p>
-    <p>${esc(conCurrentUser?.displayName || co)}<br>${esc(co)}${companyProfile?.phone ? '<br>' + esc(companyProfile.phone) : ''}</p>`;
+    <p>${esc(myName() || co)}<br>${esc(co)}${companyProfile?.phone ? '<br>' + esc(companyProfile.phone) : ''}</p>`;
   const bodyText = `Budget range proposal from ${co}${job.address ? ' for ' + job.address : ''}\n\n` +
     rooms.map(r => { const t = reRoomTotals(r); return `${r.name}: ${reMoney(reLo(t.low))} – ${reMoney(reHi(t.high))}`; }).join('\n') +
     `\n\nEstimated project range: ${reMoney(g.low)} – ${reMoney(g.high)}\n\n${_reData.assumptions || ''}`;
@@ -36394,7 +36408,7 @@ async function wcFinishCapture() {
       transcript: null,
       draftEstimate: null,
       createdBy: (conCurrentUser && conCurrentUser.email) || '',
-      createdByName: (conCurrentUser && (conCurrentUser.displayName || conCurrentUser.email)) || '',
+      createdByName: (conCurrentUser && (myName() || conCurrentUser.email)) || '',
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
 
@@ -36475,7 +36489,7 @@ function uploadJobFiles(input) {
             uploadedAt: firebase.firestore.FieldValue.serverTimestamp(),
             uploadedDate: new Date().toISOString().split('T')[0],
             uploadedBy: conCurrentUser?.email || '',
-            uploadedByName: conCurrentUser?.displayName || conCurrentUser?.email || '',
+            uploadedByName: myName() || conCurrentUser?.email || '',
           });
 
           if (navigator.onLine) {
@@ -36523,7 +36537,7 @@ function uploadJobFiles(input) {
           uploadedAt: firebase.firestore.FieldValue.serverTimestamp(),
           uploadedDate: new Date().toISOString().split('T')[0],
           uploadedBy: conCurrentUser?.email || '',
-          uploadedByName: conCurrentUser?.displayName || conCurrentUser?.email || '',
+          uploadedByName: myName() || conCurrentUser?.email || '',
         });
         uploadedCount++;
       } catch(e) {
@@ -37597,7 +37611,7 @@ async function depositGateOk(job, newStatus) {
       coll('jobs').doc(job.id).collection('logs').add({
         date: new Date().toISOString().split('T')[0],
         notes: `Moved to ${newStatus} with NO deposit received — owner override by ${who}.`,
-        type: 'deposit_override', userName: conCurrentUser?.displayName || who,
+        type: 'deposit_override', userName: myName() || who,
         companyId: currentCompanyId, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       }).catch(() => {});
     }
