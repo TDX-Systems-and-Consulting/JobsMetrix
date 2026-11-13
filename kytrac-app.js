@@ -6887,7 +6887,8 @@ window.isJTXDCompany = isJTXDCompany; window.isCoreTenant = isCoreTenant;
 function canViewFinancialsTab() {
   if (window._viewAsRole && window._viewAsRole !== 'Owner') return false; // VIEW_AS_V1 preview
   if (currentCompanyId && !isJTXDCompany()) return currentUserRole === 'Owner';
-  return FINANCIALS_TAB_ALLOWED_EMAILS.has((conCurrentUser?.email || '').toLowerCase());
+  // OFFICE_MGR_FIN_V1: the Office Manager prepares the scorecard for the L10
+  return FINANCIALS_TAB_ALLOWED_EMAILS.has((conCurrentUser?.email || '').toLowerCase()) || currentUserRole === 'Office Manager';
 }
 
 // Broader than canViewFinancialsTab() above (which is a hard, single-email
