@@ -27,7 +27,7 @@ const JTXD_LOCKED_RATES = {
   taxes: 0.275,     // of the remainder after Flex
   realLaborCostPct: 0.60, // $180/$300 real subcontractor pay ratio, applied to LABOR BILLED ONLY (never Revenue/materials) -- corrected 2026-09-19 per Travis: subs are paid on billed-equivalent hours (Labor Billed / $300/hr) regardless of actual hours worked; the 0.77 efficiency factor exists ONLY to set the customer-facing days estimate and never touches what a sub is paid or what the company nets. See calcTrueMargin.
   jasonCommissionPct: 0.06, // Raised 4% -> 6% on 2026-10-09 per Travis (MARGIN_CALC_V2). Original note: // Locked 2026-09-25, SUPERSEDES the earlier 5% same-day lock: Jason's pay is now split three ways -- Sales commission (this rate, 4% of Labor Billed, same tier as realLaborCostPct, subtracted before the JTXD Pool), plus Superintendent and Consultant pay (both below), which come out of the Overhead allocation instead, since that role is ongoing field/advisory work across every job, not a per-sale event. Checked against real jobs before locking: at today's real 3-crew volume (~$135K/mo Labor Billed), 4/2/2 nets Jason $10,800/mo total, with the Overhead bucket still covering the real ~$2,800/mo overhead bill plus both new pieces with ~$548/mo to spare. Honest caveat: at only 2 crews running, Overhead runs about $568/mo short of covering everything -- this structure isn't fully self-sufficient in a slow month, same as every version tried tonight.
-  superintendentPct: 0.02, // Locked 2026-09-25: Jason's ongoing acting-superintendent role, 2% of Labor Billed, paid OUT OF the Overhead allocation (see calcTrueMargin) -- not an additional cut from Labor Billed before the Pool.
+  superintendentPct: 0.02, // Locked 2026-09-25: Jason's ongoing acting-superintendent role, 2% of Labor Billed, before the Pool since 2026-11-16 (OVERHEAD_PROTECT_V1) (see calcTrueMargin) -- not an additional cut from Labor Billed before the Pool.
   consultantPct: 0.02, // Locked 2026-09-25: Jason's owner-consultant/mentorship role, 2% of Labor Billed, also paid OUT OF Overhead alongside superintendentPct above.
   // Added 2026-10-09 per Travis (MARGIN_CALC_V2):
   laborEfficiency: 0.72,      // was 0.77 -- customer-facing timeline only; never touches sub pay or the Pool
@@ -3290,7 +3290,7 @@ function syncCurrentJobEstimateCost() {
 //   sub labor  = agreed sub amounts (Subs tab / payments), else 60% of labor billed,
 //                plus any hourly (W-2) labor clocked on the job
 //   materials  = what's been spent, or the estimate's cost if more
-//   Jason      = sales 6% before the Pool, superintendent + consultant from Overhead
+//   Jason      = sales 6% + superintendent 2% + consultant 2%, all before the Pool
 // Previously the top bar ran a different formula (computeLockedBucketSplit:
 // no Jason commission, materials at marked-up price) and the Estimate tab
 // ran a third (live items, always 60% sub placeholder).
@@ -24091,26 +24091,17 @@ function calcTrueMargin(allItems, preAggregated) {
     ? preAggregated.processingFees : revenue * JTXD_LOCKED_RATES.processingFeePct;
   const feeLaborShare = revenue > 0 ? processingFees * (laborBilled / revenue) : 0;
   const feeMaterialsShare = processingFees - feeLaborShare;
-  const jtxdActual = laborBilled - realLaborCost - jasonCommission - feeLaborShare;
+  // OVERHEAD_PROTECT_V1 (2026-11-16, Travis): Jason's superintendent and
+  // consultant pay come off labor billed BEFORE the Pool, like his sales
+  // pay. Overhead is for rent and bills only; Jason's total is unchanged.
+  const superintendentPay = laborBilled * JTXD_LOCKED_RATES.superintendentPct;
+  const consultantPay = laborBilled * JTXD_LOCKED_RATES.consultantPct;
+  const jtxdActual = laborBilled - realLaborCost - jasonCommission - superintendentPay - consultantPay - feeLaborShare;
 
   const overhead = jtxdActual * JTXD_LOCKED_RATES.overhead;
 
-  // Superintendent and Consultant pay -- locked 2026-09-25. Both are
-  // percentages of Labor Billed, same as the Sales commission above, but
-  // paid OUT OF the Overhead allocation rather than as an additional cut
-  // before the Pool -- Jason's ongoing field/advisory work isn't a
-  // per-sale event, so it's funded from the same bucket that covers
-  // real recurring overhead costs (rent, utilities, insurance, software),
-  // not carved out of Labor Billed a second time. This does NOT change
-  // the overhead figure subtracted in the waterfall below (still the
-  // full 18% of the Pool) -- these two lines are the transparent
-  // breakdown of what that Overhead money is actually spent on, same
-  // spirit as the Overhead Surplus check in the JTXD_Growth_Model
-  // spreadsheet: real bills + Superintendent + Consultant, with
-  // whatever's left as true company surplus.
-  const superintendentPay = laborBilled * JTXD_LOCKED_RATES.superintendentPct;
-  const consultantPay = laborBilled * JTXD_LOCKED_RATES.consultantPct;
-
+  // (2026-09-25 to 2026-11-16 superintendent + consultant were paid out of
+  // Overhead; see OVERHEAD_PROTECT_V1 above for the change.)
   const marketing = jtxdActual * JTXD_LOCKED_RATES.marketing;
   const rem1 = jtxdActual - overhead - marketing;
   const flex = rem1 * JTXD_LOCKED_RATES.flex;
@@ -24141,7 +24132,7 @@ function calcTrueMargin(allItems, preAggregated) {
     ? materialsCost : materialsPrice / (1 + JTXD_LOCKED_RATES.materialsMarkupPct);
   const materialsMarkup = materialsPrice - materialsCostReal;
   const checking = materialsMarkup + flex - feeMaterialsShare; // STRIPE_FEES_V3: materials' share of card fees
-  const overheadNet = overhead - superintendentPay - consultantPay;
+  const overheadNet = overhead; // OVERHEAD_PROTECT_V1: all of Overhead goes to bills
   const jasonTotal = jasonCommission + superintendentPay + consultantPay;
   const laborShare = revenue > 0 ? laborBilled / revenue : 0;
   const reOfRevenuePct = revenue > 0 ? retainedEarnings / revenue : 0;
@@ -24417,14 +24408,13 @@ function buildJobMarginRows(tm) {
     ['Off the top of labor billed', null, '', 'sec'],
     ['Real labor cost (subs)', tm.realLaborCost, 'Estimate: ' + pct(R.realLaborCostPct) + ' of labor billed · Actual: agreed sub amounts', 'minus', 'down'],
     ['Jason, sales', tm.jasonCommission, pct(R.jasonCommissionPct) + ' of labor billed, before the Pool', 'minus'],
+    ['Jason, superintendent', tm.superintendentPay, pct(R.superintendentPct) + ' of labor billed, before the Pool', 'minus'],
+    ['Jason, consultant', tm.consultantPay, pct(R.consultantPct) + ' of labor billed, before the Pool', 'minus'],
     ['Card fee on labor (Stripe)', tm.feeLaborShare || 0, pct(R.processingFeePct) + ' of labor billed, from the labor markup · Actual: real Stripe fees + ' + pct(R.processingFeePct) + ' of what\'s unpaid', 'minus', 'down'],
-    ['JTXD Pool', tm.jtxdActual, 'Labor billed − real labor − Jason sales − card fee on labor', 'total', 'up'],
+    ['JTXD Pool', tm.jtxdActual, 'Labor billed − real labor − Jason (sales, superintendent, consultant) − card fee on labor', 'total', 'up'],
 
     ['The Pool waterfall', null, '', 'sec'],
-    ['Overhead', tm.overhead, pct(R.overhead) + ' of the Pool', 'minus'],
-    ['Jason, superintendent', tm.superintendentPay, pct(R.superintendentPct) + ' of labor billed, paid from Overhead', 'indent'],
-    ['Jason, consultant', tm.consultantPay, pct(R.consultantPct) + ' of labor billed, paid from Overhead', 'indent'],
-    ['Overhead left for bills', tm.overheadNet, 'Toward the ~$2,800/mo rent, insurance, software', 'indent', 'up'],
+    ['Overhead', tm.overhead, pct(R.overhead) + ' of the Pool, all of it for rent, insurance, software', 'minus', 'up'],
     ['Marketing', tm.marketing, pct(R.marketing) + ' of the Pool', 'minus'],
     ['Flex → Checking', tm.flex, pct(R.flex) + ' of what\'s left; overrun money in operating Checking', 'minus'],
     ['Taxes', tm.taxes, pct(R.taxes) + ' of what\'s left after Flex', 'minus'],
@@ -27384,12 +27374,11 @@ function jsModel(d) {
     ['MARGIN WATERFALL (locked formula)', null, null, '', 'sec'],
     ['Subcontractor pay (real cost)', E.realLaborCost, A.realLaborCost, 'down', 'row', 'Plan: 60% of labor billed · Actual: agreed sub amounts' + (info.hourlyLabor ? ' + hourly labor' : '')],
     ['Jason sales commission (' + pct(R.jasonCommissionPct) + ' of labor)', E.jasonCommission, A.jasonCommission, 'down', 'row'],
+    ['Jason superintendent (' + pct(R.superintendentPct) + ' of labor)', E.superintendentPay, A.superintendentPay, 'down', 'row'],
+    ['Jason consultant (' + pct(R.consultantPct) + ' of labor)', E.consultantPay, A.consultantPay, 'down', 'row'],
     ['Card fee on labor (Stripe ' + pct(R.processingFeePct) + ')', E.feeLaborShare || 0, A.feeLaborShare || 0, 'down', 'row', 'Actual: real Stripe fees taken + 2.9% of what is still unpaid'],
-    ['JTXD Pool (labor − sub pay − Jason sales − card fee)', E.jtxdActual, A.jtxdActual, 'up', 'total'],
-    ['Overhead (' + pct(R.overhead) + ' of Pool)', E.overhead, A.overhead, '', 'row'],
-    ['   paid from Overhead: Jason superintendent (' + pct(R.superintendentPct) + ' of labor)', E.superintendentPay, A.superintendentPay, '', 'row'],
-    ['   paid from Overhead: Jason consultant (' + pct(R.consultantPct) + ' of labor)', E.consultantPay, A.consultantPay, '', 'row'],
-    ['   Overhead left for company bills', E.overheadNet, A.overheadNet, 'up', 'row'],
+    ['JTXD Pool (labor − sub pay − Jason − card fee)', E.jtxdActual, A.jtxdActual, 'up', 'total'],
+    ['Overhead for company bills (' + pct(R.overhead) + ' of Pool)', E.overhead, A.overhead, 'up', 'row'],
     ['Marketing (' + pct(R.marketing) + ' of Pool)', E.marketing, A.marketing, '', 'row'],
     ['Flex (' + pct(R.flex) + ' of remainder)', E.flex, A.flex, '', 'row'],
     ['Taxes (' + pct(R.taxes) + ' of remainder after Flex)', E.taxes, A.taxes, '', 'row'],
