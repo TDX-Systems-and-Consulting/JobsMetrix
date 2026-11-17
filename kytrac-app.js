@@ -27434,11 +27434,14 @@ function jsModel(d) {
     const stages = resolveScheduleStages(job && job.paymentSchedule);
     const totPct = stages.reduce((s, x) => s + n(x.pct), 0);
     if (stages.length && totPct > 0) {
-      let start = 0;
-      stages.forEach(st => {
+      let start = 0, carry = 0;
+      stages.forEach((st, k) => {
         const end = start + A.revenue * n(st.pct) / totPct;
-        const remain = Math.max(0, end - Math.max(start, drawn));
-        if (remain >= 1) draws.push({ label: st.label + ' (' + st.pct + '%)', date: 'Planned', amount: remain, paid: 0, share: remain / A.revenue, pending: true, planned: true, partial: drawn > start && drawn < end });
+        const remain = Math.max(0, end - Math.max(start, drawn)) + carry;
+        const isLast = k === stages.length - 1;
+        // a rounding sliver (under $50) left on a mostly-billed draw rolls into the next one
+        if (remain >= 50 || (isLast && remain >= 1)) { draws.push({ label: st.label + ' (' + st.pct + '%)', date: 'Planned', amount: remain, paid: 0, share: remain / A.revenue, pending: true, planned: true, partial: drawn > start && drawn < end }); carry = 0; }
+        else carry = remain;
         start = end;
       });
     } else {
