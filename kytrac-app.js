@@ -27986,6 +27986,16 @@ async function deleteSubgroup(groupId, subId) {
 // item regardless of which trade it's filed under.
 let _flatCatalogIndex = null;
 function getFlatCatalogIndex() {
+  // OWN_CATALOG_V1: a licensed company searches only its own Cost Catalog,
+  // never JTXD's built-in price list.
+  if (typeof isCoreTenant === 'function' && isCoreTenant()) {
+    return (catalogItems || []).map(c => {
+      const unitCost = Number(c.unitCost) || 0;
+      const line = { desc: c.desc || '', unitCost, unitPrice: unitCost * (1 + (Number(c.markup) || 0) / 100), unit: c.unit || 'ea', qty: 1 };
+      const isLabor = c.category === 'Labor' || c.category === 'Subcontractor';
+      return { name: c.desc || '', short: c.desc || '', trade: c.category || 'Catalog', materials: isLabor ? null : line, labor: isLabor ? line : null };
+    });
+  }
   if (_flatCatalogIndex) return _flatCatalogIndex;
   _flatCatalogIndex = [];
   Object.keys(CATALOG_DATA).forEach(trade => {
@@ -32530,6 +32540,7 @@ async function tplAddPaintToEstimate() {
 window.tplAddPaintToEstimate = tplAddPaintToEstimate;
 
 function openSmartAdd() {
+  if (typeof isCoreTenant === 'function' && isCoreTenant()) return; // OWN_CATALOG_V1
   _launchSmartAdd();
 }
 
@@ -34496,6 +34507,7 @@ function guidedUpdateBackBtn() {
 }
 
 function openGuidedAdd() {
+  if (typeof isCoreTenant === 'function' && isCoreTenant()) return; // OWN_CATALOG_V1
   _guidedCategory = null; _guidedRoom = null; _guidedTrade = null; _guidedPhaseLabel = null;
   _guidedScript = null; _guidedStepIdx = 0; _guidedCtx = {}; _guidedCart = []; _guidedHistory = [];
   _wtRoom = null; _wtWalkthrough = null; _wtCatIdx = 0; _wtStepIdx = 0; _wtCtx = {}; _wtCart = []; _wtHistory = [];
@@ -38087,6 +38099,10 @@ function applyTenantMode() {
     JTXD_LOCKED_RATES.jasonCommissionPct = 0;
     JTXD_LOCKED_RATES.superintendentPct = 0;
     JTXD_LOCKED_RATES.consultantPct = 0;
+    // OWN_CATALOG_V1: JTXD's built-in catalog, Smart Add and Guided Questions
+    // carry JTXD's prices; another company builds its own.
+    Object.keys(CATALOG_DATA).forEach(k => { delete CATALOG_DATA[k]; });
+    _flatCatalogIndex = null;
     const r = companyProfile || {};
     if (Number(r.billedPerCrewHour) > 0) JTXD_LOCKED_RATES.billedPerCrewHour = Number(r.billedPerCrewHour);
     if (Number(r.materialsMarkupPct) > 0) JTXD_LOCKED_RATES.materialsMarkupPct = Number(r.materialsMarkupPct) / (Number(r.materialsMarkupPct) > 1 ? 100 : 1);
