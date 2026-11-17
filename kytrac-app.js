@@ -27428,7 +27428,23 @@ function jsModel(d) {
   const buckets = buildJobMarginBuckets(A);
   const draws = invs.filter(i => n(i.total) > 0).map((i, k) => ({ label: (i.type || 'Invoice') + ' ' + (i.number || k + 1), date: i.date || '', amount: n(i.total), paid: n(i.amtPaid), share: A.revenue ? n(i.total) / A.revenue : 0 }));
   const drawn = draws.reduce((s, x) => s + x.amount, 0);
-  if (A.revenue - drawn >= 1) draws.push({ label: 'Not invoiced yet', date: '', amount: A.revenue - drawn, paid: 0, share: (A.revenue - drawn) / A.revenue, pending: true });
+  // PLANNED_DRAWS_V1: the part not yet invoiced is broken into the job's saved
+  // payment schedule (Estimate tab), so every future draw shows on its own row.
+  if (A.revenue - drawn >= 1) {
+    const stages = resolveScheduleStages(job && job.paymentSchedule);
+    const totPct = stages.reduce((s, x) => s + n(x.pct), 0);
+    if (stages.length && totPct > 0) {
+      let start = 0;
+      stages.forEach(st => {
+        const end = start + A.revenue * n(st.pct) / totPct;
+        const remain = Math.max(0, end - Math.max(start, drawn));
+        if (remain >= 1) draws.push({ label: st.label + ' (' + st.pct + '%)', date: 'Planned', amount: remain, paid: 0, share: remain / A.revenue, pending: true, planned: true, partial: drawn > start && drawn < end });
+        start = end;
+      });
+    } else {
+      draws.push({ label: 'Not invoiced yet', date: '', amount: A.revenue - drawn, paid: 0, share: (A.revenue - drawn) / A.revenue, pending: true });
+    }
+  }
   return { job, E, A, info, verdict, W, H, pay, draws, buckets, invs, pays };
 }
 function jsBucketsCheck(tm) { return buildJobMarginBuckets(tm).reduce((s, x) => s + x[2], 0) - tm.revenue; }
@@ -27470,7 +27486,7 @@ function jsHtml(d) {
   const vendRows = Object.entries(P.byVendor).sort((a, b) => b[1] - a[1]).map(([k, x]) => `<tr><td style="${td}">${esc(k)}</td><td style="${td};${num}">${money(x)}</td></tr>`).join('');
   const bk = m.buckets;
   const drawHead = ['Draw', 'Date', 'Draw %', 'Draw $', 'Collected', ...bk.map(x => x[0])];
-  const drawRows = m.draws.map(dr => `<tr style="${dr.pending ? 'color:var(--muted)' : ''}"><td style="${td};white-space:nowrap">${esc(dr.label)}</td><td style="${td}">${esc(dr.date)}</td><td style="${td};${num}">${(Math.round(dr.share * 1000) / 10)}%</td><td style="${td};${num};font-weight:800">${money(dr.amount)}</td><td style="${td};${num};color:${G}">${dr.pending ? '' : money(dr.paid)}</td>${bk.map(x => `<td style="${td};${num}">${money(x[2] * dr.share)}</td>`).join('')}</tr>`).join('');
+  const drawRows = m.draws.map(dr => `<tr style="${dr.planned ? 'background:rgba(217,119,6,.10);font-style:italic' : dr.pending ? 'color:var(--muted)' : ''}"><td style="${td};white-space:nowrap">${dr.planned ? `<span style="color:${OP_AMBER};font-weight:800;font-style:normal">⏳ Planned</span> ` : ''}${esc(dr.label)}${dr.partial ? ' <span class="small muted">(rest of this draw)</span>' : ''}</td><td style="${td}">${dr.planned ? '' : esc(dr.date)}</td><td style="${td};${num}">${(Math.round(dr.share * 1000) / 10)}%</td><td style="${td};${num};font-weight:800">${money(dr.amount)}</td><td style="${td};${num};color:${G}">${dr.pending ? '' : money(dr.paid)}</td>${bk.map(x => `<td style="${td};${num}">${money(x[2] * dr.share)}</td>`).join('')}</tr>`).join('');
   const drawTot = `<tr style="font-weight:900"><td style="${td}">TOTALS</td><td style="${td}"></td><td style="${td};${num}">${Math.round(m.draws.reduce((s, x) => s + x.share, 0) * 1000) / 10}%</td><td style="${td};${num}">${money(m.A.revenue)}</td><td style="${td};${num};color:${G}">${money(P.collected)}</td>${bk.map(x => `<td style="${td};${num}">${money(x[2])}</td>`).join('')}</tr>`;
   const sec = t => `<div style="font-weight:900;font-size:1rem;margin:18px 0 8px">${t}</div>`;
   const tbl = (head, rows, extra) => `<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-size:.84rem${extra || ''}"><tr>${head.map(h => `<th style="${td};text-align:left;background:rgba(128,128,128,.12);white-space:nowrap">${h}</th>`).join('')}</tr>${rows}</table></div>`;
@@ -27495,7 +27511,7 @@ function jsHtml(d) {
   </div>
   ${sec('📅 Draw schedule (from this job\'s invoices) — where each draw\'s dollars go, Actual')}
   ${tbl(drawHead, drawRows + drawTot, ';font-size:.78rem')}
-  <div class="small muted" style="margin-top:6px">Each draw is split in the same proportions as the Actual waterfall. Columns add up to the draw.</div>`;
+  <div class="small muted" style="margin-top:6px">Each draw is split in the same proportions as the Actual waterfall. Columns add up to the draw.${m.draws.some(x => x.planned) ? ` <span style="color:${OP_AMBER};font-weight:700">⏳ Planned</span> rows are the draws still to invoice, from the payment schedule set on the Estimate tab.` : ''}</div>`;
 }
 
 // ── Excel download (SheetJS, loaded on first use) ──
