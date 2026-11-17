@@ -803,6 +803,11 @@ function decryptQboToken(encrypted) {
 function isQboFullAccess(token) {
   return QBO_FULL_ACCESS_ROLES.includes(token.role) || token.fullAccessOverride === true;
 }
+// QBO_RESTORE_V1: the Office Manager sends invoices and records payments;
+// connecting or disconnecting the books stays with Owner/PM/Accounting.
+function isQboInvoiceAccess(token) {
+  return isQboFullAccess(token) || token.role === 'Office Manager';
+}
 
 function getQboOAuthConfig() {
   // Prefers Secret Manager (process.env), same pattern already used for
@@ -1195,8 +1200,8 @@ exports.qbPushEstimate = functions.runWith({ secrets: ['QBO_CLIENT_ID', 'QBO_CLI
   if (context.auth.token.companyId !== companyId) {
     throw new functions.https.HttpsError('permission-denied', 'Not a member of this company.');
   }
-  if (!isQboFullAccess(context.auth.token)) {
-    throw new functions.https.HttpsError('permission-denied', 'Only Owner, Project Manager, or Accounting can push to QuickBooks.');
+  if (!isQboInvoiceAccess(context.auth.token)) {
+    throw new functions.https.HttpsError('permission-denied', 'Only Owner, Project Manager, Accounting, or Office Manager can send to QuickBooks.');
   }
 
   const db = admin.firestore();
@@ -1583,7 +1588,7 @@ exports.qbAssignInvoice = functions.runWith({ secrets: ['QBO_CLIENT_ID', 'QBO_CL
   if (!companyId || !qbInvoiceId || context.auth.token.companyId !== companyId) {
     throw new functions.https.HttpsError('permission-denied', 'Not a member of this company.');
   }
-  if (!isQboFullAccess(context.auth.token)) {
+  if (!isQboInvoiceAccess(context.auth.token)) {
     throw new functions.https.HttpsError('permission-denied', 'Only Owner, Project Manager, or Accounting can do this.');
   }
   const coRef = admin.firestore().collection('companies').doc(companyId);
@@ -1614,8 +1619,8 @@ exports.qbCreateInvoice = functions.runWith({ secrets: ['QBO_CLIENT_ID', 'QBO_CL
   if (context.auth.token.companyId !== companyId) {
     throw new functions.https.HttpsError('permission-denied', 'Not a member of this company.');
   }
-  if (!isQboFullAccess(context.auth.token)) {
-    throw new functions.https.HttpsError('permission-denied', 'Only Owner, Project Manager, or Accounting can push to QuickBooks.');
+  if (!isQboInvoiceAccess(context.auth.token)) {
+    throw new functions.https.HttpsError('permission-denied', 'Only Owner, Project Manager, Accounting, or Office Manager can send to QuickBooks.');
   }
 
   try {
