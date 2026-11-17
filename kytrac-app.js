@@ -27431,7 +27431,7 @@ function jsModel(d) {
   // PLANNED_DRAWS_V1: the part not yet invoiced is broken into the job's saved
   // payment schedule (Estimate tab), so every future draw shows on its own row.
   if (A.revenue - drawn >= 1) {
-    const stages = resolveScheduleStages(job && job.paymentSchedule);
+    const stages = (job && job.paymentSchedule && job.paymentSchedule.type === 'full') ? [{ pct: 100, label: 'Payment in full' }] : resolveScheduleStages(job && job.paymentSchedule);
     const totPct = stages.reduce((s, x) => s + n(x.pct), 0);
     if (stages.length && totPct > 0) {
       let start = 0, carry = 0;
