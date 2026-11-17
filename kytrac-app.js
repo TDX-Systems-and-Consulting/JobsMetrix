@@ -12391,6 +12391,7 @@ function renderJobInvoiceList(jobId, invs) {
         <button class="btn" style="padding:4px 10px;font-size:.76rem;background:rgba(99,179,237,.12);color:#63b3ed;border-color:rgba(99,179,237,.35)"
           onclick="emailInvoiceToCustomer('${jobId}','${inv.id}')">✉️ Email</button>
         ${xeroInvoiceButton(jobId, inv)}
+        ${(window._qbStatus && window._qbStatus.connected) ? `<button class="btn" style="padding:4px 10px;font-size:.76rem;background:rgba(44,160,28,.1);color:#4ade80;border-color:rgba(44,160,28,.35)" onclick="pushInvoiceToQuickBooks('${jobId}','${inv.id}',this)">${inv.qbInvoiceId ? '✓ In QuickBooks' : '📗 QuickBooks'}</button>` : ''}
         ${inv.paymentLink && (inv.total||0) > (inv.amtPaid||0) ? `<span class="small muted" style="align-self:center">💳 Pay link sent</span>` : ''}
         <button class="btn" style="padding:4px 10px;font-size:.76rem;background:rgba(245,158,11,.12);color:#f59e0b;border-color:rgba(245,158,11,.35)"
           onclick="sendLienWaiver('${jobId}','${inv.id}','conditional')" title="Send Conditional Lien Waiver for customer e-signature">📋 Lien Waiver</button>
@@ -13060,6 +13061,7 @@ async function pushInvoiceToQuickBooks(jobId, invId, btnEl) {
     if (result.data && result.data.success) {
       alert('✓ Invoice pushed to QuickBooks (QB Invoice #' + result.data.qbInvoiceId + ')');
       loadAllInvoices();
+      if (typeof loadJobInvoices === 'function') setTimeout(() => loadJobInvoices(jobId), 500);
     } else {
       throw new Error('Unexpected response from QuickBooks function.');
     }
@@ -13651,6 +13653,16 @@ async function emailInvoiceToCustomer(jobId, invId) {
   // XERO_V1: the invoice goes to Xero first (same number, job-tagged).
   // With "Use Xero's pay page" on, the email's Pay Now is Xero's page;
   // otherwise (or if Xero fails) it stays the Stripe link.
+  // QBO_RESTORE_V1: a company on QuickBooks gets the invoice there before it's emailed.
+  if (window._qbStatus && window._qbStatus.connected && conFunctions) {
+    try {
+      await conFunctions.httpsCallable('qbCreateInvoice')({ companyId: currentCompanyId, jobId, invoiceId: invId });
+      logInvoiceActivity(jobId, 'qbo_synced', `Invoice ${invNumSafe(inv)}sent to QuickBooks.`);
+    } catch (e) {
+      console.warn('QuickBooks push before email failed:', e.message);
+      logInvoiceActivity(jobId, 'qbo_sync_failed', 'Could not send this invoice to QuickBooks: ' + e.message);
+    }
+  }
   let xeroUrl = '';
   if (xeroReady()) {
     try {
@@ -14663,6 +14675,7 @@ function checkQBConnectionStatus() {
   coll('settings').doc('quickbooks').get()
     .then(doc => {
       const data = doc.exists ? doc.data() : {};
+      window._qbStatus = { connected: !!(data.connected && data.realmId) && isCoreTenant(), environment: data.environment || '' }; // QBO_RESTORE_V1 (licensed companies; JTXD uses Xero)
       if (data.connected && data.realmId) {
         el.innerHTML = '<span style="color:#1dbb87;font-weight:700">✓ Connected</span> — Realm ID: ' + esc(data.realmId) +
           (data.environment === 'sandbox' ? ' <span style="color:#f59e0b">(Sandbox — test mode)</span>' : '');
@@ -38093,6 +38106,7 @@ window.renderWeeklyNumbers = renderWeeklyNumbers;
 function applyTenantMode() {
   const core = isCoreTenant();
   document.body.classList.toggle('core-tenant', core);
+  { const qc = document.getElementById('qbSettingsCard'); if (qc) qc.style.display = core ? '' : 'none'; } // QBO_RESTORE_V1
   if (core) {
     // Partner pay lines are JTXD's arrangement; another company's job
     // math starts without them.
