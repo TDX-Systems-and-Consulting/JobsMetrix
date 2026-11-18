@@ -2594,6 +2594,12 @@ function renderSpecifications(items) {
     list.innerHTML = '<div style="text-align:center;padding:32px;color:var(--muted);font-style:italic">No estimate line items to build specifications from. Build the estimate first.</div>';
     return;
   }
+  // SPECS_MATERIALS_ONLY_V1: specs show what goes in, not the labor lines.
+  items = items.filter(it => String(it.costType || '').toLowerCase() !== 'labor');
+  if (!items.length) {
+    list.innerHTML = '<div style="text-align:center;padding:32px;color:var(--muted);font-style:italic">No material lines on this estimate yet.</div>';
+    return;
+  }
   // Room = the estimate group. Inside each room, a sub-heading per section.
   const rooms = new Map();
   items.forEach(it => {
