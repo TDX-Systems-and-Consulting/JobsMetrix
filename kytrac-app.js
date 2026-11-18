@@ -2446,6 +2446,71 @@ function loadSelections(jobId) {
     .then(snap => { _selections = []; snap.forEach(d => _selections.push({ id:d.id, ...d.data() })); renderSelections(); })
     .catch(() => { _selections = []; renderSelections(); });
 }
+// SELECTION_FILES_V1: design files on the Selections tab. Files live in
+// Storage under the job's photos/ path (already allowed by storage.rules),
+// with one doc per file in jobs/{id}/selectionFiles.
+let _selFiles = [];
+function loadSelectionFiles(jobId) {
+  const g = document.getElementById('selFilesGrid'); if (!g) return;
+  coll('jobs').doc(jobId).collection('selectionFiles').orderBy('createdAt', 'desc').get()
+    .then(snap => { _selFiles = snap.docs.map(d => ({ id: d.id, ...d.data() })); renderSelectionFiles(); })
+    .catch(() => { _selFiles = []; renderSelectionFiles(); });
+}
+function renderSelectionFiles() {
+  const g = document.getElementById('selFilesGrid'); if (!g) return;
+  if (!_selFiles.length) { g.innerHTML = '<div style="color:var(--muted);font-style:italic;font-size:.82rem;padding:6px 0">No design files yet. Upload what the designer sends you.</div>'; return; }
+  g.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">' + _selFiles.map(f => {
+    const isPdf = f.kind === 'pdf';
+    const when = f.createdAt && f.createdAt.toDate ? f.createdAt.toDate().toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+    const thumb = isPdf
+      ? `<div style="height:110px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(239,83,80,.08);border-radius:8px"><div style="font-size:2rem">📄</div><div style="font-size:.7rem;font-weight:800;color:#ef5350">PDF</div></div>`
+      : `<img src="${esc(f.url)}" alt="" loading="lazy" style="width:100%;height:110px;object-fit:cover;border-radius:8px;display:block" />`;
+    return `<div style="border:1px solid var(--line,rgba(110,145,210,.18));border-radius:10px;padding:6px;min-width:0">
+      <a href="${esc(f.url)}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit">${thumb}
+        <div style="font-size:.74rem;font-weight:700;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(f.name || '')}">${esc(f.name || 'File')}</div></a>
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:.68rem;color:var(--muted)">
+        <span>${esc(when)}${f.uploadedByName ? ' · ' + esc(f.uploadedByName) : ''}</span>
+        <button onclick="deleteSelectionFile('${f.id}')" title="Remove" style="background:none;border:none;color:rgba(239,83,80,.6);cursor:pointer;font-size:.8rem">🗑</button></div>
+    </div>`;
+  }).join('') + '</div>';
+}
+async function uploadSelectionFiles(fileList) {
+  const jobId = conCurrentJobId; const st = document.getElementById('selFileStatus');
+  const files = [...(fileList || [])]; if (!files.length || !jobId) return;
+  if (!conStorage) { if (st) st.textContent = 'Storage is still loading. Try again in a few seconds.'; return; }
+  let ok = 0; const bad = [];
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i]; const t = (file.type || '').toLowerCase(); const n = (file.name || '').toLowerCase();
+    const isPdf = t === 'application/pdf' || n.endsWith('.pdf'); const isImg = /image\/(jpeg|png)/.test(t) || /\.(jpe?g|png)$/.test(n);
+    if (!isPdf && !isImg) { bad.push(file.name + ' (only JPG, PNG or PDF)'); continue; }
+    if (file.size > 40 * 1024 * 1024) { bad.push(file.name + ' (over 40 MB)'); continue; }
+    if (st) st.textContent = `Uploading ${i + 1} of ${files.length}: ${file.name}…`;
+    try {
+      let blob = file;
+      if (isImg && file.size > 2.5 * 1024 * 1024 && typeof compressImageFile === 'function') { try { blob = await compressImageFile(file, 2400, 0.85); } catch (e) { blob = file; } }
+      const safe = (file.name || 'file').replace(/[^A-Za-z0-9._-]+/g, '_').slice(-80);
+      const path = `companies/${currentCompanyId}/jobs/${jobId}/photos/design_${Date.now()}_${safe}`;
+      const url = await uploadToStorage(path, blob);
+      await coll('jobs').doc(jobId).collection('selectionFiles').add({ name: file.name, url, path, kind: isPdf ? 'pdf' : 'image', size: blob.size || file.size,
+        uploadedBy: conCurrentUser?.email || '', uploadedByName: (typeof myName === 'function' ? myName() : ''), createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+      ok++;
+    } catch (e) { bad.push(file.name + ' (' + e.message + ')'); }
+  }
+  if (st) st.textContent = `${ok} file${ok === 1 ? '' : 's'} uploaded.` + (bad.length ? ' Not uploaded: ' + bad.join('; ') : '');
+  const inp = document.getElementById('selFileInput'); if (inp) inp.value = '';
+  if (ok && typeof logActivity === 'function') { try { logActivity(jobId, 'design_upload', `${ok} design file${ok === 1 ? '' : 's'} added to Selections`); } catch (e) {} }
+  loadSelectionFiles(jobId);
+}
+async function deleteSelectionFile(id) {
+  const f = _selFiles.find(x => x.id === id); if (!f || !conCurrentJobId) return;
+  if (!confirm('Remove "' + (f.name || 'this file') + '" from Design Files?')) return;
+  try {
+    await coll('jobs').doc(conCurrentJobId).collection('selectionFiles').doc(id).delete();
+    if (f.path && conStorage) { try { await conStorage.ref(f.path).delete(); } catch (e) {} }
+  } catch (e) { alert('Error: ' + e.message); }
+  loadSelectionFiles(conCurrentJobId);
+}
+window.uploadSelectionFiles = uploadSelectionFiles; window.deleteSelectionFile = deleteSelectionFile;
 function renderSelections() {
   const list = document.getElementById('selectionsList');
   const sum = document.getElementById('selectionsSummary');
@@ -7026,7 +7091,7 @@ function switchDetailTab(tab, btn) {
   if (tab === 'retrospective') loadRetrospective(conCurrentJobId);
   if (tab === 'financials') renderFinancialsHub(conCurrentJobId);
   if (tab === 'todos') renderJobTodos(conCurrentJobId);
-  if (tab === 'selections') loadSelections(conCurrentJobId);
+  if (tab === 'selections') { loadSelections(conCurrentJobId); loadSelectionFiles(conCurrentJobId); }
   if (tab === 'specifications') loadSpecifications(conCurrentJobId);
   if (tab === 'plans') loadPlans(conCurrentJobId);
   if (tab === 'messages') loadJobMessages(conCurrentJobId);
