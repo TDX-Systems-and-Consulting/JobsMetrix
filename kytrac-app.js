@@ -2595,7 +2595,11 @@ function renderSpecifications(items) {
     return;
   }
   // SPECS_MATERIALS_ONLY_V1: specs show what goes in, not the labor lines.
-  items = items.filter(it => String(it.costType || '').toLowerCase() !== 'labor');
+  items = items.filter(it => {
+    if (String(it.costType || '').toLowerCase() === 'labor') return false;
+    const d = String(it.description || it.name || it.desc || '').trim();
+    return !(/^(package\s+)?labor\b/i.test(d) || /\blabou?r$/i.test(d));   // labor lines mis-tagged as Materials
+  });
   if (!items.length) {
     list.innerHTML = '<div style="text-align:center;padding:32px;color:var(--muted);font-style:italic">No material lines on this estimate yet.</div>';
     return;
