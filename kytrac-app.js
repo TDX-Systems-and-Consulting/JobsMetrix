@@ -2568,16 +2568,20 @@ function loadSpecifications(jobId) {
   list.innerHTML = '<div class="small muted" style="padding:12px">Building specifications from the estimate…</div>';
   const jobRef = coll('jobs').doc(jobId);
   const items = [];
+  // SPECS_BY_ROOM_V1: the estimate's top-level groups ARE the rooms
+  // (Kitchen, Basement Bathroom, Exterior…); subgroups are the scope
+  // sections inside a room. Keep the estimate's own order for both.
   jobRef.collection('estimateGroups').get().then(async groupSnap => {
-    for (const g of groupSnap.docs) {
-      const gName = g.data().name || 'General';
+    const groups = groupSnap.docs.map(g => ({ id: g.id, ...g.data() })).sort((x, y) => (x.order ?? 999) - (y.order ?? 999));
+    for (const [gi, g] of groups.entries()) {
+      const gName = g.name || 'General';
       const direct = await jobRef.collection('estimateGroups').doc(g.id).collection('items').get();
-      direct.forEach(d => items.push({ group:gName, ...d.data() }));
-      const subs = await jobRef.collection('estimateGroups').doc(g.id).collection('subgroups').get();
-      for (const s of subs.docs) {
-        const sName = s.data().name || '';
+      direct.forEach(d => items.push({ group: gName, gOrder: gi, sOrder: -1, ...d.data() }));
+      const subs = (await jobRef.collection('estimateGroups').doc(g.id).collection('subgroups').get()).docs
+        .map(s => ({ id: s.id, ...s.data() })).sort((x, y) => (x.order ?? 999) - (y.order ?? 999));
+      for (const [si, s] of subs.entries()) {
         const it = await jobRef.collection('estimateGroups').doc(g.id).collection('subgroups').doc(s.id).collection('items').get();
-        it.forEach(d => items.push({ group:gName, subgroup:sName, ...d.data() }));
+        it.forEach(d => items.push({ group: gName, subgroup: s.name || '', gOrder: gi, sOrder: si, ...d.data() }));
       }
     }
     renderSpecifications(items);
@@ -2590,26 +2594,41 @@ function renderSpecifications(items) {
     list.innerHTML = '<div style="text-align:center;padding:32px;color:var(--muted);font-style:italic">No estimate line items to build specifications from. Build the estimate first.</div>';
     return;
   }
-  // Group by room (fallback to subgroup, then group), then by trade
-  const byRoom = {};
+  // Room = the estimate group. Inside each room, a sub-heading per section.
+  const rooms = new Map();
   items.forEach(it => {
-    const room = it.room || it.subgroup || it.group || 'General';
-    (byRoom[room] = byRoom[room] || []).push(it);
+    const room = it.room || it.group || 'General';
+    if (!rooms.has(room)) rooms.set(room, { order: it.gOrder ?? 999, sections: new Map() });
+    const r = rooms.get(room);
+    const sec = it.subgroup || '';
+    if (!r.sections.has(sec)) r.sections.set(sec, { order: it.sOrder ?? 999, items: [] });
+    r.sections.get(sec).items.push(it);
   });
-  list.innerHTML = Object.keys(byRoom).sort().map(room => {
-    const rows = byRoom[room].map(it => {
-      const desc = it.description || it.name || it.desc || '';
-      const spec = it.specifications || it.spec || '';
-      const qty = it.qty ? `${it.qty}${it.unit?' '+it.unit:''}` : '';
-      return `<div style="display:grid;grid-template-columns:1fr auto;gap:10px;padding:8px 0;border-bottom:1px solid rgba(110,145,210,.07)">
-        <div><div style="font-size:.85rem;font-weight:600">${esc(desc)}</div>
-          ${spec?`<div style="font-size:.74rem;color:var(--muted)">${esc(spec)}</div>`:''}
-          ${it.trade?`<span style="font-size:.68rem;color:var(--amber)">${esc(it.trade)}</span>`:''}</div>
-        <div style="font-size:.78rem;color:var(--muted);white-space:nowrap">${esc(qty)}</div>
-      </div>`;
+  const isWhole = n => /^(global|general|whole house|entire house)$/i.test(n.trim());
+  const roomNames = [...rooms.keys()].sort((a, b) => (isWhole(a) - isWhole(b)) || (rooms.get(a).order - rooms.get(b).order));
+  const itemRow = it => {
+    const desc = it.description || it.name || it.desc || '';
+    const spec = it.specifications || it.spec || '';
+    const qty = it.qty ? `${it.qty}${it.unit ? ' ' + it.unit : ''}` : '';
+    return `<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:8px 0;border-bottom:1px solid rgba(110,145,210,.07)">
+      <div style="min-width:0"><div style="font-size:.85rem;font-weight:600">${esc(desc)}</div>
+        ${spec ? `<div style="font-size:.74rem;color:var(--muted)">${esc(spec)}</div>` : ''}
+        ${it.trade ? `<span style="font-size:.68rem;color:var(--amber)">${esc(it.trade)}</span>` : ''}</div>
+      <div style="font-size:.78rem;color:var(--muted);white-space:nowrap">${esc(qty)}</div>
+    </div>`;
+  };
+  const jump = roomNames.length > 1 ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${roomNames.map((r, i) =>
+    `<button class="btn" onclick="document.getElementById('specRoom${i}')?.scrollIntoView({behavior:'smooth',block:'start'})" style="padding:4px 10px;font-size:.74rem">${esc(isWhole(r) ? 'Whole House' : r)} <span style="color:var(--muted)">${[...rooms.get(r).sections.values()].reduce((n, s) => n + s.items.length, 0)}</span></button>`).join('')}</div>` : '';
+  list.innerHTML = jump + roomNames.map((room, i) => {
+    const r = rooms.get(room);
+    const secs = [...r.sections.entries()].sort((a, b) => a[1].order - b[1].order);
+    const count = secs.reduce((n, [, s]) => n + s.items.length, 0);
+    const body = secs.map(([name, s]) => {
+      const head = name && !/guided questions/i.test(name) ? `<div style="font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:12px 0 2px">${esc(name)}</div>` : (name ? '<div style="height:6px"></div>' : '');
+      return head + s.items.map(itemRow).join('');
     }).join('');
-    return `<div class="kt-card" style="padding:14px 16px;margin-bottom:12px">
-      <div style="font-weight:800;font-size:.92rem;margin-bottom:6px;color:var(--amber)">${esc(room)} <span style="color:var(--muted);font-weight:400">· ${byRoom[room].length} item(s)</span></div>${rows}</div>`;
+    return `<div id="specRoom${i}" class="kt-card" style="padding:14px 16px;margin-bottom:12px;scroll-margin-top:70px">
+      <div style="font-weight:800;font-size:.98rem;color:var(--amber)">${esc(isWhole(room) ? 'Whole House' : room)} <span style="color:var(--muted);font-weight:400;font-size:.82rem">· ${count} item${count === 1 ? '' : 's'}</span></div>${body}</div>`;
   }).join('');
 }
 
