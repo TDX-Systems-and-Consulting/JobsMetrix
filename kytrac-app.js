@@ -13334,13 +13334,13 @@ window.syncBucketTodo = syncBucketTodo;
 
 // Catches payments that were marked paid somewhere other than the Mark Paid
 // button (Stripe, QuickBooks, Xero sync). Runs when Travis's dashboard loads.
-async function sweepBucketTodos(jobs) {
+async function sweepBucketTodos(jobs, start) {
   for (const job of jobs) {
     try {
       const inv = await coll('jobs').doc(job.id).collection('invoices').get();
       for (const d of inv.docs) {
         const x = d.data();
-        if (!(Number(x.amtPaid) > 0) || (x.paidDate || '') < BUCKET_TODO_CUTOVER) continue;
+        if (!(Number(x.amtPaid) > 0) || (x.paidDate || '') < (start || BUCKET_TODO_CUTOVER)) continue;
         await syncBucketTodo(job.id, d.ref, x.amtPaid, 'Invoice ' + (x.number || '')).catch(() => {});
       }
     } catch (e) {}
@@ -13348,7 +13348,45 @@ async function sweepBucketTodos(jobs) {
 }
 
 // ── The dashboard card (Travis only) ──
+// FRESH_START_V1 (Travis 11/20/26): "forget past jobs and only start with the
+// 5 active jobs." Each job gets an opening balance on the start date (its
+// share of what's sitting in Regular Checking that day); from then on only
+// payments received and money spent ON OR AFTER the start date count, and
+// only new payments get split into the buckets. Old history never counts.
 let _cashSel = 'all', _cashData = null, _cashLoading = false;
+const _cashDay = v => {
+  if (!v) return '';
+  if (typeof v === 'string') return v.slice(0, 10);
+  if (v.toDate) return v.toDate().toISOString().slice(0, 10);
+  return '';
+};
+async function cashSinceStart(job, start) {
+  const ref = coll('jobs').doc(job.id);
+  const [inv, cos, exp, pays, rcpt] = await Promise.all([
+    ref.collection('invoices').get().catch(() => null),
+    ref.collection('changeorders').get().catch(() => null),
+    ref.collection('expenses').get().catch(() => null),
+    ref.collection('subcontractorPayments').get().catch(() => null),
+    ref.collection('receipts').get().catch(() => null),
+  ]);
+  let received = 0, receivedAll = 0;
+  const after = d => d && d >= start;
+  if (inv) inv.forEach(d => { const x = d.data(); const a = Number(x.amtPaid) || 0; receivedAll += a; if (after(_cashDay(x.paidDate))) received += a; });
+  if (cos) cos.forEach(d => { const c = d.data(); if (c.invoiceId) return; const a = Number(c.amtPaid) || 0; receivedAll += a; if (after(_cashDay(c.paidDate))) received += a; });
+  const parts = { 'Receipts & expenses': 0, 'Sub payments': 0, 'Vendor bills paid': 0 };
+  const logged = new Set();
+  if (exp) exp.forEach(d => { const x = d.data(); if (x.receiptId) logged.add(x.receiptId); if (after(_cashDay(x.date) || _cashDay(x.createdAt))) parts['Receipts & expenses'] += Number(x.amount) || 0; });
+  if (rcpt) rcpt.forEach(d => { const r = d.data(); if (logged.has(d.id) || r.expenseId) return; if (after(_cashDay(r.date) || _cashDay(r.createdAt))) parts['Receipts & expenses'] += Number(r.amount) || 0; });
+  if (pays) pays.forEach(d => { const p = d.data(); if (/cancel|void/i.test(p.status || '')) return; if (after(_cashDay(p.date) || _cashDay(p.createdAt))) parts['Sub payments'] += Number(p.amount) || 0; });
+  try {
+    const vSnap = await coll('vendors').get();
+    await Promise.all(vSnap.docs.map(v => v.ref.collection('bills').where('jobId', '==', job.id).get().then(b => b.forEach(d => {
+      const x = d.data(); if (after(_cashDay(x.billDate) || _cashDay(x.createdAt))) parts['Vendor bills paid'] += Number(x.amtPaid) || 0;
+    })).catch(() => {})));
+  } catch (e) {}
+  const spent = Object.values(parts).reduce((a, v) => a + v, 0);
+  return { received, receivedAll, spent, parts };
+}
 async function renderOwnerCash(force) {
   const card = document.getElementById('ownerCashCard');
   if (!card) return;
@@ -13360,44 +13398,35 @@ async function renderOwnerCash(force) {
   _cashLoading = true;
   body.innerHTML = '<div class="small muted" style="padding:10px 0">Adding up every job’s money…</div>';
   try {
+    const settSnap = await coll('settings').doc('ownerCash').get().catch(() => null);
+    const s = settSnap && settSnap.exists ? settSnap.data() : {};
+    const start = s.startDate || BUCKET_TODO_CUTOVER;
+    const openings = s.openings || {};
     const jobs = conJobs.filter(j => !['Closed Lost', 'Closed Completed'].includes(j.status));
-    await sweepBucketTodos(jobs);
-    const [todoSnap, settSnap] = await Promise.all([
-      coll('todos').where('source', '==', 'bucket_transfer').get().catch(() => null),
-      coll('settings').doc('ownerCash').get().catch(() => null),
-    ]);
+    await sweepBucketTodos(jobs, start);
+    const todoSnap = await coll('todos').where('source', '==', 'bucket_transfer').get().catch(() => null);
     const todos = todoSnap ? todoSnap.docs.map(d => ({ id: d.id, ...d.data() })) : [];
     const rows = [];
     for (const job of jobs) {
-      const [inv, cos] = await Promise.all([
-        coll('jobs').doc(job.id).collection('invoices').get().catch(() => null),
-        coll('jobs').doc(job.id).collection('changeorders').get().catch(() => null),
-      ]);
-      let received = 0;
-      if (inv) inv.forEach(d => { received += Number(d.data().amtPaid) || 0; });
-      if (cos) cos.forEach(d => { const c = d.data(); if (!c.invoiceId) received += Number(c.amtPaid) || 0; });
-      if (received < 1) continue;
+      const c = await cashSinceStart(job, start);
+      const opening = Number(openings[job.id]) || 0;
+      if (c.receivedAll < 1 && !(job.id in openings)) continue;   // no money yet = not a cash job
       const m = await getJobCashModel(job.id);
       if (!m) continue;
-      const info = m.info;
-      const spent = Number(info.spentToDate) || 0;
-      const toBuckets = _c2(received * m.bucketPct);
-      const jobTodos = todos.filter(t => t.jobId === job.id);
-      const tasked = jobTodos.reduce((a, t) => a + (Number(t.bucketMoveTotal) || 0), 0);
-      const notMoved = jobTodos.filter(t => !t.done).reduce((a, t) => a + (Number(t.bucketMoveTotal) || 0), 0);
-      const costToFinish = Math.max(0, m.laborCost + m.materialsCost - spent);
-      const toCollect = Math.max(0, m.revenue - received);
-      const available = _c2(received - toBuckets - spent);
+      const toBuckets = _c2(c.received * m.bucketPct);
+      const available = _c2(opening + c.received - toBuckets - c.spent);
+      const spentAll = Number(m.info.spentToDate) || 0;
+      const costToFinish = Math.max(0, m.laborCost + m.materialsCost - spentAll);
+      const toCollect = Math.max(0, m.revenue - c.receivedAll);
+      const notMoved = todos.filter(t => t.jobId === job.id && !t.done).reduce((a, t) => a + (Number(t.bucketMoveTotal) || 0), 0);
       rows.push({
-        job, m, received, spent, toBuckets, available, costToFinish, toCollect,
-        notSent: _c2(toBuckets - tasked), notMoved: _c2(notMoved),
+        job, m, opening, hasOpening: job.id in openings, received: c.received, spent: c.spent, spentParts: c.parts,
+        toBuckets, available, costToFinish, toCollect, notMoved: _c2(notMoved),
         leftover: _c2(available + toCollect * (1 - m.bucketPct) - costToFinish),
-        spentParts: { 'Vendor bills paid': info.billsPaid, 'Receipts & expenses': info.expenses, 'Sub payments entered': info.subPaymentsTotal, 'Hourly labor': info.hourlyLabor },
       });
     }
-    rows.sort((a, b) => b.received - a.received);
-    const s = settSnap && settSnap.exists ? settSnap.data() : {};
-    _cashData = { rows, todos, balance: s.checkingBalance, balanceDate: s.checkingBalanceDate || '' };
+    rows.sort((a, b) => (b.opening + b.received) - (a.opening + a.received));
+    _cashData = { rows, todos, start, balance: s.checkingBalance, balanceDate: s.checkingBalanceDate || '' };
     drawOwnerCash();
   } catch (e) {
     body.innerHTML = `<div class="small muted">Couldn’t load cash right now: ${esc(e.message)}</div>`;
@@ -13405,66 +13434,63 @@ async function renderOwnerCash(force) {
 }
 function drawOwnerCash() {
   const body = document.getElementById('ownerCashBody'); if (!body || !_cashData) return;
-  const { rows, balance, balanceDate } = _cashData;
+  const { rows, balance, balanceDate, start } = _cashData;
   const sum = k => rows.reduce((a, r) => a + (Number(r[k]) || 0), 0);
   const held = rows.reduce((a, r) => a + Math.max(0, r.available), 0);
-  const notMoved = sum('notMoved'), notSent = rows.reduce((a, r) => a + Math.max(0, r.notSent), 0);
+  const notMoved = sum('notMoved');
   const hasBal = balance != null && balance !== '';
-  const free = hasBal ? _c2(Number(balance) - held - notMoved - notSent) : null;
+  const free = hasBal ? _c2(Number(balance) - held - notMoved) : null;
   const pos = v => v >= 0 ? '#1dbb87' : '#ef5350';
+  const startLbl = new Date(start + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   const tile = (label, val, color, sub) => `<div style="flex:1 1 150px;min-width:0;padding:12px 14px;border:1px solid var(--line);border-radius:12px">
       <div style="font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700">${label}</div>
       <div style="font-size:1.25rem;font-weight:900;color:${color};font-variant-numeric:tabular-nums;margin-top:2px">${val}</div>
       ${sub ? `<div style="font-size:.7rem;color:var(--muted);margin-top:2px">${sub}</div>` : ''}</div>`;
-  const balInput = `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">
-      <input id="ownerCashBal" type="number" step="0.01" placeholder="Regular checking balance" value="${hasBal ? esc(String(balance)) : ''}" style="width:170px;padding:6px 9px;border-radius:8px;border:1px solid var(--line);background:var(--input-bg);color:var(--text);font-size:.82rem">
-      <button class="btn" onclick="saveOwnerCashBalance()" style="padding:6px 10px;font-size:.78rem">Save</button>
-      <span class="small muted">${hasBal ? 'as of ' + esc(balanceDate) : 'type today’s Bluevine Checking balance'}</span></div>`;
   let html = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
-      ${tile('Regular checking', hasBal ? _cm(balance) : '—', 'var(--text)', '')}
+      ${tile('Regular checking', hasBal ? _cm(balance) : '—', 'var(--text)', hasBal ? 'as of ' + esc(balanceDate) : '')}
       ${tile('Held for jobs', _cm(held), 'var(--amber)', 'subs, materials, buffer still owed out')}
-      ${tile('Not moved to buckets yet', _cm(notMoved + notSent), (notMoved + notSent) > 1 ? '#f97316' : '#1dbb87', notSent > 1 ? _cm(notSent) + ' not even sent to Julia yet' : 'open to-dos with Julia')}
+      ${tile('Not moved to buckets yet', _cm(notMoved), notMoved > 1 ? '#f97316' : '#1dbb87', notMoved > 1 ? 'open to-dos with Julia' : 'all caught up')}
       ${tile('Truly available', hasBal ? _cm(free) : '—', hasBal ? pos(free) : 'var(--muted)', hasBal ? 'free to spend right now' : 'enter the balance below')}
-    </div>${balInput}`;
-  if (notSent > 1) html += `<div style="margin-top:10px;padding:10px 12px;border:1px solid #f9731655;border-radius:10px;background:#f973160f;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px;font-size:.82rem"><b>${_cm(notSent)}</b> from payments already received never got split into the buckets.</div>
-      <button class="btn-amber" onclick="sendCashCatchUp(this)" style="padding:7px 12px;font-weight:700;font-size:.8rem">Send catch-up to Julia</button></div>`;
-  // job toggle
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">
+      <input id="ownerCashBal" type="number" step="0.01" placeholder="Regular checking balance" value="${hasBal ? esc(String(balance)) : ''}" style="width:170px;padding:6px 9px;border-radius:8px;border:1px solid var(--line);background:var(--input-bg);color:var(--text);font-size:.82rem">
+      <button class="btn" onclick="saveOwnerCashBalance()" style="padding:6px 10px;font-size:.78rem">Update balance</button>
+      <span class="small muted">Fresh start ${esc(startLbl)}: only money in and out since then counts.</span></div>`;
   html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin:16px 0 10px">${[['all', 'All jobs'], ...rows.map(r => [r.job.id, _cashName(r.job)])].map(([id, name]) =>
     `<button class="btn" onclick="ownerCashSelect('${id}')" style="padding:5px 11px;font-size:.78rem;${_cashSel === id ? 'background:var(--amber);color:#111;border-color:var(--amber);font-weight:800' : ''}">${esc(name)}</button>`).join('')}</div>`;
-  if (!rows.length) html += '<div class="small muted">No active job has received money yet.</div>';
+  if (!rows.length) html += '<div class="small muted">No active job has money yet.</div>';
   else if (_cashSel === 'all' || !rows.find(r => r.job.id === _cashSel)) {
     const th = s => `<th style="text-align:right;padding:6px 8px;font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);white-space:nowrap">${s}</th>`;
     const td = (v, c) => `<td style="text-align:right;padding:7px 8px;font-variant-numeric:tabular-nums;white-space:nowrap;${c ? 'color:' + c + ';font-weight:800' : ''}">${_cm(v)}</td>`;
     html += `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.84rem">
-      <thead><tr><th style="text-align:left;padding:6px 8px;font-size:.68rem;text-transform:uppercase;color:var(--muted)">Job</th>${th('Received')}${th('To buckets')}${th('Spent')}${th('Available')}${th('Cost to finish')}${th('Still to collect')}</tr></thead>
+      <thead><tr><th style="text-align:left;padding:6px 8px;font-size:.68rem;text-transform:uppercase;color:var(--muted)">Job</th>${th('Start ' + esc(startLbl))}${th('Received since')}${th('To buckets')}${th('Spent since')}${th('Available')}${th('Still to collect')}</tr></thead>
       <tbody>${rows.map(r => `<tr style="border-top:1px solid var(--line);cursor:pointer" onclick="ownerCashSelect('${r.job.id}')">
-        <td style="padding:7px 8px;font-weight:700">${esc(_cashName(r.job))}</td>
-        ${td(r.received)}${td(r.toBuckets)}${td(r.spent)}${td(r.available, pos(r.available))}${td(r.costToFinish)}${td(r.toCollect)}</tr>`).join('')}
-        <tr style="border-top:2px solid var(--line);font-weight:800"><td style="padding:7px 8px">Total</td>${td(sum('received'))}${td(sum('toBuckets'))}${td(sum('spent'))}${td(sum('available'), pos(sum('available')))}${td(sum('costToFinish'))}${td(sum('toCollect'))}</tr>
+        <td style="padding:7px 8px;font-weight:700">${esc(_cashName(r.job))}${r.hasOpening ? '' : ' <span style="color:#f97316;font-size:.7rem">set start</span>'}</td>
+        ${td(r.opening)}${td(r.received)}${td(r.toBuckets)}${td(r.spent)}${td(r.available, pos(r.available))}${td(r.toCollect)}</tr>`).join('')}
+        <tr style="border-top:2px solid var(--line);font-weight:800"><td style="padding:7px 8px">Total</td>${td(sum('opening'))}${td(sum('received'))}${td(sum('toBuckets'))}${td(sum('spent'))}${td(sum('available'), pos(sum('available')))}${td(sum('toCollect'))}</tr>
       </tbody></table></div>
-      <div class="small muted" style="margin-top:8px">Available = received − the buckets’ share − everything spent on the job. Tap a job for the detail.</div>`;
+      <div class="small muted" style="margin-top:8px">Available = start balance + received since − the buckets’ share of it − spent since. Tap a job for the detail.</div>`;
   } else {
     const r = rows.find(x => x.job.id === _cashSel);
-    const line = (label, v, opts) => `<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;${opts && opts.top ? 'border-top:1px solid var(--line);margin-top:4px;' : ''}${opts && opts.indent ? 'padding-left:16px;font-size:.8rem;color:var(--muted);' : ''}${opts && opts.bold ? 'font-weight:800;' : ''}"><span>${label}</span><span style="font-variant-numeric:tabular-nums;${opts && opts.color ? 'color:' + opts.color : ''}">${v}</span></div>`;
-    const sharePct = (r.m.bucketPct * 100).toFixed(1);
-    let d = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px">`;
-    d += `<div style="min-width:0"><div style="font-weight:800;margin-bottom:4px">Money for this job</div>`;
-    d += line('Contract (with approved change orders)', _cm(r.m.revenue));
-    d += line('Received so far', _cm(r.received), { bold: true });
-    d += line(`Buckets’ share (${sharePct}% of every payment)`, '−' + _cm(r.toBuckets));
-    CASH_BUCKETS.forEach(bk => { const v = r.m.revenue ? (r.m.whole[bk.key] || 0) * r.received / r.m.revenue : 0; d += line(bk.label, _cm(v), { indent: true }); });
-    d += line('Spent on the job', '−' + _cm(r.spent));
-    Object.entries(r.spentParts).forEach(([k, v]) => { if (Number(v) >= 0.01) d += line(k, _cm(v), { indent: true }); });
+    const line = (label, v, o) => `<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;${o && o.top ? 'border-top:1px solid var(--line);margin-top:4px;' : ''}${o && o.indent ? 'padding-left:16px;font-size:.8rem;color:var(--muted);' : ''}${o && o.bold ? 'font-weight:800;' : ''}"><span>${label}</span><span style="font-variant-numeric:tabular-nums;${o && o.color ? 'color:' + o.color : ''}">${v}</span></div>`;
+    let d = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px"><div style="min-width:0"><div style="font-weight:800;margin-bottom:4px">Money for this job</div>`;
+    d += `<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;padding:6px 0;flex-wrap:wrap"><span>Start balance on ${esc(startLbl)}</span>
+      <span style="display:flex;gap:6px;align-items:center"><input id="ownerCashOpen" type="number" step="0.01" value="${r.opening}" style="width:120px;padding:5px 8px;border-radius:8px;border:1px solid var(--line);background:var(--input-bg);color:var(--text);font-size:.82rem;text-align:right">
+      <button class="btn" onclick="saveOwnerCashOpening('${r.job.id}')" style="padding:5px 9px;font-size:.75rem">Save</button></span></div>`;
+    d += line('Received since', _cm(r.received));
+    d += line(`Buckets’ share (${(r.m.bucketPct * 100).toFixed(1)}% of each payment)`, '−' + _cm(r.toBuckets));
+    if (r.received) CASH_BUCKETS.forEach(bk => { d += line(bk.label, _cm((r.m.whole[bk.key] || 0) * r.received / r.m.revenue), { indent: true }); });
+    d += line('Spent since', '−' + _cm(r.spent));
+    Object.entries(r.spentParts).forEach(([k, v]) => { if (v >= 0.01) d += line(k, _cm(v), { indent: true }); });
     d += line('Available for this job now', _cm(r.available), { top: true, bold: true, color: pos(r.available) });
+    if (r.available < 0) d += `<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#ef53501a;font-size:.8rem">This job has spent ${_cm(-r.available)} more than it has. Other jobs’ money is covering it until the next draw.</div>`;
+    if (r.notMoved > 1) d += `<div class="small" style="margin-top:8px;color:#f97316">${_cm(r.notMoved)} for this job is on Julia’s list and not moved yet.</div>`;
     d += `</div><div style="min-width:0"><div style="font-weight:800;margin-bottom:4px">To finish the job</div>`;
     d += line('Still to collect', _cm(r.toCollect));
     d += line('…of which goes to buckets', '−' + _cm(r.toCollect * r.m.bucketPct), { indent: true });
     d += line('Cost still to pay (subs + materials)', '−' + _cm(r.costToFinish));
     d += line('Left in checking at the end', _cm(r.leftover), { top: true, bold: true, color: pos(r.leftover) });
-    d += `<div class="small muted" style="margin-top:6px">${r.leftover >= 0 ? 'That’s the Flex buffer and card fees, if costs land on budget.' : 'This job will need more money than it brings in. Check the costs or the price.'}</div>`;
-    if (r.available < 0) d += `<div style="margin-top:10px;padding:8px 10px;border-radius:8px;background:#ef53501a;font-size:.8rem">This job has spent ${_cm(-r.available)} more than it has brought in so far. Other jobs’ money is covering it until the next draw.</div>`;
-    if (r.notMoved > 1) d += `<div class="small" style="margin-top:8px;color:#f97316">${_cm(r.notMoved)} for this job is on Julia’s list and not moved yet.</div>`;
+    d += `<div class="small muted" style="margin-top:6px">Cost still to pay = the job’s budget minus everything logged on it (any date). Log old receipts and sub payments with their real dates and this gets accurate without touching the balance above.</div>`;
     d += `</div></div>`;
     html += d;
   }
@@ -13478,25 +13504,14 @@ async function saveOwnerCashBalance() {
   await coll('settings').doc('ownerCash').set({ checkingBalance: _c2(n), checkingBalanceDate: date, updatedBy: conCurrentUser?.email || '' }, { merge: true });
   if (_cashData) { _cashData.balance = _c2(n); _cashData.balanceDate = date; drawOwnerCash(); }
 }
-async function sendCashCatchUp(btn) {
-  if (!_cashData) return;
-  const todo = _cashData.rows.filter(r => r.notSent > 1);
-  const total = todo.reduce((a, r) => a + r.notSent, 0);
-  if (!confirm(`Send Julia ${todo.length} urgent to-do${todo.length === 1 ? '' : 's'} to move ${_cm(total)} out of Regular Checking into the bucket accounts?`)) return;
-  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
-  try {
-    for (const r of todo) {
-      const share = r.notSent / r.m.revenue;
-      const parts = {}; CASH_BUCKETS.forEach(bk => { parts[bk.key] = _c2((r.m.whole[bk.key] || 0) * share); });
-      const t = _c2(Object.values(parts).reduce((a, v) => a + v, 0));
-      const pay = _c2(r.notSent / (r.m.bucketPct || 1));
-      await createBucketTodo(r.job, pay, { parts, total: t, stays: _c2(pay - t) }, 'Catch-up on payments already received:');
-    }
-    await renderOwnerCash(true);
-  } catch (e) { alert('Could not send: ' + e.message); if (btn) { btn.disabled = false; btn.textContent = 'Send catch-up to Julia'; } }
+async function saveOwnerCashOpening(jobId) {
+  const v = document.getElementById('ownerCashOpen')?.value;
+  const n = Number(v); if (v === '' || !isFinite(n)) { alert('Type a number, like 17198.33'); return; }
+  await coll('settings').doc('ownerCash').set({ openings: { [jobId]: _c2(n) } }, { merge: true });
+  await renderOwnerCash(true);
 }
 window.renderOwnerCash = renderOwnerCash; window.ownerCashSelect = ownerCashSelect;
-window.saveOwnerCashBalance = saveOwnerCashBalance; window.sendCashCatchUp = sendCashCatchUp;
+window.saveOwnerCashBalance = saveOwnerCashBalance; window.saveOwnerCashOpening = saveOwnerCashOpening;
 
 // Fires automatically the moment a payment is marked received (see
 // commitMarkPaid below) -- shows the five buckets Travis actually
