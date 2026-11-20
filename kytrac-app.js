@@ -13256,6 +13256,7 @@ function canSeeOwnerCash() {
   return isJTXDCompany() && !window._viewAsRole && CASH_OWNER_EMAILS.has((conCurrentUser?.email || '').toLowerCase());
 }
 const _c2 = v => Math.round((Number(v) || 0) * 100) / 100;
+const _cashName = j => (j.address || jobTitle(j)).split(',')[0].split(/\s+/).slice(0, 3).join(' ');
 const _cm = v => (v < 0 ? '-$' : '$') + Math.abs(_c2(v)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 // Whole-job split from the locked formula (same numbers as the Job Margin sheet).
@@ -13429,7 +13430,7 @@ function drawOwnerCash() {
       <div style="flex:1;min-width:200px;font-size:.82rem"><b>${_cm(notSent)}</b> from payments already received never got split into the buckets.</div>
       <button class="btn-amber" onclick="sendCashCatchUp(this)" style="padding:7px 12px;font-weight:700;font-size:.8rem">Send catch-up to Julia</button></div>`;
   // job toggle
-  html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin:16px 0 10px">${[['all', 'All jobs'], ...rows.map(r => [r.job.id, (r.job.address || jobTitle(r.job)).split(',')[0]])].map(([id, name]) =>
+  html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin:16px 0 10px">${[['all', 'All jobs'], ...rows.map(r => [r.job.id, _cashName(r.job)])].map(([id, name]) =>
     `<button class="btn" onclick="ownerCashSelect('${id}')" style="padding:5px 11px;font-size:.78rem;${_cashSel === id ? 'background:var(--amber);color:#111;border-color:var(--amber);font-weight:800' : ''}">${esc(name)}</button>`).join('')}</div>`;
   if (!rows.length) html += '<div class="small muted">No active job has received money yet.</div>';
   else if (_cashSel === 'all' || !rows.find(r => r.job.id === _cashSel)) {
@@ -13438,7 +13439,7 @@ function drawOwnerCash() {
     html += `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.84rem">
       <thead><tr><th style="text-align:left;padding:6px 8px;font-size:.68rem;text-transform:uppercase;color:var(--muted)">Job</th>${th('Received')}${th('To buckets')}${th('Spent')}${th('Available')}${th('Cost to finish')}${th('Still to collect')}</tr></thead>
       <tbody>${rows.map(r => `<tr style="border-top:1px solid var(--line);cursor:pointer" onclick="ownerCashSelect('${r.job.id}')">
-        <td style="padding:7px 8px;font-weight:700">${esc((r.job.address || jobTitle(r.job)).split(',')[0])}</td>
+        <td style="padding:7px 8px;font-weight:700">${esc(_cashName(r.job))}</td>
         ${td(r.received)}${td(r.toBuckets)}${td(r.spent)}${td(r.available, pos(r.available))}${td(r.costToFinish)}${td(r.toCollect)}</tr>`).join('')}
         <tr style="border-top:2px solid var(--line);font-weight:800"><td style="padding:7px 8px">Total</td>${td(sum('received'))}${td(sum('toBuckets'))}${td(sum('spent'))}${td(sum('available'), pos(sum('available')))}${td(sum('costToFinish'))}${td(sum('toCollect'))}</tr>
       </tbody></table></div>
