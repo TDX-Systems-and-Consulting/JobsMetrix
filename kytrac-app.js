@@ -13389,7 +13389,9 @@ async function cashSinceStart(job, start) {
   if (exp) exp.forEach(d => { const x = d.data(); if (x.receiptId) logged.add(x.receiptId); if (after(_cashDay(x.date) || _cashDay(x.createdAt))) parts['Receipts & expenses'] += Number(x.amount) || 0; });
   if (rcpt) rcpt.forEach(d => { const r = d.data(); if (logged.has(d.id) || r.expenseId) return; if (after(_cashDay(r.date) || _cashDay(r.createdAt))) parts['Receipts & expenses'] += Number(r.amount) || 0; });
   // Cash basis: an "Agreed" sub payment is owed, not spent. It counts the day it's marked Paid.
-  if (pays) pays.forEach(d => { const p = d.data(); if (p.status !== 'Paid') return; if (after(_cashDay(p.paidDate) || _cashDay(p.updatedAt) || _cashDay(p.date))) parts['Sub payments paid'] += Number(p.amount) || 0; });
+  // The payment's own date is the day the money went out (Riverwood's were marked Paid
+  // weeks after the bank sent them); fall back to the day it was marked Paid.
+  if (pays) pays.forEach(d => { const p = d.data(); if (p.status !== 'Paid') return; if (after(_cashDay(p.date) || _cashDay(p.paidDate) || _cashDay(p.updatedAt))) parts['Sub payments paid'] += Number(p.amount) || 0; });
   try {
     const vSnap = await coll('vendors').get();
     await Promise.all(vSnap.docs.map(v => v.ref.collection('bills').where('jobId', '==', job.id).get().then(b => b.forEach(d => {
@@ -13444,7 +13446,7 @@ async function renderOwnerCash(force) {
       });
     }
     rows.sort((a, b) => (b.opening + b.received) - (a.opening + a.received));
-    _cashData = { rows, todos, start, balance: s.checkingBalance, balanceDate: s.checkingBalanceDate || '' };
+    _cashData = { rows, todos, start, balance: s.checkingBalance, balanceDate: s.checkingBalanceDate || '', movedByHand: Number(s.movedByHand) || 0, movedByHandNote: s.movedByHandNote || '' };
     drawOwnerCash();
   } catch (e) {
     body.innerHTML = `<div class="small muted">Couldn’t load cash right now: ${esc(e.message)}</div>`;
@@ -13455,7 +13457,9 @@ function drawOwnerCash() {
   const { rows, balance, balanceDate, start } = _cashData;
   const sum = k => rows.reduce((a, r) => a + (Number(r[k]) || 0), 0);
   const held = rows.reduce((a, r) => a + Math.max(0, r.available), 0);
-  const notMoved = sum('notMoved');
+  // Transfers to the bucket accounts made by hand (not through a to-do) since the start.
+  const byHand = Number(_cashData.movedByHand) || 0;
+  const notMoved = Math.max(0, _c2(sum('notMoved') - byHand));
   const hasBal = balance != null && balance !== '';
   const free = hasBal ? _c2(Number(balance) - held - notMoved) : null;
   const pos = v => v >= 0 ? '#1dbb87' : '#ef5350';
@@ -13467,14 +13471,14 @@ function drawOwnerCash() {
   let html = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
       ${tile('Regular checking', hasBal ? _cm(balance) : '—', 'var(--text)', hasBal ? 'as of ' + esc(balanceDate) : '')}
       ${tile('Held for jobs', _cm(held), 'var(--amber)', 'subs, materials, buffer still owed out')}
-      ${tile('Not moved to buckets yet', _cm(notMoved), notMoved > 1 ? '#f97316' : '#1dbb87', notMoved > 1 ? 'buckets’ share still sitting in checking' : 'all caught up')}
+      ${tile('Not moved to buckets yet', _cm(notMoved), notMoved > 1 ? '#f97316' : '#1dbb87', (notMoved > 1 ? 'buckets’ share still sitting in checking' : 'all caught up') + (byHand ? ' · ' + _cm(byHand) + ' already moved by hand' : ''))}
       ${tile('Truly available', hasBal ? _cm(free) : '—', hasBal ? pos(free) : 'var(--muted)', hasBal ? 'free to spend right now' : 'enter the balance below')}
     </div>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">
       <input id="ownerCashBal" type="number" step="0.01" placeholder="Regular checking balance" value="${hasBal ? esc(String(balance)) : ''}" style="width:170px;padding:6px 9px;border-radius:8px;border:1px solid var(--line);background:var(--input-bg);color:var(--text);font-size:.82rem">
       <button class="btn" onclick="saveOwnerCashBalance()" style="padding:6px 10px;font-size:.78rem">Update balance</button>
       <span class="small muted">Fresh start ${esc(startLbl)}: only money in and out since then counts.</span></div>`;
-  const notSent = rows.reduce((a, r) => a + (r.notSent > 1 ? r.notSent : 0), 0);
+  const notSent = Math.max(0, rows.reduce((a, r) => a + (r.notSent > 1 ? r.notSent : 0), 0) - byHand);
   if (notSent > 1) html += `<div style="margin-top:10px;padding:10px 12px;border:1px solid #f9731655;border-radius:10px;background:#f973160f;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <div style="flex:1;min-width:200px;font-size:.82rem"><b>${_cm(notSent)}</b> of the buckets’ share from payments since ${esc(startLbl)} hasn’t been sent to Julia to move yet.</div>
       <button class="btn-amber" onclick="sendCashCatchUp(this)" style="padding:7px 12px;font-weight:700;font-size:.8rem">Send to Julia</button></div>`;
