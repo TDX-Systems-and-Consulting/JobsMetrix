@@ -13410,7 +13410,7 @@ async function renderOwnerCash(force) {
     const start = s.startDate || BUCKET_TODO_CUTOVER;
     const openings = s.openings || {};
     const jobs = conJobs.filter(j => !['Closed Lost', 'Closed Completed'].includes(j.status));
-    await sweepBucketTodos(jobs, start);
+    await sweepBucketTodos(jobs, start > BUCKET_TODO_CUTOVER ? start : BUCKET_TODO_CUTOVER);
     const todoSnap = await coll('todos').where('source', '==', 'bucket_transfer').get().catch(() => null);
     const todos = todoSnap ? todoSnap.docs.map(d => ({ id: d.id, ...d.data() })) : [];
     const rows = [];
@@ -13427,10 +13427,14 @@ async function renderOwnerCash(force) {
       const matLeft = inf.complete ? 0 : Math.max(0, (Number(inf.matBudget) || 0) - (Number(inf.matSpent) || 0));
       const costToFinish = subsOwed + matLeft;
       const toCollect = Math.max(0, m.revenue - c.receivedAll);
-      const notMoved = todos.filter(t => t.jobId === job.id && !t.done).reduce((a, t) => a + (Number(t.bucketMoveTotal) || 0), 0);
+      const jt = todos.filter(t => t.jobId === job.id && _cashDay(t.createdAt) >= start);
+      const movedDone = jt.filter(t => t.done).reduce((a, t) => a + (Number(t.bucketMoveTotal) || 0), 0);
+      const tasked = jt.reduce((a, t) => a + (Number(t.bucketMoveTotal) || 0), 0);
+      const notMoved = Math.max(0, toBuckets - movedDone);
+      const notSent = Math.max(0, toBuckets - tasked);
       rows.push({
         job, m, opening, hasOpening: job.id in openings, received: c.received, spent: c.spent, spentParts: c.parts,
-        toBuckets, available, costToFinish, subsOwed, matLeft, toCollect, notMoved: _c2(notMoved),
+        toBuckets, available, costToFinish, subsOwed, matLeft, toCollect, notMoved: _c2(notMoved), notSent: _c2(notSent),
         leftover: _c2(available + toCollect * (1 - m.bucketPct) - costToFinish),
       });
     }
@@ -13458,13 +13462,17 @@ function drawOwnerCash() {
   let html = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
       ${tile('Regular checking', hasBal ? _cm(balance) : '—', 'var(--text)', hasBal ? 'as of ' + esc(balanceDate) : '')}
       ${tile('Held for jobs', _cm(held), 'var(--amber)', 'subs, materials, buffer still owed out')}
-      ${tile('Not moved to buckets yet', _cm(notMoved), notMoved > 1 ? '#f97316' : '#1dbb87', notMoved > 1 ? 'open to-dos with Julia' : 'all caught up')}
+      ${tile('Not moved to buckets yet', _cm(notMoved), notMoved > 1 ? '#f97316' : '#1dbb87', notMoved > 1 ? 'buckets’ share still sitting in checking' : 'all caught up')}
       ${tile('Truly available', hasBal ? _cm(free) : '—', hasBal ? pos(free) : 'var(--muted)', hasBal ? 'free to spend right now' : 'enter the balance below')}
     </div>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">
       <input id="ownerCashBal" type="number" step="0.01" placeholder="Regular checking balance" value="${hasBal ? esc(String(balance)) : ''}" style="width:170px;padding:6px 9px;border-radius:8px;border:1px solid var(--line);background:var(--input-bg);color:var(--text);font-size:.82rem">
       <button class="btn" onclick="saveOwnerCashBalance()" style="padding:6px 10px;font-size:.78rem">Update balance</button>
       <span class="small muted">Fresh start ${esc(startLbl)}: only money in and out since then counts.</span></div>`;
+  const notSent = rows.reduce((a, r) => a + (r.notSent > 1 ? r.notSent : 0), 0);
+  if (notSent > 1) html += `<div style="margin-top:10px;padding:10px 12px;border:1px solid #f9731655;border-radius:10px;background:#f973160f;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px;font-size:.82rem"><b>${_cm(notSent)}</b> of the buckets’ share from payments since ${esc(startLbl)} hasn’t been sent to Julia to move yet.</div>
+      <button class="btn-amber" onclick="sendCashCatchUp(this)" style="padding:7px 12px;font-weight:700;font-size:.8rem">Send to Julia</button></div>`;
   html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin:16px 0 10px">${[['all', 'All jobs'], ...rows.map(r => [r.job.id, _cashName(r.job)])].map(([id, name]) =>
     `<button class="btn" onclick="ownerCashSelect('${id}')" style="padding:5px 11px;font-size:.78rem;${_cashSel === id ? 'background:var(--amber);color:#111;border-color:var(--amber);font-weight:800' : ''}">${esc(name)}</button>`).join('')}</div>`;
   if (!rows.length) html += '<div class="small muted">No active job has money yet.</div>';
@@ -13521,8 +13529,25 @@ async function saveOwnerCashOpening(jobId) {
   await coll('settings').doc('ownerCash').set({ openings: { [jobId]: _c2(n) } }, { merge: true });
   await renderOwnerCash(true);
 }
+async function sendCashCatchUp(btn) {
+  if (!_cashData) return;
+  const list = _cashData.rows.filter(r => r.notSent > 1);
+  const total = list.reduce((a, r) => a + r.notSent, 0);
+  if (!confirm(`Send Julia ${list.length} urgent to-do${list.length === 1 ? '' : 's'} to move ${_cm(total)} out of Regular Checking into the bucket accounts?`)) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  try {
+    for (const r of list) {
+      const share = r.notSent / r.m.revenue;
+      const parts = {}; CASH_BUCKETS.forEach(bk => { parts[bk.key] = _c2((r.m.whole[bk.key] || 0) * share); });
+      const t = _c2(Object.values(parts).reduce((a, v) => a + v, 0));
+      const pay = _c2(r.notSent / (r.m.bucketPct || 1));
+      await createBucketTodo(r.job, pay, { parts, total: t, stays: _c2(pay - t) }, 'Payments since ' + _cashData.start + ':');
+    }
+    await renderOwnerCash(true);
+  } catch (e) { alert('Could not send: ' + e.message); if (btn) { btn.disabled = false; btn.textContent = 'Send to Julia'; } }
+}
 window.renderOwnerCash = renderOwnerCash; window.ownerCashSelect = ownerCashSelect;
-window.saveOwnerCashBalance = saveOwnerCashBalance; window.saveOwnerCashOpening = saveOwnerCashOpening;
+window.saveOwnerCashBalance = saveOwnerCashBalance; window.saveOwnerCashOpening = saveOwnerCashOpening; window.sendCashCatchUp = sendCashCatchUp;
 
 // Fires automatically the moment a payment is marked received (see
 // commitMarkPaid below) -- shows the five buckets Travis actually
