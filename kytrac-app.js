@@ -13444,7 +13444,7 @@ async function renderOwnerCash(force) {
       });
     }
     rows.sort((a, b) => (b.opening + b.received) - (a.opening + a.received));
-    _cashData = { rows, todos, start, balance: s.checkingBalance, balanceDate: s.checkingBalanceDate || '' };
+    _cashData = { rows, todos, start, balance: s.checkingBalance, balanceDate: s.checkingBalanceDate || '', cards: Number(s.cardsOwed) || 0 };
     drawOwnerCash();
   } catch (e) {
     body.innerHTML = `<div class="small muted">Couldn’t load cash right now: ${esc(e.message)}</div>`;
@@ -13457,7 +13457,11 @@ function drawOwnerCash() {
   const held = rows.reduce((a, r) => a + Math.max(0, r.available), 0);
   const notMoved = sum('notMoved');
   const hasBal = balance != null && balance !== '';
-  const free = hasBal ? _c2(Number(balance) - held - notMoved) : null;
+  // CARDS_OWED_V1: materials bought on the Bluevine credit cards are already
+  // counted as spent on the job, but the cash is still sitting in checking
+  // until the card is paid — so the card balance is never free money.
+  const cards = Number(_cashData.cards) || 0;
+  const free = hasBal ? _c2(Number(balance) - cards - held - notMoved) : null;
   const pos = v => v >= 0 ? '#1dbb87' : '#ef5350';
   const startLbl = new Date(start + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   const tile = (label, val, color, sub) => `<div style="flex:1 1 150px;min-width:0;padding:12px 14px;border:1px solid var(--line);border-radius:12px">
@@ -13466,13 +13470,15 @@ function drawOwnerCash() {
       ${sub ? `<div style="font-size:.7rem;color:var(--muted);margin-top:2px">${sub}</div>` : ''}</div>`;
   let html = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
       ${tile('Regular checking', hasBal ? _cm(balance) : '—', 'var(--text)', hasBal ? 'as of ' + esc(balanceDate) : '')}
+      ${tile('Owed on credit cards', _cm(cards), cards > 1 ? '#ef5350' : 'var(--muted)', 'already spent, not yet paid from checking')}
       ${tile('Held for jobs', _cm(held), 'var(--amber)', 'subs, materials, buffer still owed out')}
       ${tile('Not moved to buckets yet', _cm(notMoved), notMoved > 1 ? '#f97316' : '#1dbb87', notMoved > 1 ? 'buckets’ share still sitting in checking' : 'all caught up')}
       ${tile('Truly available', hasBal ? _cm(free) : '—', hasBal ? pos(free) : 'var(--muted)', hasBal ? 'free to spend right now' : 'enter the balance below')}
     </div>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">
       <input id="ownerCashBal" type="number" step="0.01" placeholder="Regular checking balance" value="${hasBal ? esc(String(balance)) : ''}" style="width:170px;padding:6px 9px;border-radius:8px;border:1px solid var(--line);background:var(--input-bg);color:var(--text);font-size:.82rem">
-      <button class="btn" onclick="saveOwnerCashBalance()" style="padding:6px 10px;font-size:.78rem">Update balance</button>
+      <input id="ownerCashCards" type="number" step="0.01" placeholder="Credit cards owed (both)" value="${cards ? esc(String(cards)) : ''}" style="width:170px;padding:6px 9px;border-radius:8px;border:1px solid var(--line);background:var(--input-bg);color:var(--text);font-size:.82rem">
+      <button class="btn" onclick="saveOwnerCashBalance()" style="padding:6px 10px;font-size:.78rem">Update</button>
       <span class="small muted">Fresh start ${esc(startLbl)}: only money in and out since then counts.</span></div>`;
   const notSent = rows.reduce((a, r) => a + (r.notSent > 1 ? r.notSent : 0), 0);
   if (notSent > 1) html += `<div style="margin-top:10px;padding:10px 12px;border:1px solid #f9731655;border-radius:10px;background:#f973160f;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -13525,8 +13531,10 @@ async function saveOwnerCashBalance() {
   const v = document.getElementById('ownerCashBal')?.value;
   const n = Number(v); if (v === '' || !isFinite(n)) { alert('Type the balance as a number, like 40054.03'); return; }
   const date = new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-  await coll('settings').doc('ownerCash').set({ checkingBalance: _c2(n), checkingBalanceDate: date, updatedBy: conCurrentUser?.email || '' }, { merge: true });
-  if (_cashData) { _cashData.balance = _c2(n); _cashData.balanceDate = date; drawOwnerCash(); }
+  const cv = document.getElementById('ownerCashCards')?.value;
+  const cards = cv === '' || cv == null ? 0 : Math.abs(Number(cv)) || 0;
+  await coll('settings').doc('ownerCash').set({ checkingBalance: _c2(n), cardsOwed: _c2(cards), checkingBalanceDate: date, updatedBy: conCurrentUser?.email || '' }, { merge: true });
+  if (_cashData) { _cashData.balance = _c2(n); _cashData.cards = _c2(cards); _cashData.balanceDate = date; drawOwnerCash(); }
 }
 async function saveOwnerCashOpening(jobId) {
   const v = document.getElementById('ownerCashOpen')?.value;
