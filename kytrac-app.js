@@ -7866,7 +7866,7 @@ function onSubPayAmountInput() {
 }
 window.onSubPayAmountInput = onSubPayAmountInput;
 
-function saveSubcontractorPayment() {
+async function saveSubcontractorPayment() {
   const jobId = conCurrentJobId;
   if (!jobId) { alert('No job open.'); return; }
   const sel = document.getElementById('subPaySelect');
@@ -7914,6 +7914,12 @@ function saveSubcontractorPayment() {
     updatedAt: firebase.firestore.FieldValue.serverTimestamp()
   };
   const col = coll('jobs').doc(jobId).collection('subcontractorPayments');
+  // CASH_ACCOUNTS_V1: remember the day the money actually went out.
+  if (data.status === 'Paid') {
+    let prev = null;
+    if (payId) { try { prev = (await col.doc(payId).get()).data(); } catch (e) {} }
+    data.paidDate = (prev && prev.status === 'Paid' && prev.paidDate) ? prev.paidDate : new Date().toISOString().split('T')[0];
+  } else data.paidDate = '';
   const promise = payId ? col.doc(payId).update(data)
     : col.add({ ...data, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
   promise.then(() => {
@@ -13373,11 +13379,12 @@ async function cashSinceStart(job, start) {
   const after = d => d && d >= start;
   if (inv) inv.forEach(d => { const x = d.data(); const a = Number(x.amtPaid) || 0; receivedAll += a; if (after(_cashDay(x.paidDate))) received += a; });
   if (cos) cos.forEach(d => { const c = d.data(); if (c.invoiceId) return; const a = Number(c.amtPaid) || 0; receivedAll += a; if (after(_cashDay(c.paidDate))) received += a; });
-  const parts = { 'Receipts & expenses': 0, 'Sub payments': 0, 'Vendor bills paid': 0 };
+  const parts = { 'Receipts & expenses': 0, 'Sub payments paid': 0, 'Vendor bills paid': 0 };
   const logged = new Set();
   if (exp) exp.forEach(d => { const x = d.data(); if (x.receiptId) logged.add(x.receiptId); if (after(_cashDay(x.date) || _cashDay(x.createdAt))) parts['Receipts & expenses'] += Number(x.amount) || 0; });
   if (rcpt) rcpt.forEach(d => { const r = d.data(); if (logged.has(d.id) || r.expenseId) return; if (after(_cashDay(r.date) || _cashDay(r.createdAt))) parts['Receipts & expenses'] += Number(r.amount) || 0; });
-  if (pays) pays.forEach(d => { const p = d.data(); if (/cancel|void/i.test(p.status || '')) return; if (after(_cashDay(p.date) || _cashDay(p.createdAt))) parts['Sub payments'] += Number(p.amount) || 0; });
+  // Cash basis: an "Agreed" sub payment is owed, not spent. It counts the day it's marked Paid.
+  if (pays) pays.forEach(d => { const p = d.data(); if (p.status !== 'Paid') return; if (after(_cashDay(p.paidDate) || _cashDay(p.updatedAt) || _cashDay(p.date))) parts['Sub payments paid'] += Number(p.amount) || 0; });
   try {
     const vSnap = await coll('vendors').get();
     await Promise.all(vSnap.docs.map(v => v.ref.collection('bills').where('jobId', '==', job.id).get().then(b => b.forEach(d => {
@@ -13415,13 +13422,15 @@ async function renderOwnerCash(force) {
       if (!m) continue;
       const toBuckets = _c2(c.received * m.bucketPct);
       const available = _c2(opening + c.received - toBuckets - c.spent);
-      const spentAll = Number(m.info.spentToDate) || 0;
-      const costToFinish = Math.max(0, m.laborCost + m.materialsCost - spentAll);
+      const inf = m.info;
+      const subsOwed = Math.max(0, (Number(inf.subCommitted) || m.laborCost) - (Number(inf.subPaid) || 0));
+      const matLeft = inf.complete ? 0 : Math.max(0, (Number(inf.matBudget) || 0) - (Number(inf.matSpent) || 0));
+      const costToFinish = subsOwed + matLeft;
       const toCollect = Math.max(0, m.revenue - c.receivedAll);
       const notMoved = todos.filter(t => t.jobId === job.id && !t.done).reduce((a, t) => a + (Number(t.bucketMoveTotal) || 0), 0);
       rows.push({
         job, m, opening, hasOpening: job.id in openings, received: c.received, spent: c.spent, spentParts: c.parts,
-        toBuckets, available, costToFinish, toCollect, notMoved: _c2(notMoved),
+        toBuckets, available, costToFinish, subsOwed, matLeft, toCollect, notMoved: _c2(notMoved),
         leftover: _c2(available + toCollect * (1 - m.bucketPct) - costToFinish),
       });
     }
@@ -13488,9 +13497,11 @@ function drawOwnerCash() {
     d += `</div><div style="min-width:0"><div style="font-weight:800;margin-bottom:4px">To finish the job</div>`;
     d += line('Still to collect', _cm(r.toCollect));
     d += line('…of which goes to buckets', '−' + _cm(r.toCollect * r.m.bucketPct), { indent: true });
-    d += line('Cost still to pay (subs + materials)', '−' + _cm(r.costToFinish));
+    d += line('Cost still to pay', '−' + _cm(r.costToFinish));
+    d += line('Subs still owed (agreed − marked Paid)', _cm(r.subsOwed), { indent: true });
+    d += line('Materials budget not bought yet', _cm(r.matLeft), { indent: true });
     d += line('Left in checking at the end', _cm(r.leftover), { top: true, bold: true, color: pos(r.leftover) });
-    d += `<div class="small muted" style="margin-top:6px">Cost still to pay = the job’s budget minus everything logged on it (any date). Log old receipts and sub payments with their real dates and this gets accurate without touching the balance above.</div>`;
+    d += `<div class="small muted" style="margin-top:6px">Subs count as paid only once their payment is marked Paid. Log old receipts with their real dates and this gets accurate without touching the balance above.</div>`;
     d += `</div></div>`;
     html += d;
   }
