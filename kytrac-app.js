@@ -9340,6 +9340,7 @@ async function markCOPaid(coId) {
       paidAt: paidDate,
       paidMarkedBy: conCurrentUser ? (myName() || conCurrentUser.email) : 'Unknown',
     });
+    if (amt > 0) syncBucketTodo(conCurrentJobId, coll('jobs').doc(conCurrentJobId).collection('changeorders').doc(coId), Math.abs(amt), 'Change order ' + (co.title || '')).catch(e => console.warn('bucket to-do:', e.message));
     if (typeof logInvoiceActivity === 'function') logInvoiceActivity(conCurrentJobId, 'co_paid', `Change order paid (${how.trim() || 'QuickBooks'}) — ${co.title || ''}: $${Math.abs(amt).toLocaleString()}`);
     const job = conJobs.find(j => j.id === conCurrentJobId);
     if (job && typeof refreshJobFinancials === 'function') refreshJobFinancials(job);
@@ -11348,6 +11349,7 @@ function renderHomeDashboard() {
   toggle('statEstPendingTile', fullAccess);
   toggle('statCloseRateTile', fullAccess);
   toggle('homePipelineCard', fullAccess);
+  if (typeof renderOwnerCash === 'function') renderOwnerCash();   // CASH_ACCOUNTS_V1 (Travis only)
   // "Labor Eff" tile referenced here (statLaborEffTile) doesn't exist
   // anywhere in the HTML -- harmless (nothing to leak since nothing
   // renders), but dead/orphaned code, removed rather than left sitting
@@ -13230,6 +13232,271 @@ async function getJobStripeFeesTotal(jobId) {
 }
 window.getJobStripeFeesTotal = getJobStripeFeesTotal;
 
+// ════════════════════════════════════════════════════
+// ── CASH_ACCOUNTS_V1 (Travis 11/20/26) ──
+// "I see $34,000 in the bank but have zero idea how much is rent, how much
+// is to pay people." Every payment that lands in Regular Checking gets
+// split the moment it's marked paid: the company's share (Overhead,
+// Payroll = Jason's pay, Marketing, Taxes, Retained Earnings) is moved out
+// to its own Bluevine account by the Office Manager (urgent to-do with the
+// exact amounts), and the job-cost share (subs, materials, Flex, card
+// fees) stays in checking. Travis's dashboard then shows, per job, how much
+// of the money sitting in checking still belongs to that job.
+// ════════════════════════════════════════════════════
+const CASH_OWNER_EMAILS = new Set(['travis@7pillarsgroup.org']);
+const BUCKET_TODO_CUTOVER = '2026-11-20';   // payments before this go through the one-time catch-up
+const CASH_BUCKETS = [
+  { key: 'overhead',  label: 'Overhead',          note: 'rent, utilities, insurance, software' },
+  { key: 'payroll',   label: 'Payroll',           note: "Jason's commission + superintendent + consultant pay" },
+  { key: 'marketing', label: 'Marketing',         note: '' },
+  { key: 'taxes',     label: 'Taxes',             note: '' },
+  { key: 'retained',  label: 'Retained Earnings', note: 'profit, incl. owner pay' },
+];
+function canSeeOwnerCash() {
+  return isJTXDCompany() && !window._viewAsRole && CASH_OWNER_EMAILS.has((conCurrentUser?.email || '').toLowerCase());
+}
+const _c2 = v => Math.round((Number(v) || 0) * 100) / 100;
+const _cm = v => (v < 0 ? '-$' : '$') + Math.abs(_c2(v)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// Whole-job split from the locked formula (same numbers as the Job Margin sheet).
+async function getJobCashModel(jobId) {
+  const b = await getJobMarginBoth(jobId, true);
+  if (!b) return null;
+  const t = b.tmA, info = b.info || {};
+  const whole = {
+    overhead: t.overhead, payroll: t.jasonTotal, marketing: t.marketing,
+    taxes: t.taxes, retained: t.retainedEarnings,
+  };
+  const bucketsTotal = Object.values(whole).reduce((a, v) => a + (Number(v) || 0), 0);
+  const revenue = Number(t.revenue) || 0;
+  return {
+    job: b.job, revenue, whole, bucketsTotal,
+    bucketPct: revenue > 0 ? bucketsTotal / revenue : 0,
+    laborCost: Number(t.realLaborCost) || 0,
+    materialsCost: Number(t.materialsCostReal) || 0,
+    flex: Number(t.flex) || 0, fees: Number(t.processingFees) || 0,
+    info,
+  };
+}
+window.getJobCashModel = getJobCashModel;
+
+// Split one payment: what moves out of checking, and what stays for the job.
+async function computePaymentTransfer(job, amount) {
+  const m = await getJobCashModel(job.id);
+  if (!m || !(m.revenue > 0)) return null;
+  const share = amount / m.revenue;
+  const parts = {};
+  CASH_BUCKETS.forEach(bk => { parts[bk.key] = _c2((m.whole[bk.key] || 0) * share); });
+  const total = _c2(Object.values(parts).reduce((a, v) => a + v, 0));
+  return { parts, total, stays: _c2(amount - total), share, model: m };
+}
+window.computePaymentTransfer = computePaymentTransfer;
+
+// Creates the Office Manager's urgent "move this money" to-do for whatever
+// part of a payment hasn't had one yet. `ref` is the invoice (or change
+// order) doc; bucketTodoAmt on it records how much has been handed off, so
+// a partial payment, a later top-up, or a second device never doubles it.
+async function syncBucketTodo(jobId, ref, paidAmount, label) {
+  if (!isJTXDCompany()) return null;
+  const snap = await ref.get(); if (!snap.exists) return null;
+  const done = Number(snap.data().bucketTodoAmt) || 0;
+  const delta = _c2((Number(paidAmount) || 0) - done);
+  if (delta < 1) return null;
+  const job = conJobs.find(j => j.id === jobId); if (!job) return null;
+  const tr = await computePaymentTransfer(job, delta); if (!tr) return null;
+  await ref.update({ bucketTodoAmt: _c2(done + delta) });     // claim first so two devices don't both write
+  return createBucketTodo(job, delta, tr, label);
+}
+async function createBucketTodo(job, amount, tr, label) {
+  await loadNotifyRouting();
+  const who = hatPersonClient('office');
+  const jobLabel = jobTitle(job);
+  const lines = CASH_BUCKETS.filter(bk => tr.parts[bk.key] >= 0.01)
+    .map(bk => `→ ${bk.label}: ${_cm(tr.parts[bk.key])}`);
+  lines.push(`Leave ${_cm(tr.stays)} in Regular Checking for this job (subs, materials, buffer)`);
+  const today = new Date().toISOString().split('T')[0];
+  const ref = await coll('todos').add({
+    text: `🚨 Move ${_cm(tr.total)} out of Regular Checking — ${label || 'payment'} ${_cm(amount)}, ${jobLabel}`,
+    details: lines,
+    priority: 'high', urgent: true, dueDate: today,
+    jobId: job.id, jobName: jobLabel,
+    assignee: who.email, assigneeName: who.name, hat: 'office',
+    done: false, source: 'bucket_transfer',
+    bucketMoveTotal: tr.total, bucketParts: tr.parts, bucketPaymentAmt: _c2(amount),
+    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    createdBy: conCurrentUser?.email || '', createdByName: myName() || conCurrentUser?.email || '',
+  });
+  if (typeof logInvoiceActivity === 'function') logInvoiceActivity(job.id, 'bucket_todo', `Bucket transfer to-do sent to ${who.name || 'the office'}: move ${_cm(tr.total)} out of checking.`);
+  return ref.id;
+}
+window.syncBucketTodo = syncBucketTodo;
+
+// Catches payments that were marked paid somewhere other than the Mark Paid
+// button (Stripe, QuickBooks, Xero sync). Runs when Travis's dashboard loads.
+async function sweepBucketTodos(jobs) {
+  for (const job of jobs) {
+    try {
+      const inv = await coll('jobs').doc(job.id).collection('invoices').get();
+      for (const d of inv.docs) {
+        const x = d.data();
+        if (!(Number(x.amtPaid) > 0) || (x.paidDate || '') < BUCKET_TODO_CUTOVER) continue;
+        await syncBucketTodo(job.id, d.ref, x.amtPaid, 'Invoice ' + (x.number || '')).catch(() => {});
+      }
+    } catch (e) {}
+  }
+}
+
+// ── The dashboard card (Travis only) ──
+let _cashSel = 'all', _cashData = null, _cashLoading = false;
+async function renderOwnerCash(force) {
+  const card = document.getElementById('ownerCashCard');
+  if (!card) return;
+  if (!canSeeOwnerCash()) { card.style.display = 'none'; return; }
+  card.style.display = '';
+  const body = document.getElementById('ownerCashBody');
+  if (_cashData && !force) { drawOwnerCash(); return; }
+  if (_cashLoading) return;
+  _cashLoading = true;
+  body.innerHTML = '<div class="small muted" style="padding:10px 0">Adding up every job’s money…</div>';
+  try {
+    const jobs = conJobs.filter(j => !['Closed Lost', 'Closed Completed'].includes(j.status));
+    await sweepBucketTodos(jobs);
+    const [todoSnap, settSnap] = await Promise.all([
+      coll('todos').where('source', '==', 'bucket_transfer').get().catch(() => null),
+      coll('settings').doc('ownerCash').get().catch(() => null),
+    ]);
+    const todos = todoSnap ? todoSnap.docs.map(d => ({ id: d.id, ...d.data() })) : [];
+    const rows = [];
+    for (const job of jobs) {
+      const [inv, cos] = await Promise.all([
+        coll('jobs').doc(job.id).collection('invoices').get().catch(() => null),
+        coll('jobs').doc(job.id).collection('changeorders').get().catch(() => null),
+      ]);
+      let received = 0;
+      if (inv) inv.forEach(d => { received += Number(d.data().amtPaid) || 0; });
+      if (cos) cos.forEach(d => { const c = d.data(); if (!c.invoiceId) received += Number(c.amtPaid) || 0; });
+      if (received < 1) continue;
+      const m = await getJobCashModel(job.id);
+      if (!m) continue;
+      const info = m.info;
+      const spent = Number(info.spentToDate) || 0;
+      const toBuckets = _c2(received * m.bucketPct);
+      const jobTodos = todos.filter(t => t.jobId === job.id);
+      const tasked = jobTodos.reduce((a, t) => a + (Number(t.bucketMoveTotal) || 0), 0);
+      const notMoved = jobTodos.filter(t => !t.done).reduce((a, t) => a + (Number(t.bucketMoveTotal) || 0), 0);
+      const costToFinish = Math.max(0, m.laborCost + m.materialsCost - spent);
+      const toCollect = Math.max(0, m.revenue - received);
+      const available = _c2(received - toBuckets - spent);
+      rows.push({
+        job, m, received, spent, toBuckets, available, costToFinish, toCollect,
+        notSent: _c2(toBuckets - tasked), notMoved: _c2(notMoved),
+        leftover: _c2(available + toCollect * (1 - m.bucketPct) - costToFinish),
+        spentParts: { 'Vendor bills paid': info.billsPaid, 'Receipts & expenses': info.expenses, 'Sub payments entered': info.subPaymentsTotal, 'Hourly labor': info.hourlyLabor },
+      });
+    }
+    rows.sort((a, b) => b.received - a.received);
+    const s = settSnap && settSnap.exists ? settSnap.data() : {};
+    _cashData = { rows, todos, balance: s.checkingBalance, balanceDate: s.checkingBalanceDate || '' };
+    drawOwnerCash();
+  } catch (e) {
+    body.innerHTML = `<div class="small muted">Couldn’t load cash right now: ${esc(e.message)}</div>`;
+  } finally { _cashLoading = false; }
+}
+function drawOwnerCash() {
+  const body = document.getElementById('ownerCashBody'); if (!body || !_cashData) return;
+  const { rows, balance, balanceDate } = _cashData;
+  const sum = k => rows.reduce((a, r) => a + (Number(r[k]) || 0), 0);
+  const held = rows.reduce((a, r) => a + Math.max(0, r.available), 0);
+  const notMoved = sum('notMoved'), notSent = rows.reduce((a, r) => a + Math.max(0, r.notSent), 0);
+  const hasBal = balance != null && balance !== '';
+  const free = hasBal ? _c2(Number(balance) - held - notMoved - notSent) : null;
+  const pos = v => v >= 0 ? '#1dbb87' : '#ef5350';
+  const tile = (label, val, color, sub) => `<div style="flex:1 1 150px;min-width:0;padding:12px 14px;border:1px solid var(--line);border-radius:12px">
+      <div style="font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700">${label}</div>
+      <div style="font-size:1.25rem;font-weight:900;color:${color};font-variant-numeric:tabular-nums;margin-top:2px">${val}</div>
+      ${sub ? `<div style="font-size:.7rem;color:var(--muted);margin-top:2px">${sub}</div>` : ''}</div>`;
+  const balInput = `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">
+      <input id="ownerCashBal" type="number" step="0.01" placeholder="Regular checking balance" value="${hasBal ? esc(String(balance)) : ''}" style="width:170px;padding:6px 9px;border-radius:8px;border:1px solid var(--line);background:var(--input-bg);color:var(--text);font-size:.82rem">
+      <button class="btn" onclick="saveOwnerCashBalance()" style="padding:6px 10px;font-size:.78rem">Save</button>
+      <span class="small muted">${hasBal ? 'as of ' + esc(balanceDate) : 'type today’s Bluevine Checking balance'}</span></div>`;
+  let html = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      ${tile('Regular checking', hasBal ? _cm(balance) : '—', 'var(--text)', '')}
+      ${tile('Held for jobs', _cm(held), 'var(--amber)', 'subs, materials, buffer still owed out')}
+      ${tile('Not moved to buckets yet', _cm(notMoved + notSent), (notMoved + notSent) > 1 ? '#f97316' : '#1dbb87', notSent > 1 ? _cm(notSent) + ' not even sent to Julia yet' : 'open to-dos with Julia')}
+      ${tile('Truly available', hasBal ? _cm(free) : '—', hasBal ? pos(free) : 'var(--muted)', hasBal ? 'free to spend right now' : 'enter the balance below')}
+    </div>${balInput}`;
+  if (notSent > 1) html += `<div style="margin-top:10px;padding:10px 12px;border:1px solid #f9731655;border-radius:10px;background:#f973160f;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px;font-size:.82rem"><b>${_cm(notSent)}</b> from payments already received never got split into the buckets.</div>
+      <button class="btn-amber" onclick="sendCashCatchUp(this)" style="padding:7px 12px;font-weight:700;font-size:.8rem">Send catch-up to Julia</button></div>`;
+  // job toggle
+  html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin:16px 0 10px">${[['all', 'All jobs'], ...rows.map(r => [r.job.id, (r.job.address || jobTitle(r.job)).split(',')[0]])].map(([id, name]) =>
+    `<button class="btn" onclick="ownerCashSelect('${id}')" style="padding:5px 11px;font-size:.78rem;${_cashSel === id ? 'background:var(--amber);color:#111;border-color:var(--amber);font-weight:800' : ''}">${esc(name)}</button>`).join('')}</div>`;
+  if (!rows.length) html += '<div class="small muted">No active job has received money yet.</div>';
+  else if (_cashSel === 'all' || !rows.find(r => r.job.id === _cashSel)) {
+    const th = s => `<th style="text-align:right;padding:6px 8px;font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);white-space:nowrap">${s}</th>`;
+    const td = (v, c) => `<td style="text-align:right;padding:7px 8px;font-variant-numeric:tabular-nums;white-space:nowrap;${c ? 'color:' + c + ';font-weight:800' : ''}">${_cm(v)}</td>`;
+    html += `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.84rem">
+      <thead><tr><th style="text-align:left;padding:6px 8px;font-size:.68rem;text-transform:uppercase;color:var(--muted)">Job</th>${th('Received')}${th('To buckets')}${th('Spent')}${th('Available')}${th('Cost to finish')}${th('Still to collect')}</tr></thead>
+      <tbody>${rows.map(r => `<tr style="border-top:1px solid var(--line);cursor:pointer" onclick="ownerCashSelect('${r.job.id}')">
+        <td style="padding:7px 8px;font-weight:700">${esc((r.job.address || jobTitle(r.job)).split(',')[0])}</td>
+        ${td(r.received)}${td(r.toBuckets)}${td(r.spent)}${td(r.available, pos(r.available))}${td(r.costToFinish)}${td(r.toCollect)}</tr>`).join('')}
+        <tr style="border-top:2px solid var(--line);font-weight:800"><td style="padding:7px 8px">Total</td>${td(sum('received'))}${td(sum('toBuckets'))}${td(sum('spent'))}${td(sum('available'), pos(sum('available')))}${td(sum('costToFinish'))}${td(sum('toCollect'))}</tr>
+      </tbody></table></div>
+      <div class="small muted" style="margin-top:8px">Available = received − the buckets’ share − everything spent on the job. Tap a job for the detail.</div>`;
+  } else {
+    const r = rows.find(x => x.job.id === _cashSel);
+    const line = (label, v, opts) => `<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;${opts && opts.top ? 'border-top:1px solid var(--line);margin-top:4px;' : ''}${opts && opts.indent ? 'padding-left:16px;font-size:.8rem;color:var(--muted);' : ''}${opts && opts.bold ? 'font-weight:800;' : ''}"><span>${label}</span><span style="font-variant-numeric:tabular-nums;${opts && opts.color ? 'color:' + opts.color : ''}">${v}</span></div>`;
+    const sharePct = (r.m.bucketPct * 100).toFixed(1);
+    let d = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px">`;
+    d += `<div style="min-width:0"><div style="font-weight:800;margin-bottom:4px">Money for this job</div>`;
+    d += line('Contract (with approved change orders)', _cm(r.m.revenue));
+    d += line('Received so far', _cm(r.received), { bold: true });
+    d += line(`Buckets’ share (${sharePct}% of every payment)`, '−' + _cm(r.toBuckets));
+    CASH_BUCKETS.forEach(bk => { const v = r.m.revenue ? (r.m.whole[bk.key] || 0) * r.received / r.m.revenue : 0; d += line(bk.label, _cm(v), { indent: true }); });
+    d += line('Spent on the job', '−' + _cm(r.spent));
+    Object.entries(r.spentParts).forEach(([k, v]) => { if (Number(v) >= 0.01) d += line(k, _cm(v), { indent: true }); });
+    d += line('Available for this job now', _cm(r.available), { top: true, bold: true, color: pos(r.available) });
+    d += `</div><div style="min-width:0"><div style="font-weight:800;margin-bottom:4px">To finish the job</div>`;
+    d += line('Still to collect', _cm(r.toCollect));
+    d += line('…of which goes to buckets', '−' + _cm(r.toCollect * r.m.bucketPct), { indent: true });
+    d += line('Cost still to pay (subs + materials)', '−' + _cm(r.costToFinish));
+    d += line('Left in checking at the end', _cm(r.leftover), { top: true, bold: true, color: pos(r.leftover) });
+    d += `<div class="small muted" style="margin-top:6px">${r.leftover >= 0 ? 'That’s the Flex buffer and card fees, if costs land on budget.' : 'This job will need more money than it brings in. Check the costs or the price.'}</div>`;
+    if (r.available < 0) d += `<div style="margin-top:10px;padding:8px 10px;border-radius:8px;background:#ef53501a;font-size:.8rem">This job has spent ${_cm(-r.available)} more than it has brought in so far. Other jobs’ money is covering it until the next draw.</div>`;
+    if (r.notMoved > 1) d += `<div class="small" style="margin-top:8px;color:#f97316">${_cm(r.notMoved)} for this job is on Julia’s list and not moved yet.</div>`;
+    d += `</div></div>`;
+    html += d;
+  }
+  body.innerHTML = html;
+}
+function ownerCashSelect(id) { _cashSel = id; drawOwnerCash(); }
+async function saveOwnerCashBalance() {
+  const v = document.getElementById('ownerCashBal')?.value;
+  const n = Number(v); if (v === '' || !isFinite(n)) { alert('Type the balance as a number, like 40054.03'); return; }
+  const date = new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  await coll('settings').doc('ownerCash').set({ checkingBalance: _c2(n), checkingBalanceDate: date, updatedBy: conCurrentUser?.email || '' }, { merge: true });
+  if (_cashData) { _cashData.balance = _c2(n); _cashData.balanceDate = date; drawOwnerCash(); }
+}
+async function sendCashCatchUp(btn) {
+  if (!_cashData) return;
+  const todo = _cashData.rows.filter(r => r.notSent > 1);
+  const total = todo.reduce((a, r) => a + r.notSent, 0);
+  if (!confirm(`Send Julia ${todo.length} urgent to-do${todo.length === 1 ? '' : 's'} to move ${_cm(total)} out of Regular Checking into the bucket accounts?`)) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  try {
+    for (const r of todo) {
+      const share = r.notSent / r.m.revenue;
+      const parts = {}; CASH_BUCKETS.forEach(bk => { parts[bk.key] = _c2((r.m.whole[bk.key] || 0) * share); });
+      const t = _c2(Object.values(parts).reduce((a, v) => a + v, 0));
+      const pay = _c2(r.notSent / (r.m.bucketPct || 1));
+      await createBucketTodo(r.job, pay, { parts, total: t, stays: _c2(pay - t) }, 'Catch-up on payments already received:');
+    }
+    await renderOwnerCash(true);
+  } catch (e) { alert('Could not send: ' + e.message); if (btn) { btn.disabled = false; btn.textContent = 'Send catch-up to Julia'; } }
+}
+window.renderOwnerCash = renderOwnerCash; window.ownerCashSelect = ownerCashSelect;
+window.saveOwnerCashBalance = saveOwnerCashBalance; window.sendCashCatchUp = sendCashCatchUp;
+
 // Fires automatically the moment a payment is marked received (see
 // commitMarkPaid below) -- shows the five buckets Travis actually
 // moves in the bank for THIS payment specifically (Materials and Flex
@@ -13240,31 +13507,25 @@ window.getJobStripeFeesTotal = getJobStripeFeesTotal;
 // sendInvoiceSplitToPlannerXD, just against the correct formula.
 async function showPaymentBucketBreakdown(job, paymentAmount) {
   try {
-    const full = await computeLockedBucketSplit(job);
-    const share = full.revenue > 0 ? paymentAmount / full.revenue : 0;
-    const scale = v => Math.round(v * share * 100) / 100;
-    const parts = {
-      payroll: scale(full.labor),
-      overhead: scale(full.overhead),
-      marketing: scale(full.marketing),
-      taxes: scale(full.taxes),
-      retainedEarnings: scale(full.retainedEarnings),
-    };
+    // CASH_ACCOUNTS_V1: same split as the Office Manager's transfer to-do.
+    const tr = await computePaymentTransfer(job, paymentAmount);
+    if (!tr) return;
     const fmt = v => '$' + v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
     const existing = document.getElementById('paymentBucketModal');
     if (existing) existing.remove();
     const modal = document.createElement('div');
     modal.id = 'paymentBucketModal';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px';
+    const who = (typeof hatPersonClient === 'function' && hatPersonClient('office').name) || 'the office';
     modal.innerHTML = `
       <div style="background:#0d1f35;border:1px solid var(--line);border-radius:16px;padding:28px;max-width:440px;width:100%">
-        <div style="font-size:1.1rem;font-weight:800;color:#eaf0fb;margin-bottom:4px">💰 Move to Sub-Accounts</div>
-        <div style="font-size:.8rem;color:var(--muted);margin-bottom:20px">${fmt(paymentAmount)} received (${(share*100).toFixed(1)}% of job) — ${esc(job.address || job.name || 'Job')}</div>
-        <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px">
-          ${[['Payroll (Labor)', parts.payroll], ['Overhead', parts.overhead], ['Marketing', parts.marketing], ['Taxes', parts.taxes], ['Retained Earnings', parts.retainedEarnings]]
-            .map(([label, amt]) => `<div style="display:flex;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,.03);border-radius:8px"><span style="color:#cbd5e1;font-size:.85rem">${label}</span><span style="color:#eaf0fb;font-weight:700;font-size:.9rem">${fmt(amt)}</span></div>`).join('')}
+        <div style="font-size:1.1rem;font-weight:800;color:#eaf0fb;margin-bottom:4px">💰 Move ${fmt(tr.total)} out of Regular Checking</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-bottom:20px">${fmt(paymentAmount)} received (${(tr.share*100).toFixed(1)}% of job) — ${esc(job.address || job.name || 'Job')}</div>
+        <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px">
+          ${CASH_BUCKETS.map(bk => `<div style="display:flex;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,.03);border-radius:8px"><span style="color:#cbd5e1;font-size:.85rem">${bk.label}</span><span style="color:#eaf0fb;font-weight:700;font-size:.9rem">${fmt(tr.parts[bk.key])}</span></div>`).join('')}
+          <div style="display:flex;justify-content:space-between;padding:8px 12px;border:1px dashed var(--line);border-radius:8px"><span style="color:#cbd5e1;font-size:.85rem">Stays in checking for this job</span><span style="color:#eaf0fb;font-weight:700;font-size:.9rem">${fmt(tr.stays)}</span></div>
         </div>
-        <div style="font-size:.7rem;color:var(--muted);font-style:italic;margin-bottom:18px">Materials and Flex stay in Regular Checking — not listed here, nothing to transfer for either.</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-bottom:18px">${isJTXDCompany() ? esc(who) + ' gets an urgent to-do with these exact amounts.' : 'Subs, materials and the Flex buffer stay in checking.'}</div>
         <button onclick="document.getElementById('paymentBucketModal').remove()" class="btn-amber" style="width:100%;padding:10px;font-weight:700">Got it</button>
       </div>`;
     document.body.appendChild(modal);
@@ -13382,6 +13643,7 @@ async function commitMarkPaid(jobId, invId, total) {
     // (subcontractor to-dos, estimate-tree flagging, CO line-item
     // application) so it doesn't wait behind any of that.
     if (job && total > 0) showPaymentBucketBreakdown(job, total);
+    if (job && total > 0) syncBucketTodo(jobId, coll('jobs').doc(jobId).collection('invoices').doc(invId), total, 'Invoice ' + (invData.number || '')).catch(e => console.warn('bucket to-do:', e.message));
 
     // 1c. For every subcontractor payment logged on this job that isn't
     // marked Paid yet, create a To-Do ("Pay Domingo Handyman LLC...")
@@ -16430,10 +16692,12 @@ function renderTodos() {
       <div style="flex:1;min-width:0">
         <div style="display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap">
           <span style="font-size:.88rem;font-weight:${todo.done?'400':'600'};color:${todo.done?'var(--muted)':'#eaf0fb'};${todo.done?'text-decoration:line-through':''};flex:1">${esc(todo.text||'')}</span>
+          ${todo.urgent && !todo.done?`<span style="font-size:.68rem;background:#ef5350;color:#fff;border-radius:999px;padding:1px 7px;font-weight:800;flex-shrink:0">URGENT</span>`:''}
           ${todo.priority==='high'?`<span style="font-size:.68rem;background:#ef535022;color:#fca5a5;border:1px solid #ef535044;border-radius:999px;padding:1px 6px;font-weight:700;flex-shrink:0">HIGH</span>`:''}
           ${todo.priority==='med'?`<span style="font-size:.68rem;background:#f9731622;color:#fed7aa;border:1px solid #f9731644;border-radius:999px;padding:1px 6px;font-weight:700;flex-shrink:0">MED</span>`:''}
           ${todoHatTag(todo)}
         </div>
+        ${Array.isArray(todo.details) && todo.details.length ? `<div style="margin-top:6px;padding:8px 10px;border-radius:8px;background:rgba(239,83,80,.06);border:1px solid rgba(239,83,80,.18);font-size:.8rem;line-height:1.55;font-variant-numeric:tabular-nums;${todo.done?'opacity:.55':''}">${todo.details.map(l => `<div>${esc(l)}</div>`).join('')}</div>` : ''}
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px">
           ${linkedJob?`<span style="font-size:.72rem;color:var(--amber)">🔧 ${esc(jobTitle(linkedJob))}</span>`:''}
           ${(todo.assignee||(todo.assignees||[]).length)?`<span style="font-size:.72rem;color:var(--muted)">👤 ${esc(todo.assigneeName||todo.assignee||((todo.assignees||[])[0]||{}).name||'')}</span>`:''}

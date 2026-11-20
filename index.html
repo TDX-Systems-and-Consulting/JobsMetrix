@@ -1434,6 +1434,15 @@
         </div>
       </div>
 
+      <!-- CASH_ACCOUNTS_V1: Travis only -->
+      <div class="kt-card" id="ownerCashCard" style="margin-bottom:16px;display:none">
+        <div class="kt-card-head" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+          <h3>💵 Cash Accounts <span style="font-size:.72rem;font-weight:500;color:var(--muted)">· only you see this</span></h3>
+          <button class="btn" onclick="renderOwnerCash(true)" style="padding:5px 11px;font-size:.78rem">⟳ Refresh</button>
+        </div>
+        <div id="ownerCashBody" style="padding:4px 16px 16px"></div>
+      </div>
+
       <!-- Pipeline — full width narrow strip -->
       <div class="kt-card" id="homePipelineCard" style="margin-bottom:16px">
         <div class="kt-card-head"><h3>📊 Pipeline</h3></div>
@@ -5315,7 +5324,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202611182313"></script>
+<script src="kytrac-app.js?v=202611201547"></script>
 <script src="kytlead.js?v=202611111110"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
