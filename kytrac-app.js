@@ -13269,18 +13269,23 @@ const _cm = v => (v < 0 ? '-$' : '$') + Math.abs(_c2(v)).toLocaleString(undefine
 async function getJobCashModel(jobId) {
   const b = await getJobMarginBoth(jobId, true);
   if (!b) return null;
-  const t = b.tmA, info = b.info || {};
-  const whole = {
-    overhead: t.overhead, payroll: t.jasonTotal, marketing: t.marketing,
-    taxes: t.taxes, retained: t.retainedEarnings,
-  };
-  const bucketsTotal = Object.values(whole).reduce((a, v) => a + (Number(v) || 0), 0);
+  const info = b.info || {};
+  // Use whichever of plan (estimate) or actual costs leaves MORE in checking
+  // for the job. Mid-job the "actual" side only knows the subs entered so far,
+  // which makes the job look more profitable than it is (Royaltrail showed
+  // 40% to buckets with one $515 sub entered); once costs run over, actual wins.
+  const split = t => ({ overhead: t.overhead, payroll: t.jasonTotal, marketing: t.marketing, taxes: t.taxes, retained: t.retainedEarnings });
+  const tot = w => Object.values(w).reduce((a, v) => a + (Number(v) || 0), 0);
+  const useA = b.tmE ? tot(split(b.tmA)) <= tot(split(b.tmE)) : true;
+  const t = useA ? b.tmA : b.tmE;
+  const whole = split(t);
+  const bucketsTotal = tot(whole);
   const revenue = Number(t.revenue) || 0;
   return {
     job: b.job, revenue, whole, bucketsTotal,
     bucketPct: revenue > 0 ? bucketsTotal / revenue : 0,
-    laborCost: Number(t.realLaborCost) || 0,
-    materialsCost: Number(t.materialsCostReal) || 0,
+    laborCost: Math.max(Number(b.tmA.realLaborCost) || 0, Number(b.tmE?.realLaborCost) || 0),
+    materialsCost: Math.max(Number(b.tmA.materialsCostReal) || 0, Number(b.tmE?.materialsCostReal) || 0),
     flex: Number(t.flex) || 0, fees: Number(t.processingFees) || 0,
     info,
   };
