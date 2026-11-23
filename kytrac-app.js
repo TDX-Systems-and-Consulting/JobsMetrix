@@ -18307,7 +18307,7 @@ function populateTimeFilters() {
   let activeJobs = conJobs.filter(j => activeStatuses.includes(j.status));
   // CREW_ADMIN_V1: crew assigned to jobs only see those jobs to clock into.
   { const me = crewMemberFor(conCurrentUser?.uid, conCurrentUser?.email);
-    if (me && CREW_ROLE_SET.includes(me.role) && (me.assignedJobIds || []).length) activeJobs = activeJobs.filter(j => me.assignedJobIds.includes(j.id)); }
+    if (me && CREW_ROLE_SET.includes(me.role) && (me.assignedJobIds || []).length) activeJobs = conJobs.filter(j => me.assignedJobIds.includes(j.id) && !/closed|lost|cancel/i.test(j.status || '')); }
 
   const jobSel = document.getElementById('clockJobSelect');
   if (jobSel) {
