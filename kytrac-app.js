@@ -12098,9 +12098,10 @@ function rebuildOwnCatalogData() {
     const unitCost = Number(c.unitCost) || 0;
     const line = { desc: c.desc || '', unitCost, unitPrice: unitCost * (1 + (Number(c.markup) || 0) / 100), unit: c.unit || 'ea', qty: 1 };
     const isLabor = c.category === 'Labor' || c.category === 'Subcontractor';
+    const lab = c.labor && Number(c.labor.unitCost) > 0 ? { desc: c.labor.desc || (c.desc + ' Labor'), unitCost: Number(c.labor.unitCost), unitPrice: Number(c.labor.unitCost) * (1 + (Number(c.labor.markup) || 0) / 100), unit: c.labor.unit || 'hr', qty: 1 } : null;
     (CATALOG_DATA[trade] = CATALOG_DATA[trade] || []).push({
       name: c.desc || '', short: c.desc || '', costCode: trade, costCodeName: tradeLabel(trade),
-      materials: isLabor ? null : line, labor: isLabor ? line : null, catalogId: c.id,
+      materials: isLabor ? null : line, labor: isLabor ? line : lab, catalogId: c.id,
     });
   });
   _flatCatalogIndex = null;
@@ -12231,6 +12232,8 @@ function openCatalogItemModal(id) {
   document.getElementById('catItemMarkup').value = item ? (item.markup||0) : getDefaultMarkupForCostType('Labor');
   document.getElementById('catItemNotes').value = item ? (item.notes||'') : '';
   document.getElementById('catItemSupplier').value = item ? (item.supplier||'') : '';
+  { const L = (item && item.labor) || {}; const sv = (i, v) => { const e = document.getElementById(i); if (e) e.value = v ?? ''; };
+    sv('catItemLaborCost', L.unitCost || ''); sv('catItemLaborUnit', L.unit || 'hr'); sv('catItemLaborMarkup', L.markup ?? ''); sv('catItemLaborDesc', L.desc || ''); }
   { const ts = document.getElementById('catItemTrade'); if (ts) { ts.innerHTML = '<option value="">— none (shows under Miscellaneous) —</option>' + tradeKeys().map(k => `<option value="${esc(k)}">${esc(tradeLabel(k))}</option>`).join(''); ts.value = item ? (item.trade || '') : ''; } }
   document.getElementById('deleteCatItemBtn').style.display = item ? 'inline-flex' : 'none';
   calcCatPreview();
@@ -12262,6 +12265,81 @@ function calcCatPreview() {
   if (marg) marg.textContent = margin + '%';
 }
 
+// CATALOG_RESTORE_V1 (Travis 11/23/26): a licensed company gets its own,
+// editable copy of the standard price list. It's theirs from then on: edits
+// never touch JTXD's list and JTXD's later changes never overwrite theirs.
+async function loadStandardPriceList(btn) {
+  if (!(typeof isCoreTenant === 'function' && isCoreTenant())) return;
+  const src = window._builtinCatalog || {};
+  const have = new Set((catalogItems || []).map(c => String(c.desc || '').trim().toLowerCase()));
+  const docs = [];
+  Object.keys(src).forEach(trade => (src[trade] || []).forEach(it => {
+    const name = String(it.name || it.short || '').trim(); if (!name || have.has(name.toLowerCase())) return;
+    have.add(name.toLowerCase());
+    const m = it.materials, l = it.labor;
+    const mk = x => (x && x.unitCost > 0 && x.unitPrice > 0) ? Math.round((x.unitPrice / x.unitCost - 1) * 1000) / 10 : 0;
+    const base = m && m.unitCost != null ? m : l; if (!base) return;
+    docs.push({
+      desc: name, category: m ? 'Materials' : 'Labor', unit: base.unit || 'ea', unitCost: Number(base.unitCost) || 0, markup: mk(base),
+      labor: (m && l) ? { desc: l.desc || '', unitCost: Number(l.unitCost) || 0, unit: l.unit || 'hr', markup: mk(l) } : null,
+      notes: it.short && it.short !== name ? it.short : '', supplier: '', trade, source: 'standard list', companyId: currentCompanyId,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(), createdBy: conCurrentUser ? conCurrentUser.email : 'unknown',
+    });
+  }));
+  if (!docs.length) { alert('Your Cost Catalog already has everything from the standard price list.'); return; }
+  if (!confirm(`Add ${docs.length} items from the standard price list to your Cost Catalog? They become your own prices to edit. Items you already have are skipped.`)) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
+  try {
+    for (let i = 0; i < docs.length; i += 400) {
+      const b = conDb.batch(); docs.slice(i, i + 400).forEach(d => b.set(coll('catalog').doc(), d)); await b.commit();
+    }
+    alert(`Added ${docs.length} items. Edit any price in the Cost Catalog, or from a receipt with "Update catalog prices."`);
+  } catch (e) { alert('Could not add the price list: ' + e.message); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '📥 Load standard price list'; } }
+}
+window.loadStandardPriceList = loadStandardPriceList;
+
+// From a receipt: find the catalog items on it and save what was really paid.
+function openReceiptPriceUpdate(receiptId) {
+  const r = (_rcReceipts || []).find(x => x.id === receiptId) || {};
+  document.getElementById('rcPriceModal')?.remove();
+  const m = document.createElement('div'); m.id = 'rcPriceModal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding:30px 14px;overflow:auto';
+  m.innerHTML = `<div class="kt-card" style="max-width:640px;width:100%;padding:18px">
+    <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:6px">
+      <div><div style="font-weight:800;font-size:1rem">Update catalog prices from this receipt</div>
+      <div class="small muted">${esc(r.vendor || 'Receipt')} · ${rcMoney(r.amount || 0)}${r.photoUrl ? ` · <a href="${r.photoUrl}" target="_blank" rel="noopener">open receipt</a>` : ''}</div></div>
+      <button class="btn" onclick="document.getElementById('rcPriceModal').remove()">Close</button></div>
+    <input id="rcPriceSearch" placeholder="Search your Cost Catalog (e.g. drywall, siding, 2x4)…" oninput="rcPriceSearchRender()" style="width:100%;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:var(--input-bg);color:var(--text);margin:8px 0">
+    <div id="rcPriceResults" class="small muted">Type to find the items on this receipt, enter the unit price you paid, and tap Save.</div></div>`;
+  document.body.appendChild(m);
+  m.dataset.receipt = (r.vendor || 'receipt') + ' ' + (r.createdAt?.toDate ? r.createdAt.toDate().toLocaleDateString() : '');
+  setTimeout(() => document.getElementById('rcPriceSearch')?.focus(), 50);
+}
+function rcPriceSearchRender() {
+  const q = (document.getElementById('rcPriceSearch')?.value || '').trim().toLowerCase();
+  const box = document.getElementById('rcPriceResults'); if (!box) return;
+  if (q.length < 2) { box.innerHTML = '<span class="small muted">Type at least 2 letters.</span>'; return; }
+  const words = q.split(/\s+/);
+  const hits = (catalogItems || []).filter(c => { const t = ((c.desc || '') + ' ' + (c.notes || '') + ' ' + (c.supplier || '')).toLowerCase(); return words.every(w => t.includes(w)); }).slice(0, 25);
+  if (!hits.length) { box.innerHTML = '<span class="small muted">No catalog items match. Add it with + Add Item in the Cost Catalog.</span>'; return; }
+  box.innerHTML = hits.map(c => `<div style="display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">
+    <div style="flex:1;min-width:200px"><div style="font-weight:600;color:var(--text)">${esc(c.desc || '')}</div>
+      <div class="small muted">${esc(c.category || '')} · now $${(Number(c.unitCost) || 0).toFixed(2)} / ${esc(c.unit || 'ea')}${c.priceSource ? ' · last from ' + esc(c.priceSource) : ''}</div></div>
+    <input id="rcp_${c.id}" type="number" step="0.01" value="${(Number(c.unitCost) || 0).toFixed(2)}" style="width:100px;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--input-bg);color:var(--text);text-align:right">
+    <button class="btn-amber" style="padding:6px 12px" onclick="rcPriceSave('${c.id}', this)">Save</button></div>`).join('');
+}
+async function rcPriceSave(id, btn) {
+  const v = parseFloat(document.getElementById('rcp_' + id)?.value);
+  if (!(v >= 0)) { alert('Enter the unit price paid.'); return; }
+  const src = document.getElementById('rcPriceModal')?.dataset.receipt || 'receipt';
+  try {
+    await coll('catalog').doc(id).update({ unitCost: Math.round(v * 100) / 100, priceSource: src.trim(), priceUpdatedAt: firebase.firestore.FieldValue.serverTimestamp(), updatedBy: conCurrentUser ? conCurrentUser.email : 'unknown' });
+    if (btn) { btn.textContent = '✓ Saved'; setTimeout(() => { btn.textContent = 'Save'; }, 1500); }
+  } catch (e) { alert('Could not save: ' + e.message); }
+}
+window.openReceiptPriceUpdate = openReceiptPriceUpdate; window.rcPriceSearchRender = rcPriceSearchRender; window.rcPriceSave = rcPriceSave;
+
 function saveCatalogItem() {
   if (!conDb) return;
   const desc = document.getElementById('catItemDesc').value.trim();
@@ -12276,6 +12354,10 @@ function saveCatalogItem() {
     notes: document.getElementById('catItemNotes').value.trim(),
     supplier: document.getElementById('catItemSupplier').value.trim(),
     trade: document.getElementById('catItemTrade')?.value || '',
+    labor: (() => { const c = parseFloat(document.getElementById('catItemLaborCost')?.value); if (!(c > 0)) return null;
+      return { unitCost: c, unit: document.getElementById('catItemLaborUnit')?.value || 'hr', markup: parseFloat(document.getElementById('catItemLaborMarkup')?.value) || 0,
+        desc: (document.getElementById('catItemLaborDesc')?.value || '').trim() }; })(),
+    priceUpdatedAt: firebase.firestore.FieldValue.serverTimestamp(),
     updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
     updatedBy: conCurrentUser ? conCurrentUser.email : 'unknown'
   };
@@ -26725,11 +26807,13 @@ function renderJobReceipts() {
     const thumb = r.isPdf
       ? `<a href="${r.photoUrl}" target="_blank" rel="noopener" style="width:64px;height:64px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:8px;font-size:.75rem">PDF</a>`
       : `<a href="${r.photoUrl}" target="_blank" rel="noopener" style="flex-shrink:0"><img src="${r.photoUrl}" alt="Receipt photo" style="width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block"></a>`;
+    const priceBtn = manage && r.status !== 'New' && (typeof isCoreTenant === 'function' && isCoreTenant()) ? `<div style="margin-top:6px"><button class="btn" onclick="openReceiptPriceUpdate('${r.id}')" style="padding:4px 10px;font-size:.74rem">💲 Update catalog prices</button></div>` : '';
     const actions = manage && r.status === 'New' ? `
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
         ${r.loggedAsMaterials ? '<span class="small muted" style="align-self:center">✓ in materials</span>' : `<button class="btn" onclick="rcLogAsMaterials('${r.id}')" style="padding:4px 10px;font-size:.74rem">Log as materials</button>`}
         ${r.needsReimbursement ? `<button class="btn" onclick="rcSetStatus('${r.id}','Reimbursed')" style="padding:4px 10px;font-size:.74rem">Mark reimbursed</button>` : ''}
         <button class="btn" onclick="rcSetStatus('${r.id}','Reconciled')" style="padding:4px 10px;font-size:.74rem">Mark reconciled</button>
+        ${(typeof isCoreTenant === 'function' && isCoreTenant()) ? `<button class="btn" onclick="openReceiptPriceUpdate('${r.id}')" style="padding:4px 10px;font-size:.74rem">💲 Update catalog prices</button>` : ''}
         ${canViewFinancialsTab() ? `<button class="btn" onclick="rcMoveToCompany('${r.id}')" style="padding:4px 10px;font-size:.74rem">Not for this job → company expense</button>` : ''}
       </div>` : '';
     return `<div style="display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--line)">
@@ -26740,7 +26824,7 @@ function renderJobReceipts() {
         </div>
         <div class="small muted">${esc(r.uploadedByName || '')} · ${esc(r.paidWith || '')}${r.needsReimbursement ? ' · <span style="color:#f59e0b;font-weight:700">needs reimbursement</span>' : ''}${when ? ' · ' + when : ''}</div>
         ${r.note ? `<div class="small" style="margin-top:2px">${esc(r.note)}</div>` : ''}
-        ${actions}
+        ${actions}${priceBtn}
       </div>
     </div>`;
   }).join('');
@@ -28468,6 +28552,10 @@ function getFlatCatalogIndex() {
   // OWN_CATALOG_V1: a licensed company searches only its own Cost Catalog,
   // never JTXD's built-in price list.
   if (typeof isCoreTenant === 'function' && isCoreTenant()) {
+    if (Object.keys(CATALOG_DATA).length) { // CATALOG_RESTORE_V1: rebuilt from their catalog, keeps paired labor
+      const out = []; Object.keys(CATALOG_DATA).forEach(t => (CATALOG_DATA[t] || []).forEach(it => out.push({ name: it.name, short: it.short, trade: it.costCodeName || t, materials: it.materials, labor: it.labor })));
+      return out;
+    }
     return (catalogItems || []).map(c => {
       const unitCost = Number(c.unitCost) || 0;
       const line = { desc: c.desc || '', unitCost, unitPrice: unitCost * (1 + (Number(c.markup) || 0) / 100), unit: c.unit || 'ea', qty: 1 };
@@ -38612,6 +38700,7 @@ function applyTenantMode() {
     // OWN_CATALOG_V1: JTXD's built-in catalog, Smart Add and Guided Questions
     // carry JTXD's prices; another company builds its own.
     tradeKeys();   // SMART_ADD_OWN_V1: remember the trade list before clearing
+    if (!window._builtinCatalog && Object.keys(CATALOG_DATA).length) window._builtinCatalog = { ...CATALOG_DATA }; // CATALOG_RESTORE_V1
     Object.keys(CATALOG_DATA).forEach(k => { delete CATALOG_DATA[k]; });
     _flatCatalogIndex = null;
     rebuildOwnCatalogData();

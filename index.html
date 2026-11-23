@@ -799,6 +799,7 @@
     .todo-badge { display:inline-flex; align-items:center; padding:2px 7px; border-radius:999px; font-size:.68rem; font-weight:700; }
     .todo-filters { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px; }
     body.core-tenant .jtxd-only { display:none !important; }
+    body:not(.core-tenant) .core-only { display:none !important; }
     .todo-filter-btn { padding:5px 12px; border-radius:8px; border:1px solid var(--amber-border); background:transparent; color:var(--muted); font-size:.78rem; font-weight:600; cursor:pointer; transition:all .12s; }
     .todo-filter-btn.active { background:linear-gradient(135deg,var(--amber),var(--amber2)); color:#fff; border-color:transparent; }
 
@@ -2045,6 +2046,7 @@
               <option>Permits & Fees</option>
               <option>Overhead</option>
             </select>
+            <button class="btn core-only" onclick="loadStandardPriceList(this)">📥 Load standard price list</button>
             <button class="btn-amber" onclick="openCatalogItemModal()">+ Add Item</button>
           </div>
         </div>
@@ -2762,6 +2764,13 @@
           <input id="catItemSupplier" placeholder="e.g. Home Depot, ABC Supply" /></div>
         <div class="full"><label class="small muted" style="display:block;margin-bottom:5px">Trade <span style="font-weight:400">(where Smart Add shows it)</span></label>
           <select id="catItemTrade"></select></div>
+        <div class="full" style="border-top:1px solid var(--line);padding-top:10px"><label class="small muted" style="display:block;margin-bottom:5px">Install labor for this item <span style="font-weight:400">(optional — Smart Add adds it as a second line)</span></label>
+          <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:8px">
+            <input id="catItemLaborDesc" placeholder="Labor description" />
+            <input id="catItemLaborCost" type="number" step="0.01" placeholder="Cost $" />
+            <select id="catItemLaborUnit"><option value="hr">hr</option><option value="ea">ea</option><option value="sf">sf</option><option value="lf">lf</option><option value="ls">ls</option><option value="day">day</option></select>
+            <input id="catItemLaborMarkup" type="number" step="0.5" placeholder="Markup %" />
+          </div></div>
       </div>
     </div>
     <div class="modal-foot">
@@ -5330,7 +5339,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202611231518"></script>
+<script src="kytrac-app.js?v=202611231544"></script>
 <script src="kytlead.js?v=202611111110"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
