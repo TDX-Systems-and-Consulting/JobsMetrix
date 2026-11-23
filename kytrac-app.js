@@ -7456,8 +7456,20 @@ function fhRenderMaterialsLoading() {
 // — unlike vendor bills, since there's no vendor account involved.
 function fhLoadJobMaterials(jobId, cb) {
   if (!conDb) { _fhMaterials = []; cb && cb(); return; }
-  coll('jobs').doc(jobId).collection('expenses').orderBy('date', 'desc').get()
-    .then(snap => { _fhMaterials = []; snap.forEach(d => _fhMaterials.push({ id: d.id, ...d.data() })); cb && cb(); })
+  // FIN_RECEIPTS_V1 (Travis 11/23/26): receipts the crew uploaded but the office
+  // hasn't logged yet count as spent (Spent to Date already counts them), so
+  // they show here too, marked "not logged yet", instead of disappearing.
+  Promise.all([
+    coll('jobs').doc(jobId).collection('expenses').orderBy('date', 'desc').get(),
+    coll('jobs').doc(jobId).collection('receipts').get().catch(() => null),
+  ]).then(([snap, rs]) => {
+      _fhMaterials = []; snap.forEach(d => _fhMaterials.push({ id: d.id, ...d.data() }));
+      const logged = new Set(_fhMaterials.map(m => m.receiptId).filter(Boolean));
+      if (rs) rs.forEach(d => { const r = d.data(); if (r.expenseId || logged.has(d.id) || !Number(r.amount)) return;
+        _fhMaterials.push({ id: 'rc_' + d.id, pendingReceipt: true, amount: Number(r.amount), purchasedFrom: r.vendor || 'Receipt',
+          desc: 'Receipt — not logged yet' + (r.note ? ' · ' + r.note : ''), paidBy: r.paidWith || '', purchasedBy: r.uploadedByName || '',
+          date: r.createdAt?.toDate ? r.createdAt.toDate().toISOString().split('T')[0] : '' }); });
+      cb && cb(); })
     .catch(() => { _fhMaterials = []; cb && cb(); });
 }
 
@@ -7472,11 +7484,11 @@ function fhRenderMaterials() {
   if (sum) sum.textContent = items.length ? `${fhMoney(total)} total` : '';
   if (!items.length) { el.innerHTML = '<div class="finhub-empty">No materials purchases logged for this job.</div>'; return; }
   el.innerHTML = items.map(m => `
-    <div class="finhub-line" onclick="openAddMaterialsFromJob('${m.id}')" style="cursor:pointer">
+    <div class="finhub-line" onclick="${m.pendingReceipt ? "switchDetailTab('receipts')" : `openAddMaterialsFromJob('${m.id}')`}" style="cursor:pointer">
       <div><div class="finhub-line-title">${esc(m.purchasedFrom||'Purchase')}</div><div class="finhub-line-sub">${esc(m.desc||'')}${m.paidBy?` · ${esc(m.paidBy)}`:''}${m.purchasedBy?` · ${esc(m.purchasedBy)}`:''}</div></div>
       <div class="finhub-line-amt">${fhMoney(m.amount)}</div>
       <div class="finhub-line-bal" style="color:#a3f2d2">paid</div>
-      <div>${fhBadge('Materials','#8ea3c8')}</div>
+      <div>${m.pendingReceipt ? fhBadge('Receipt','#f59e0b') : fhBadge('Materials','#8ea3c8')}</div>
     </div>`).join('');
 }
 
