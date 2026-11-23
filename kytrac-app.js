@@ -26671,7 +26671,26 @@ function rcTypeChanged(prefix) {
 window.rcTypeChanged = rcTypeChanged;
 function rcCanManage() { return typeof canViewJobMoney === 'function' ? canViewJobMoney() : isOwnerOrAdmin(); }
 
+// RECEIPT_CARDS_V1 (Travis 11/23/26): a company can list its own cards for
+// "Paid with" on receipts (settings/company.receiptPaidWithOptions). NWI uses
+// its three company cards; everyone else keeps Company card / Personal card.
+function receiptPaidWithOptions() {
+  const list = Array.isArray(companyProfile.receiptPaidWithOptions) ? companyProfile.receiptPaidWithOptions.filter(Boolean) : [];
+  return list.length ? list : ['Company card', 'Personal card / cash'];
+}
+function fillReceiptPaidWith() {
+  const opts = receiptPaidWithOptions();
+  ['rcPaidWith', 'crPaidWith'].forEach(id => {
+    const el = document.getElementById(id); if (!el) return;
+    const cur = el.value;
+    el.innerHTML = opts.map(o => `<option>${esc(o)}</option>`).join('');
+    el.value = opts.includes(cur) ? cur : opts[0];
+  });
+}
+window.fillReceiptPaidWith = fillReceiptPaidWith;
+const rcIsPersonal = v => /personal|cash/i.test(String(v || ''));
 function loadJobReceipts(jobId) {
+  try { fillReceiptPaidWith(); } catch (e) {}
   if (_rcUnsub) { _rcUnsub(); _rcUnsub = null; }
   const list = document.getElementById('rcList');
   if (list) list.innerHTML = '<div class="small muted">Loading receipts…</div>';
@@ -26692,7 +26711,7 @@ function rcResetForm() {
   const f = document.getElementById('rcFile'); if (f) f.value = '';
   const prev = document.getElementById('rcPreview'); if (prev) { prev.removeAttribute('src'); prev.style.display = 'none'; }
   const lbl = document.getElementById('rcFileLabel'); if (lbl) lbl.textContent = '📷 Take / choose receipt photo';
-  const paid = document.getElementById('rcPaidWith'); if (paid) paid.value = 'Company card';
+  const paid = document.getElementById('rcPaidWith'); if (paid) { fillReceiptPaidWith(); paid.value = receiptPaidWithOptions()[0]; }
   const t = document.getElementById('rcType'); if (t) { t.value = 'Purchase'; rcTypeChanged('rc'); }
 }
 
@@ -26718,7 +26737,7 @@ async function submitReceipt() {
   if (!rawAmt) { alert(isReturn ? 'Enter the refund amount.' : 'Enter the receipt total.'); return; }
   const amount = isReturn ? -rawAmt : rawAmt;
   const vendor = (document.getElementById('rcVendor')?.value || '').trim();
-  const paidWith = document.getElementById('rcPaidWith')?.value || 'Company card';
+  const paidWith = document.getElementById('rcPaidWith')?.value || receiptPaidWithOptions()[0];
   const note = (document.getElementById('rcNote')?.value || '').trim();
   const btn = document.getElementById('rcSubmitBtn');
   if (btn) { btn.disabled = true; btn.textContent = 'Uploading…'; }
@@ -26736,7 +26755,7 @@ async function submitReceipt() {
 
     const job = conJobs.find(j => j.id === jobId);
     const who = myName() || conCurrentUser?.email || 'Unknown';
-    const needsReimburse = !isReturn && paidWith === 'Personal card / cash';
+    const needsReimburse = !isReturn && rcIsPersonal(paidWith);
     const receipt = {
       amount, vendor, paidWith, note, photoUrl, photoPath: path, isReturn,
       isPdf: !(file.type || '').startsWith('image/'),
@@ -26871,7 +26890,7 @@ async function rcEnsureExpense(jobId, r, descOverride) {
     purchasedFrom: r.vendor || 'Receipt',
     desc: descOverride || (r.amount < 0 ? 'Return' : 'Materials') + (r.note ? ' — ' + r.note : ''),
     amount: Number(r.amount), date: d,
-    paidBy: r.needsReimbursement ? 'Personal (reimburse)' : 'Debit Card',
+    paidBy: r.needsReimbursement ? 'Personal (reimburse)' : (r.paidWith && !/company card/i.test(r.paidWith) ? r.paidWith : 'Debit Card'),
     purchasedBy: r.uploadedByName || '',
     notes: [job?.address, job?.jobNumber].filter(Boolean).join(' ') + (r.photoUrl ? ' · receipt ' + r.photoUrl : ''),
     receiptId: r.id, companyId: currentCompanyId,
@@ -26897,7 +26916,7 @@ async function rcLogAsMaterials(receiptId) {
     const expRef = await coll('jobs').doc(jobId).collection('expenses').add({
       purchasedFrom: r.vendor || 'Receipt', desc: desc.trim() || 'Materials', amount: r.amount,
       date: (r.createdAt?.toDate ? r.createdAt.toDate() : new Date()).toISOString().split('T')[0],
-      paidBy: r.needsReimbursement ? 'Personal (reimburse)' : 'Debit Card',
+      paidBy: r.needsReimbursement ? 'Personal (reimburse)' : (r.paidWith && !/company card/i.test(r.paidWith) ? r.paidWith : 'Debit Card'),
       purchasedBy: r.uploadedByName || '',
       notes: [job?.address, job?.jobNumber].filter(Boolean).join(' ') + ' · receipt ' + r.photoUrl,
       receiptId, companyId: currentCompanyId,
@@ -27013,14 +27032,14 @@ async function submitCompanyReceipt() {
   if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
   try {
     const photo = _crPendingFile ? await crUploadFile(_crPendingFile) : { photoUrl: '', photoPath: '', isPdf: false };
-    const paidWith = document.getElementById('crPaidWith')?.value || 'Company card';
+    const paidWith = document.getElementById('crPaidWith')?.value || receiptPaidWithOptions()[0];
     await crColl().add({
       amount, category, bucket: crBucketFor(category),
       vendor: (document.getElementById('crVendor')?.value || '').trim(),
       note: (document.getElementById('crNote')?.value || '').trim(),
       date: document.getElementById('crDate')?.value || new Date().toISOString().split('T')[0],
-      paidWith, needsReimbursement: !isReturn && paidWith === 'Personal card / cash', isReturn,
-      status: !isReturn && paidWith === 'Personal card / cash' ? 'Reimburse' : 'Logged',
+      paidWith, needsReimbursement: !isReturn && rcIsPersonal(paidWith), isReturn,
+      status: !isReturn && rcIsPersonal(paidWith) ? 'Reimburse' : 'Logged',
       ...photo,
       uploadedBy: conCurrentUser?.email || '', uploadedByName: myName() || conCurrentUser?.email || '',
       companyId: currentCompanyId, scope: 'company',
@@ -27096,7 +27115,7 @@ async function crMoveToJob(id) {
   try {
     await coll('jobs').doc(job.id).collection('expenses').add({
       purchasedFrom: r.vendor || 'Receipt', desc: r.note || r.category || 'Materials', amount: r.amount, date: r.date,
-      paidBy: r.needsReimbursement ? 'Personal (reimburse)' : 'Debit Card', purchasedBy: r.uploadedByName || '',
+      paidBy: r.needsReimbursement ? 'Personal (reimburse)' : (r.paidWith && !/company card/i.test(r.paidWith) ? r.paidWith : 'Debit Card'), purchasedBy: r.uploadedByName || '',
       notes: 'Moved from Company Receipts' + (r.photoUrl ? ' · receipt ' + r.photoUrl : ''), companyId: currentCompanyId,
       createdAt: firebase.firestore.FieldValue.serverTimestamp(), updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
@@ -38725,5 +38744,6 @@ function applyTenantMode() {
     });
   }
   try { applyRolePermissions(); } catch (e) {}
+  try { fillReceiptPaidWith(); } catch (e) {}   // RECEIPT_CARDS_V1
 }
 window.applyTenantMode = applyTenantMode;
