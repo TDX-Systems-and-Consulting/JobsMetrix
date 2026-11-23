@@ -12092,6 +12092,9 @@ const tradeLabel = k => String(k || '').replace(/^\d+\s+/, '');
 function rebuildOwnCatalogData() {
   if (!(typeof isCoreTenant === 'function' && isCoreTenant())) return;
   tradeKeys();
+  // CATALOG_RESTORE_V1: keep the built-in list (once, before it's first replaced).
+  if (!window._builtinCatalog && !window._ownCatalogActive && Object.keys(CATALOG_DATA).length) window._builtinCatalog = { ...CATALOG_DATA };
+  window._ownCatalogActive = true;
   Object.keys(CATALOG_DATA).forEach(k => { delete CATALOG_DATA[k]; });
   (catalogItems || []).forEach(c => {
     const trade = c.trade || '3100 Miscellaneous';
@@ -38700,7 +38703,7 @@ function applyTenantMode() {
     // OWN_CATALOG_V1: JTXD's built-in catalog, Smart Add and Guided Questions
     // carry JTXD's prices; another company builds its own.
     tradeKeys();   // SMART_ADD_OWN_V1: remember the trade list before clearing
-    if (!window._builtinCatalog && Object.keys(CATALOG_DATA).length) window._builtinCatalog = { ...CATALOG_DATA }; // CATALOG_RESTORE_V1
+    if (!window._builtinCatalog && !window._ownCatalogActive && Object.keys(CATALOG_DATA).length) window._builtinCatalog = { ...CATALOG_DATA }; // CATALOG_RESTORE_V1
     Object.keys(CATALOG_DATA).forEach(k => { delete CATALOG_DATA[k]; });
     _flatCatalogIndex = null;
     rebuildOwnCatalogData();
