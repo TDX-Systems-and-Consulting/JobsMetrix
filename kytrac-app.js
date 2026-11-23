@@ -6979,8 +6979,10 @@ function isJTXDCompany() { return currentCompanyId === JTXD_COMPANY_ID; }
 function isCoreTenant() { return !!currentCompanyId && !isJTXDCompany() && !(companyProfile && companyProfile.fullSuite); }
 window.isJTXDCompany = isJTXDCompany; window.isCoreTenant = isCoreTenant;
 function canViewFinancialsTab() {
-  if (window._viewAsRole) return window._viewAsRole === 'Owner' || (isJTXDCompany() && window._viewAsRole === 'Office Manager'); // VIEW_AS_V1 preview
-  if (currentCompanyId && !isJTXDCompany()) return currentUserRole === 'Owner';
+  if (window._viewAsRole) return window._viewAsRole === 'Owner' || window._viewAsRole === 'Office Manager'; // VIEW_AS_V1 preview
+  // OFFICE_MGR_FIN_V2 (Travis 11/23/26): a licensed company's Office Manager
+  // gets the job Financials tab too (NWI: split spent-to-date labor vs materials).
+  if (currentCompanyId && !isJTXDCompany()) return currentUserRole === 'Owner' || currentUserRole === 'Office Manager';
   // OFFICE_MGR_FIN_V1: the Office Manager prepares the scorecard for the L10
   return FINANCIALS_TAB_ALLOWED_EMAILS.has((conCurrentUser?.email || '').toLowerCase()) || currentUserRole === 'Office Manager';
 }
