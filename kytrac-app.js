@@ -862,7 +862,7 @@ function ktNav(key, btn) {
   }
   if(key==='calendar') { loadGlobalPhases(); loadCalendarEvents(); buildTeamColors(); renderCalendar(); loadGCalStatus(); loadTimeOffRequests(); }
   if(key==='masterschedule') { renderMasterSchedulePage(); }
-  if(key==='time') { loadTimeEntries(); renderTimeLog(); renderTodaySummary(); populateTimeFilters(); }
+  if(key==='time') { loadTimeEntries(); renderTimeLog(); renderTodaySummary(); populateTimeFilters(); try { renderCrewAdmin(); renderCrewPay(); } catch (e) {} }
   if(key==='crewmap') { initCrewMap(); }
   if(key==='logs') { loadGlobalLogs(); renderGlobalLogs(); }
   if(key==='todos') { loadTodos(); populateTodoJobFilter(); populateTodoAssigneeFilter(); renderTodos(); }
@@ -18086,9 +18086,228 @@ function renderTodaySummary() {
   }
 }
 
+// ════════════════════════════════════════════════════
+// ── CREW_ADMIN_V1 (Travis 11/23/26) ──
+// The Office Manager adds crew so they can clock in, assigns them to jobs,
+// and sees what each person is owed for the week from their clock-ins
+// (days x day rate, or hours x hourly rate), split by job. "Record as paid"
+// writes one crew-pay line per person per job into that job's labor cost.
+// ════════════════════════════════════════════════════
+const CREW_ROLE_SET = ['Field Technician', 'Team Lead'];
+function canManageCrew() {
+  return currentUserRole === 'Owner' || currentUserRole === 'Office Manager' || !!currentUserTeamData?.fullAccessOverride;
+}
+function crewMembers() { return (_lastTeamMemberList || []).filter(m => CREW_ROLE_SET.includes(m.role)); }
+function crewMemberFor(userId, email) {
+  const e = String(email || '').toLowerCase();
+  return (_lastTeamMemberList || []).find(m => (e && String(m.email || '').toLowerCase() === e) || (userId && m.userId === userId));
+}
+const _crewMoney = v => '$' + (Math.round((Number(v) || 0) * 100) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+let _crewEditKey = null;
+
+function renderCrewAdmin() {
+  const card = document.getElementById('crewAdminCard');
+  if (!card) return;
+  if (!canManageCrew()) { card.style.display = 'none'; const pc = document.getElementById('crewPayCard'); if (pc) pc.style.display = 'none'; return; }
+  card.style.display = '';
+  const body = document.getElementById('crewAdminBody');
+  const jobs = conJobs.filter(j => ACTIVE_STATUSES.includes(j.status));
+  const jobName = id => { const j = conJobs.find(x => x.id === id); return j ? jobTitle(j) : null; };
+  const list = crewMembers();
+  const rows = list.map(m => {
+    const key = (m.email || '').replace(/\./g, '_');
+    const assigned = (m.assignedJobIds || []).map(jobName).filter(Boolean);
+    const pay = m.burdenedRate ? `${_crewMoney(m.burdenedRate)}/${m.paymentType === 'daily' ? 'day' : 'hr'}` : '<span style="color:#f97316">no pay rate</span>';
+    return `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:9px 0;border-bottom:1px solid var(--line)">
+      <div style="flex:1;min-width:180px"><div style="font-weight:700">${esc(m.name || m.email)}</div>
+        <div class="small muted">${esc(m.role)} · ${esc(m.email)} · ${pay}</div>
+        <div class="small" style="margin-top:2px">${assigned.length ? '📍 ' + assigned.map(esc).join(' · ') : '<span class="muted">Not assigned to a job (sees every active job)</span>'}</div></div>
+      <button class="btn" onclick="crewOpenForm('${key}')" style="padding:5px 11px;font-size:.78rem">Edit</button></div>`;
+  }).join('');
+  body.innerHTML = `
+    <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+      <div class="small muted">Crew sign in with their own email to clock in and out. Assigned jobs are the only jobs they can clock into.</div>
+      <button class="btn-amber" onclick="crewOpenForm(null)" style="padding:7px 13px;font-weight:700">+ Add crew member</button></div>
+    <div id="crewForm"></div>
+    ${rows || '<div class="small muted" style="padding:10px 0">No crew added yet.</div>'}`;
+  if (_crewEditKey !== null) crewOpenForm(_crewEditKey);
+}
+function crewOpenForm(key) {
+  _crewEditKey = key;
+  const box = document.getElementById('crewForm'); if (!box) return;
+  const m = key ? (_lastTeamMemberList || []).find(x => (x.email || '').replace(/\./g, '_') === key) : null;
+  const jobs = conJobs.filter(j => ACTIVE_STATUSES.includes(j.status));
+  const assigned = new Set((m && m.assignedJobIds) || []);
+  const inp = 'padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--input-bg);color:var(--text);font-size:.85rem;min-width:0';
+  box.innerHTML = `<div style="border:1px solid var(--amber-border);border-radius:12px;padding:12px;margin:8px 0 12px;display:grid;gap:8px">
+    <div style="font-weight:800">${m ? 'Edit ' + esc(m.name || m.email) : 'Add crew member'}</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px">
+      <input id="crewName" placeholder="Full name" value="${esc(m?.name || '')}" style="${inp}">
+      <input id="crewEmail" type="email" placeholder="Email they sign in with" value="${esc(m?.email || '')}" ${m ? 'disabled' : ''} style="${inp}">
+      <input id="crewPhone" type="tel" placeholder="Cell phone (optional)" value="${esc(m?.phone || '')}" style="${inp}">
+      <select id="crewRole" style="${inp}">${CREW_ROLE_SET.map(r => `<option ${m?.role === r ? 'selected' : ''}>${r}</option>`).join('')}</select>
+      <select id="crewBasis" style="${inp}"><option value="day" ${!m || m.paymentType === 'daily' ? 'selected' : ''}>Paid per day</option><option value="hour" ${m && m.paymentType !== 'daily' ? 'selected' : ''}>Paid per hour</option></select>
+      <input id="crewRate" type="number" step="0.01" min="0" placeholder="Pay rate $ (per day or hour)" value="${m?.burdenedRate || ''}" style="${inp}">
+    </div>
+    <div class="small muted">Assigned jobs</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px 14px;max-height:160px;overflow:auto">${jobs.map(j => `<label style="display:flex;gap:6px;align-items:center;font-size:.82rem;cursor:pointer"><input type="checkbox" class="crewJobChk" value="${j.id}" ${assigned.has(j.id) ? 'checked' : ''}> ${esc(jobTitle(j))}</label>`).join('') || '<span class="small muted">No active jobs.</span>'}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-amber" id="crewSaveBtn" onclick="crewSave()" style="padding:8px 14px;font-weight:700">Save</button>
+      <button class="btn" onclick="_crewEditKey=null;document.getElementById('crewForm').innerHTML=''" style="padding:8px 12px">Cancel</button>
+      ${m ? `<button class="btn btn-danger" onclick="crewRemove('${esc(m.email)}')" style="padding:8px 12px;margin-left:auto">Remove</button>` : ''}
+    </div><div id="crewMsg" class="small muted"></div></div>`;
+}
+async function crewSave() {
+  const msg = document.getElementById('crewMsg'), btn = document.getElementById('crewSaveBtn');
+  const payload = {
+    companyId: currentCompanyId, action: 'save',
+    name: document.getElementById('crewName')?.value.trim(),
+    email: document.getElementById('crewEmail')?.value.trim().toLowerCase(),
+    phone: document.getElementById('crewPhone')?.value.trim(),
+    role: document.getElementById('crewRole')?.value,
+    payBasis: document.getElementById('crewBasis')?.value,
+    rate: parseFloat(document.getElementById('crewRate')?.value),
+    assignedJobIds: [...document.querySelectorAll('.crewJobChk:checked')].map(c => c.value),
+  };
+  if (!payload.name || !payload.email) { if (msg) msg.textContent = 'Enter a name and email.'; return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    await conFunctions.httpsCallable('crewManage')(payload);
+    _crewEditKey = null;
+    await loadTeamMembers();
+    setTimeout(() => { renderCrewAdmin(); renderCrewPay(); }, 700);
+  } catch (e) { if (msg) msg.textContent = 'Could not save: ' + e.message; if (btn) { btn.disabled = false; btn.textContent = 'Save'; } }
+}
+async function crewRemove(email) {
+  if (!confirm('Remove ' + email + '? They will no longer be able to sign in or clock in. Their past hours stay on the jobs.')) return;
+  try { await conFunctions.httpsCallable('crewManage')({ companyId: currentCompanyId, action: 'remove', email }); _crewEditKey = null; await loadTeamMembers(); setTimeout(() => { renderCrewAdmin(); renderCrewPay(); }, 700); }
+  catch (e) { alert('Could not remove: ' + e.message); }
+}
+
+// ── Weekly crew pay ──
+let _crewWeekOffset = 0, _crewPayRows = null;
+function crewWeekRange(offset) {
+  const startDow = (companyProfile && companyProfile.weekStartDay === 'sun') ? 0 : 1;
+  const d = new Date(); d.setHours(12, 0, 0, 0);
+  const back = (d.getDay() - startDow + 7) % 7;
+  d.setDate(d.getDate() - back + 7 * offset);
+  const s = new Date(d), e = new Date(d); e.setDate(e.getDate() + 6);
+  const iso = x => x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0');
+  return { start: iso(s), end: iso(e), label: s.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' – ' + e.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) };
+}
+function crewEntryHours(t) {
+  if (Number(t.hours) > 0) return Number(t.hours);
+  if (t.clockInISO && !t.clockOut) return Math.max(0, (Date.now() - new Date(t.clockInISO).getTime()) / 3600000); // still on the clock
+  return 0;
+}
+async function renderCrewPay() {
+  const card = document.getElementById('crewPayCard'); if (!card) return;
+  if (!canManageCrew()) { card.style.display = 'none'; return; }
+  card.style.display = '';
+  const body = document.getElementById('crewPayBody');
+  const wk = crewWeekRange(_crewWeekOffset);
+  body.innerHTML = '<div class="small muted">Adding up the week…</div>';
+  let entries = [];
+  try {
+    const snap = await coll('timeentries').where('date', '>=', wk.start).where('date', '<=', wk.end).get();
+    entries = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  } catch (e) { body.innerHTML = '<div class="small muted">Could not load clock-ins: ' + esc(e.message) + '</div>'; return; }
+  // person -> { date -> { jobId -> hours } }
+  const people = {};
+  entries.forEach(t => {
+    const m = crewMemberFor(t.userId, t.userEmail) || (_lastTeamMemberList || []).find(x => x.name && x.name === t.userName);
+    const pk = m ? (m.email || m.name) : (t.userEmail || t.userName || 'unknown');
+    const p = people[pk] = people[pk] || { member: m, name: (m && m.name) || t.userName || t.userEmail || 'Unknown', byDate: {} };
+    const day = p.byDate[t.date] = p.byDate[t.date] || {};
+    const h = crewEntryHours(t); day[t.jobId] = (day[t.jobId] || 0) + (h || 0.0001);
+  });
+  const rows = [];
+  Object.values(people).forEach(p => {
+    const daily = p.member && p.member.paymentType === 'daily';
+    const rate = Number(p.member && p.member.burdenedRate) || 0;
+    const byJob = {};
+    Object.values(p.byDate).forEach(day => {
+      const tot = Object.values(day).reduce((a, h) => a + h, 0) || 1;
+      Object.entries(day).forEach(([jobId, h]) => {
+        const j = byJob[jobId] = byJob[jobId] || { days: 0, hours: 0 };
+        j.days += h / tot; j.hours += h;
+      });
+    });
+    Object.entries(byJob).forEach(([jobId, v]) => {
+      const days = Math.round(v.days * 100) / 100, hours = Math.round(v.hours * 100) / 100;
+      const amount = Math.round((daily ? days * rate : hours * rate) * 100) / 100;
+      rows.push({ person: p.name, email: p.member && p.member.email || '', daily, rate, jobId, days, hours, amount });
+    });
+  });
+  rows.sort((a, b) => a.person.localeCompare(b.person) || String(a.jobId).localeCompare(String(b.jobId)));
+  _crewPayRows = { wk, rows };
+  const jobLabel = id => id === OFFICE_CLOCK_ID ? '🏢 Office' : (conJobs.find(j => j.id === id) ? jobTitle(conJobs.find(j => j.id === id)) : 'Job');
+  const total = rows.reduce((a, r) => a + r.amount, 0);
+  const perPerson = {}; rows.forEach(r => { perPerson[r.person] = (perPerson[r.person] || 0) + r.amount; });
+  const th = s => `<th style="text-align:left;padding:6px 8px;font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)">${s}</th>`;
+  const thr = s => `<th style="text-align:right;padding:6px 8px;font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)">${s}</th>`;
+  body.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <button class="btn" onclick="_crewWeekOffset--;renderCrewPay()" style="padding:5px 10px">◀</button>
+      <div style="font-weight:800;min-width:140px;text-align:center">${esc(wk.label)}</div>
+      <button class="btn" onclick="_crewWeekOffset++;renderCrewPay()" style="padding:5px 10px" ${_crewWeekOffset >= 0 ? 'disabled' : ''}>▶</button>
+      <div style="margin-left:auto;font-weight:900;font-size:1.05rem">${_crewMoney(total)} <span class="small muted" style="font-weight:400">to pay this week</span></div>
+    </div>
+    ${rows.length ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.84rem">
+      <thead><tr>${th('Person')}${th('Job')}${thr('Days')}${thr('Hours')}${thr('Rate')}${thr('Owed')}</tr></thead>
+      <tbody>${rows.map(r => `<tr style="border-top:1px solid var(--line)">
+        <td style="padding:7px 8px;font-weight:700">${esc(r.person)}</td><td style="padding:7px 8px">${esc(jobLabel(r.jobId))}</td>
+        <td style="padding:7px 8px;text-align:right;font-variant-numeric:tabular-nums">${r.days}</td>
+        <td style="padding:7px 8px;text-align:right;font-variant-numeric:tabular-nums">${r.hours}</td>
+        <td style="padding:7px 8px;text-align:right">${r.rate ? _crewMoney(r.rate) + '/' + (r.daily ? 'day' : 'hr') : '<span style="color:#f97316">no rate</span>'}</td>
+        <td style="padding:7px 8px;text-align:right;font-weight:800;font-variant-numeric:tabular-nums">${_crewMoney(r.amount)}</td></tr>`).join('')}
+      </tbody></table></div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:10px">${Object.entries(perPerson).map(([n, a]) => `<span class="small"><b>${esc(n)}</b> ${_crewMoney(a)}</span>`).join('')}</div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px">
+        <button class="btn-amber" onclick="crewRecordWeek(this)" style="padding:8px 14px;font-weight:700">Record this week as paid</button>
+        <span class="small muted">Adds each day-rate person's pay to each job's labor cost (Financials → Subcontractor Payments). Hourly crew already count from their hours. Safe to press again; nothing is added twice.</span></div>`
+      : '<div class="small muted">No clock-ins this week.</div>'}
+    <div class="small muted" style="margin-top:8px">A day split between two jobs counts as part of a day on each, by hours. Someone still on the clock is counted up to now.</div>`;
+}
+async function crewRecordWeek(btn) {
+  if (!_crewPayRows || !_crewPayRows.rows.length) return;
+  const { wk, rows } = _crewPayRows;
+  // Hourly crew are already in job cost automatically (hours x rate); only day-rate pay is recorded here.
+  const toRecord = rows.filter(r => r.daily && r.jobId && r.jobId !== OFFICE_CLOCK_ID && r.amount > 0);
+  if (!toRecord.length) { alert('Nothing to record: day-rate pay only (hourly crew are already counted in job cost from their hours).'); return; }
+  const missing = rows.filter(r => r.daily && !r.rate).map(r => r.person);
+  if (missing.length && !confirm('No pay rate set for: ' + [...new Set(missing)].join(', ') + '. They will be skipped. Continue?')) return;
+  if (!confirm(`Record ${toRecord.length} crew pay line${toRecord.length === 1 ? '' : 's'} for ${wk.label} as paid?`)) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Recording…'; }
+  let added = 0, skipped = 0;
+  try {
+    for (const r of toRecord) {
+      const ref = coll('jobs').doc(r.jobId).collection('subcontractorPayments');
+      const payrollKey = wk.start + '|' + (r.email || r.person) + '|' + r.jobId;
+      const dup = await ref.where('payrollKey', '==', payrollKey).limit(1).get();
+      if (!dup.empty) { skipped++; continue; }
+      await ref.add({
+        subKey: '', subName: r.person, desc: 'Crew pay — week of ' + wk.label, amount: r.amount,
+        days: r.daily ? r.days : null, dayRate: r.daily ? r.rate : null, hours: r.daily ? null : r.hours, hourlyRate: r.daily ? null : r.rate,
+        date: wk.end, paidDate: new Date().toISOString().split('T')[0], status: 'Paid', notes: 'From weekly crew pay (clock-ins)',
+        payrollKey, companyId: currentCompanyId, createdBy: conCurrentUser?.email || '',
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(), updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+      added++;
+    }
+    alert(`Recorded ${added} line${added === 1 ? '' : 's'}${skipped ? ` (${skipped} already recorded)` : ''}.`);
+  } catch (e) { alert('Could not record: ' + e.message); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = 'Record this week as paid'; } }
+}
+window.renderCrewAdmin = renderCrewAdmin; window.crewOpenForm = crewOpenForm; window.crewSave = crewSave; window.crewRemove = crewRemove;
+window.renderCrewPay = renderCrewPay; window.crewRecordWeek = crewRecordWeek;
+
 function populateTimeFilters() {
   const activeStatuses = ACTIVE_STATUSES;
-  const activeJobs = conJobs.filter(j => activeStatuses.includes(j.status));
+  let activeJobs = conJobs.filter(j => activeStatuses.includes(j.status));
+  // CREW_ADMIN_V1: crew assigned to jobs only see those jobs to clock into.
+  { const me = crewMemberFor(conCurrentUser?.uid, conCurrentUser?.email);
+    if (me && CREW_ROLE_SET.includes(me.role) && (me.assignedJobIds || []).length) activeJobs = activeJobs.filter(j => me.assignedJobIds.includes(j.id)); }
 
   const jobSel = document.getElementById('clockJobSelect');
   if (jobSel) {
@@ -24832,6 +25051,7 @@ async function computeJobHourlyLabor(jobId) {
       const t = d.data();
       if (!t.hours) return;
       if (typeof isFlatRateSubcontractor === 'function' && isFlatRateSubcontractor(t.userId, t.userEmail)) return;
+      { const cm = (typeof crewMemberFor === 'function') && crewMemberFor(t.userId, t.userEmail); if (cm && cm.paymentType === 'daily') return; } // CREW_ADMIN_V1: day-rate pay is recorded weekly
       const key = t.userId || t.userEmail || 'unknown';
       if (!byPerson[key]) byPerson[key] = { hours: 0, rate: getPersonBurdenRate(t.userId, t.userEmail) || 0 };
       byPerson[key].hours += t.hours;

@@ -165,6 +165,52 @@ function getPlivoClient() {
 // Called by the client right after login, followed by a forced ID token
 // refresh (getIdToken(true)) so the new claims take effect immediately
 // without requiring a full sign-out/sign-in.
+// CREW_ADMIN_V1 (Travis 11/23/26): the Office Manager adds and manages crew
+// (Field Technicians / Team Leads) so they can clock in, sets their pay
+// (per day or per hour) and which jobs they're assigned to. settings/team is
+// Owner-only in the rules, so this runs server-side with the caller's role
+// checked here. An Office Manager can never create or edit an Owner/office role.
+const CREW_ROLES = ['Field Technician', 'Team Lead'];
+exports.crewManage = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Sign in first.');
+  const tok = context.auth.token || {};
+  const companyId = String(data.companyId || '');
+  if (!companyId || tok.companyId !== companyId) throw new functions.https.HttpsError('permission-denied', 'Not your company.');
+  const isOwner = tok.role === 'Owner' || tok.fullAccessOverride === true;
+  if (!isOwner && tok.role !== 'Office Manager') throw new functions.https.HttpsError('permission-denied', 'Only an Owner or the Office Manager can manage crew.');
+  const email = String(data.email || '').trim().toLowerCase();
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new functions.https.HttpsError('invalid-argument', 'Enter a valid email address.');
+  const key = email.replace(/\./g, '_');
+  const db = admin.firestore();
+  const teamRef = db.collection('companies').doc(companyId).collection('settings').doc('team');
+  const teamDoc = await teamRef.get();
+  const existing = teamDoc.exists ? ((teamDoc.data().members || {})[key] || null) : null;
+  if (existing && !CREW_ROLES.includes(existing.role) && !isOwner) throw new functions.https.HttpsError('permission-denied', 'That person is not crew; only an Owner can change them.');
+  const action = data.action || 'save';
+  if (action === 'remove') {
+    if (!existing) return { ok: true };
+    await teamRef.set({ members: { [key]: admin.firestore.FieldValue.delete() } }, { merge: true });
+    await db.collection('companies').doc(companyId).update({ memberEmails: admin.firestore.FieldValue.arrayRemove(email) }).catch(() => {});
+    return { ok: true, removed: email };
+  }
+  const role = CREW_ROLES.includes(data.role) ? data.role : (existing && existing.role) || 'Field Technician';
+  const name = String(data.name || (existing && existing.name) || '').trim();
+  if (!name) throw new functions.https.HttpsError('invalid-argument', 'Enter their name.');
+  const rate = Number(data.rate);
+  const member = {
+    email, name, role,
+    paymentType: data.payBasis === 'day' ? 'daily' : 'hourly',
+    burdenedRate: isFinite(rate) && rate >= 0 ? Math.round(rate * 100) / 100 : (existing && existing.burdenedRate) || 0,
+    assignedJobIds: Array.isArray(data.assignedJobIds) ? data.assignedJobIds.map(String).slice(0, 50) : ((existing && existing.assignedJobIds) || []),
+    phone: String(data.phone || (existing && existing.phone) || '').trim(),
+    updatedAt: new Date().toISOString(), updatedBy: (tok.email || '').toLowerCase(),
+  };
+  if (!existing) { member.addedAt = member.updatedAt; member.addedBy = member.updatedBy; }
+  await teamRef.set({ members: { [key]: member } }, { merge: true });
+  await db.collection('companies').doc(companyId).update({ memberEmails: admin.firestore.FieldValue.arrayUnion(email) });
+  return { ok: true, member };
+});
+
 exports.syncMyClaims = functions.https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'Must be signed in.');
