@@ -21422,6 +21422,13 @@ function renderPortalProposal(prop, jobId) {
         ${notesHtml}
       </div>`;
     }).join('');
+    if (!data.itemized) { // PROPOSAL_ROOM_SENTENCE_V1
+      return `<div class="portal-prop-room">
+      <div style="font-weight:800;color:#eaf0fb;margin-bottom:4px">${esc(room.name)}</div>
+      <div style="font-size:.88rem;color:var(--muted);padding-left:8px;white-space:pre-wrap">${esc(proposalRoomSentence(room))}</div>
+      ${proposalRoomHasBid(room) ? `<div style="font-size:.78rem;color:#fbbf24;padding-left:8px;margin:4px 0">⚠ Some pricing in this area is preliminary and may be adjusted once final vendor bids are in.</div>` : ''}
+    </div>`;
+    }
     return `<div class="portal-prop-room">
       <div style="font-weight:800;color:#eaf0fb;margin-bottom:4px">${esc(room.name)}</div>
       ${catHtml}${directHtml}
@@ -29573,6 +29580,20 @@ function computeProposalData(job, itemized, showCategoryPricing) {
 // Turns a computeProposalData() result into the full printable HTML page.
 // Used both for a fresh live print and for reprinting a frozen historical
 // version — same renderer, different data source.
+// PROPOSAL_ROOM_SENTENCE_V1 (Travis 11/23/26, both companies): the customer
+// proposal shows each room's name and its one scope sentence ("Window
+// install, ceiling fan install ... outlets"), nothing else, then the total.
+// A room with no scope note gets a sentence built from its section names.
+// Full Itemized (bank/lender) proposals keep the complete breakdown.
+function proposalRoomSentence(room) {
+  const note = String(room.scopeNotes || '').trim();
+  if (note) return note;
+  const names = [...(room.catBlocks || []), ...(room.directBlocks || [])].map(b => String(b.label || '').trim()).filter(Boolean);
+  if (!names.length) return '';
+  const s = names.join(', ');
+  return s.charAt(0).toUpperCase() + s.slice(1) + '.';
+}
+const proposalRoomHasBid = room => (room.catBlocks || []).some(c => c.pendingBid);
 function renderProposalDocumentHtml(data, job, co, autoPrint) {
   const itemized = data.itemized;
   // Historical snapshots printed before 9/18/26 have no showCategoryPricing
@@ -29582,6 +29603,14 @@ function renderProposalDocumentHtml(data, job, co, autoPrint) {
   const showCategoryPricing = ('showCategoryPricing' in data) ? !!data.showCategoryPricing : true;
 
   const roomSections = data.rooms.map(room => {
+    if (!itemized) {
+      const sentence = proposalRoomSentence(room);
+      const bid = proposalRoomHasBid(room) ? `<div class="cat-bid-caveat">⚠ ${esc((room.catBlocks.find(c => c.pendingBid) || {}).pendingBidNote || 'Some pricing in this area is preliminary and may be adjusted once final vendor bids are in.')}</div>` : '';
+      return `<div class="room-section">
+      <div class="room-heading">${esc(room.name)}</div>
+      <div class="cat-block" style="border-radius:0 0 8px 8px"><div class="cat-scope" style="margin:0;font-size:.95rem;color:#1f2937">${esc(sentence)}</div>${bid}</div>
+    </div>`;
+    }
     const catHtml = room.catBlocks.map(c => {
       const priceHtml = (showCategoryPricing && !c.descriptionOnly) ? `<span style="float:right;font-weight:700;color:#1f2937">$${c.price.toFixed(2)}</span>` : '';
       const bidCaveat = c.pendingBid
