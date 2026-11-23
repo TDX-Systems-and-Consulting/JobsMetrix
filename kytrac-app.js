@@ -7619,7 +7619,7 @@ function fhRenderSubPayments() {
     ? '<div class="finhub-empty">No subcontractor payments logged for this job.</div>'
     : items.map(p => `
     <div class="finhub-line" onclick="openAddSubPayFromJob('${p.id}')" style="cursor:pointer">
-      <div><div class="finhub-line-title">${esc(p.subName||'Subcontractor')}</div><div class="finhub-line-sub">${esc(p.desc||'')}${p.overrideReason ? ' · <span style="color:#f59e0b">⚠ override: '+esc(p.overrideReason)+'</span>' : ''}</div></div>
+      <div><div class="finhub-line-title">${esc(p.subName||'Subcontractor')}</div><div class="finhub-line-sub">${esc(p.desc||'')}${p.days && p.dayRate ? ' · ' + p.days + ' day' + (p.days == 1 ? '' : 's') + ' × $' + Number(p.dayRate).toFixed(2) : ''}${p.overrideReason ? ' · <span style="color:#f59e0b">⚠ override: '+esc(p.overrideReason)+'</span>' : ''}</div></div>
       <div class="finhub-line-amt">${fhMoney(p.amount)}</div>
       <div class="finhub-line-bal" style="color:${p.status==='Paid'?'#a3f2d2':'#fde68a'}">${esc(p.status||'Agreed')}</div>
       <div>${fhBadge('Subcontractor','#c084fc')}</div>
@@ -7686,6 +7686,7 @@ function openAddSubPayFromJob(payId) {
   document.getElementById('subPayOtherWrap').style.display = (existing && !existingSubKey) ? '' : 'none';
   setVal('subPayDesc', existing?.desc);
   setVal('subPayAmount', existing?.amount);
+  setVal('subPayDays', existing?.days); setVal('subPayDayRate', existing?.dayRate); // DAY_RATE_V1
   setVal('subPayDate', existing?.date || new Date().toISOString().split('T')[0]);
   setVal('subPayNotes', existing?.notes);
   document.getElementById('subPayStatus').value = existing?.status || 'Agreed';
@@ -7740,6 +7741,16 @@ async function onSubPaySelectChange() {
   const contractor = (allContractors || []).find(c => c.id === sel.value);
   const jobId = conCurrentJobId;
   if (!contractor || !jobId || !conDb) return;
+  // DAY_RATE_V1: paid by the day -> fill the day rate; amount = days x rate.
+  if (contractor.rateType === 'day') {
+    const dr = document.getElementById('subPayDayRate'); if (dr && !dr.value && contractor.burdenedRate) dr.value = contractor.burdenedRate;
+    _subPaySuggestedAmount = null;
+    if (overrideWrap) overrideWrap.style.display = 'none';
+    if (suggestedWrap) { suggestedWrap.style.display = ''; suggestedWrap.textContent = contractor.name + ' is paid by the day: enter the days worked and the amount fills in.'; }
+    showSubPayScheduleSection(contractor);
+    subPayDaysCalc();
+    return;
+  }
 
   showSubPayScheduleSection(contractor);
 
@@ -7880,6 +7891,13 @@ function onSubPayAmountInput() {
 }
 window.onSubPayAmountInput = onSubPayAmountInput;
 
+// DAY_RATE_V1 (Travis 11/23/26): NWI pays its guys per day. Days x day rate
+// fills the payment amount; the days and rate are saved on the payment.
+function subPayDaysCalc() {
+  const d = parseFloat(document.getElementById('subPayDays')?.value), r = parseFloat(document.getElementById('subPayDayRate')?.value);
+  if (d > 0 && r > 0) { const a = document.getElementById('subPayAmount'); if (a) { a.value = (Math.round(d * r * 100) / 100).toFixed(2); if (typeof onSubPayAmountInput === 'function') onSubPayAmountInput(); } }
+}
+window.subPayDaysCalc = subPayDaysCalc;
 async function saveSubcontractorPayment() {
   const jobId = conCurrentJobId;
   if (!jobId) { alert('No job open.'); return; }
@@ -7922,6 +7940,8 @@ async function saveSubcontractorPayment() {
     date: document.getElementById('subPayDate')?.value || new Date().toISOString().split('T')[0],
     status: document.getElementById('subPayStatus')?.value || 'Agreed',
     notes: document.getElementById('subPayNotes')?.value.trim() || '',
+    days: parseFloat(document.getElementById('subPayDays')?.value) || null,
+    dayRate: parseFloat(document.getElementById('subPayDayRate')?.value) || null,
     suggestedAmount: overrideVisible ? _subPaySuggestedAmount : null,
     overrideReason: overrideVisible ? overrideReason : '',
     companyId: currentCompanyId,
@@ -18982,7 +19002,7 @@ function renderContractors() {
           <a href="sms:${esc(c.phone)}" onclick="event.stopPropagation()" style="background:rgba(59,130,246,.15);color:#93c5fd;border:1px solid rgba(59,130,246,.25);border-radius:6px;padding:1px 7px;font-size:.7rem;font-weight:700;text-decoration:none">📱 Text</a>
         </div>` : ''}
         ${c.email ? `<div style="font-size:.82rem"><a href="mailto:${esc(c.email)}" onclick="event.stopPropagation()" style="color:#eaf0fb;text-decoration:none">✉️ ${esc(c.email)}</a></div>` : ''}
-        <div style="font-size:.82rem;color:var(--muted)">💵 $${(c.burdenedRate||0).toFixed(2)}/hr${crewCount ? ` · 👷 ${crewCount} crew member${crewCount!==1?'s':''}` : ' · ⚠️ no crew members linked'}</div>
+        <div style="font-size:.82rem;color:var(--muted)">💵 $${(c.burdenedRate||0).toFixed(2)}/${c.rateType === 'day' ? 'day' : 'hr'}${c.rateType === 'day' ? '' : (crewCount ? ` · 👷 ${crewCount} crew member${crewCount!==1?'s':''}` : ' · ⚠️ no crew members linked')}</div>
         ${c.w9OnFile ? `<div style="font-size:.76rem;color:#1dbb87">✓ W-9 on file</div>` : `<div style="font-size:.76rem;color:#f59e0b">⚠️ No W-9 on file</div>`}
         ${c.insExp ? `<div style="font-size:.76rem;margin-top:4px" class="${insClass}">${insLabel}: ${c.insExp}</div>` : ''}
       </div>
@@ -19000,6 +19020,7 @@ function openContractorModal(id) {
   setVal('contractorPhone', c?.phone); setVal('contractorEmail', c?.email);
   setVal('contractorInsExp', c?.insExp); setVal('contractorNotes', c?.notes);
   setVal('contractorRate', c?.burdenedRate);
+  { const rt = document.getElementById('contractorRateType'); if (rt) rt.value = c?.rateType === 'day' ? 'day' : 'hour'; }
   document.getElementById('contractorTrade').value = c?.trade || 'General Labor';
   document.getElementById('contractorStatus').value = c?.status || 'Active';
   document.getElementById('contractorW9OnFile').checked = !!c?.w9OnFile;
@@ -19040,6 +19061,7 @@ function saveContractor() {
     insExp: document.getElementById('contractorInsExp')?.value || '',
     w9OnFile: !!document.getElementById('contractorW9OnFile')?.checked,
     burdenedRate: parseFloat(document.getElementById('contractorRate')?.value) || 0,
+    rateType: document.getElementById('contractorRateType')?.value === 'day' ? 'day' : 'hour', // DAY_RATE_V1
     crewMemberEmails,
     notes: document.getElementById('contractorNotes')?.value.trim() || '',
     updatedAt: firebase.firestore.FieldValue.serverTimestamp()
