@@ -12075,6 +12075,50 @@ window.openJCDJobDetail = openJCDJobDetail;
 let catalogItems = [];
 let catalogListener = null;
 
+// SMART_ADD_OWN_V1: the trade list Smart Add walks (room -> trade -> items).
+// Captured from JTXD's built-in catalog keys + every trade the room map uses,
+// before a licensed company's mode clears the built-in prices.
+let _tradeKeysCache = null;
+function tradeKeys() {
+  if (_tradeKeysCache) return _tradeKeysCache;
+  const set = new Set(Object.keys(CATALOG_DATA || {}));
+  try { Object.values(ROOM_STRUCTURE).forEach(c => Object.values(c.rooms || {}).forEach(r => (r.phases || []).forEach(ph => set.add(ph.trade)))); } catch (e) {}
+  _tradeKeysCache = [...set].filter(Boolean).sort();
+  return _tradeKeysCache;
+}
+const tradeLabel = k => String(k || '').replace(/^\d+\s+/, '');
+// For a licensed company, CATALOG_DATA (what Smart Add reads) is rebuilt from
+// the company's own Cost Catalog. Items without a Trade land in Miscellaneous.
+function rebuildOwnCatalogData() {
+  if (!(typeof isCoreTenant === 'function' && isCoreTenant())) return;
+  tradeKeys();
+  Object.keys(CATALOG_DATA).forEach(k => { delete CATALOG_DATA[k]; });
+  (catalogItems || []).forEach(c => {
+    const trade = c.trade || '3100 Miscellaneous';
+    const unitCost = Number(c.unitCost) || 0;
+    const line = { desc: c.desc || '', unitCost, unitPrice: unitCost * (1 + (Number(c.markup) || 0) / 100), unit: c.unit || 'ea', qty: 1 };
+    const isLabor = c.category === 'Labor' || c.category === 'Subcontractor';
+    (CATALOG_DATA[trade] = CATALOG_DATA[trade] || []).push({
+      name: c.desc || '', short: c.desc || '', costCode: trade, costCodeName: tradeLabel(trade),
+      materials: isLabor ? null : line, labor: isLabor ? line : null, catalogId: c.id,
+    });
+  });
+  _flatCatalogIndex = null;
+}
+window.rebuildOwnCatalogData = rebuildOwnCatalogData;
+// Which trade an estimate subgroup belongs to (by its name: "Siding", "Flooring"...).
+function tradeForSectionName(name) {
+  const n = String(name || '').trim().toLowerCase(); if (!n) return '';
+  const keys = tradeKeys();
+  let hit = keys.find(k => tradeLabel(k).toLowerCase() === n);
+  if (hit) return hit;
+  try {
+    for (const c of Object.values(ROOM_STRUCTURE)) for (const r of Object.values(c.rooms || {})) for (const ph of (r.phases || []))
+      if (String(ph.label).toLowerCase() === n) return ph.trade;
+  } catch (e) {}
+  return '';
+}
+
 const CAT_COLORS = {
   'Labor':          '#4d8dff',
   'Materials':      '#1dbb87',
@@ -12094,6 +12138,7 @@ function loadCatalog() {
       catalogItems = [];
       snap.forEach(doc => catalogItems.push({ id: doc.id, ...doc.data() }));
       catalogItems.sort((a,b) => (a.category||'').localeCompare(b.category||''));
+      rebuildOwnCatalogData();   // SMART_ADD_OWN_V1
       renderCatalog();
       renderCatalogStats();
     }, err => console.warn('Catalog load error:', err));
@@ -12186,6 +12231,7 @@ function openCatalogItemModal(id) {
   document.getElementById('catItemMarkup').value = item ? (item.markup||0) : getDefaultMarkupForCostType('Labor');
   document.getElementById('catItemNotes').value = item ? (item.notes||'') : '';
   document.getElementById('catItemSupplier').value = item ? (item.supplier||'') : '';
+  { const ts = document.getElementById('catItemTrade'); if (ts) { ts.innerHTML = '<option value="">— none (shows under Miscellaneous) —</option>' + tradeKeys().map(k => `<option value="${esc(k)}">${esc(tradeLabel(k))}</option>`).join(''); ts.value = item ? (item.trade || '') : ''; } }
   document.getElementById('deleteCatItemBtn').style.display = item ? 'inline-flex' : 'none';
   calcCatPreview();
   kOpen('catalogItemModal');
@@ -12229,6 +12275,7 @@ function saveCatalogItem() {
     markup: parseFloat(document.getElementById('catItemMarkup').value) || 0,
     notes: document.getElementById('catItemNotes').value.trim(),
     supplier: document.getElementById('catItemSupplier').value.trim(),
+    trade: document.getElementById('catItemTrade')?.value || '',
     updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
     updatedBy: conCurrentUser ? conCurrentUser.email : 'unknown'
   };
@@ -28582,6 +28629,7 @@ function openAddEstItemModal(itemId, groupId, subgroupId, subSubgroupId) {
   // (re)opened, so a leftover pick from a previous item never bleeds
   // into a new one (e.g. editing an existing item afterward).
   _pendingCatalogLaborLine = null;
+  { const sc = document.getElementById('estItemSaveToCatalog'); if (sc) sc.checked = !itemId && (typeof isCoreTenant === 'function' && isCoreTenant()); } // SMART_ADD_OWN_V1
   const laborWrapReset = document.getElementById('estItemLaborLineWrap');
   if (laborWrapReset) laborWrapReset.style.display = 'none';
   _editingEstItemId = itemId || null;
@@ -28818,6 +28866,20 @@ function calcEstItemPreview() {
   }
 }
 
+async function saveEstLineToCatalog(line, trade) {
+  const desc = String(line.desc || '').trim(); if (!desc) return;
+  const cats = ['Labor','Materials','Subcontractor','Equipment','Permits & Fees','Overhead'];
+  const category = cats.includes(line.costType) ? line.costType : 'Materials';
+  const existing = (catalogItems || []).find(c => String(c.desc || '').trim().toLowerCase() === desc.toLowerCase());
+  const data = {
+    desc, category, unit: line.unit || 'ea', unitCost: Number(line.unitCost) || 0, markup: Number(line.markup) || 0,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(), updatedBy: conCurrentUser ? conCurrentUser.email : 'unknown',
+  };
+  if (trade) data.trade = trade;
+  if (existing) return coll('catalog').doc(existing.id).update(data);
+  return coll('catalog').add({ ...data, notes: line.notes || '', supplier: '', trade: trade || '', companyId: currentCompanyId,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp(), createdBy: conCurrentUser ? conCurrentUser.email : 'unknown', source: 'estimate' });
+}
 function saveEstItem() {
   const desc = document.getElementById('estItemDesc')?.value.trim();
   if (!desc) { alert('Description is required.'); return; }
@@ -28853,6 +28915,12 @@ function saveEstItem() {
   const subSubgroupId = _editingSubSubgroupId;
   const jobRef = coll('jobs').doc(conCurrentJobId);
   let colRef;
+  // SMART_ADD_OWN_V1: "Also save to my Cost Catalog" -- adds the line as a
+  // catalog item (or refreshes the price of the one with the same name).
+  if (document.getElementById('estItemSaveToCatalog')?.checked) {
+    const sectionName = (estGroups.find(g => g.id === groupId)?.subgroups || []).find(sg => sg.id === subgroupId)?.name || '';
+    saveEstLineToCatalog(data, tradeForSectionName(sectionName)).catch(e => console.warn('catalog save:', e.message));
+  }
 
   if (subSubgroupId && subgroupId) {
     colRef = jobRef.collection('estimateGroups').doc(groupId).collection('subgroups').doc(subgroupId).collection('subgroups').doc(subSubgroupId).collection('items');
@@ -32972,7 +33040,9 @@ async function tplAddPaintToEstimate() {
 window.tplAddPaintToEstimate = tplAddPaintToEstimate;
 
 function openSmartAdd() {
-  if (typeof isCoreTenant === 'function' && isCoreTenant()) return; // OWN_CATALOG_V1
+  // SMART_ADD_OWN_V1 (Travis 11/23/26): Smart Add works for licensed
+  // companies too, built from their own Cost Catalog (see rebuildOwnCatalogData).
+  if (typeof isCoreTenant === 'function' && isCoreTenant()) rebuildOwnCatalogData();
   _launchSmartAdd();
 }
 
@@ -33010,9 +33080,16 @@ function wizardSelectCategory(cat) {
 function wizardSelectRoom(room) {
   _wizardRoom = room;
   _wizardStep = 3;
-  const phases = ROOM_STRUCTURE[_wizardCategory]?.rooms[room]?.phases || [];
+  let phases = ROOM_STRUCTURE[_wizardCategory]?.rooms[room]?.phases || [];
   const grid = document.getElementById('wizardTradeGrid');
   if (!grid) return;
+  if (typeof isCoreTenant === 'function' && isCoreTenant()) {
+    phases = phases.filter(ph => (CATALOG_DATA[ph.trade] || []).length);
+    if (!phases.length) {
+      grid.innerHTML = '<div style="grid-column:1/-1;padding:14px;color:var(--muted);font-size:.85rem">None of your Cost Catalog items are tagged with a trade used in this room yet. Open <b>Cost Catalog</b>, edit an item and pick its <b>Trade</b>, and it shows up here.</div>';
+      wizardSetStep(3); updateWizardBreadcrumb(); return;
+    }
+  }
 
   grid.innerHTML = phases.map(phase => {
     const icon = PHASE_ICONS[phase.label] || '🔨';
@@ -33112,7 +33189,7 @@ function wizardSelectTrade(trade) {
   // without an extra click or two. Now every trade always shows every
   // one of its real catalog items on this one screen; bundles are just
   // a faster path to a common pre-built combo when one exists.
-  const bundles = (TIERED_BUNDLES[trade] || []).filter(b =>
+  const bundles = ((typeof isCoreTenant === 'function' && isCoreTenant()) ? [] : (TIERED_BUNDLES[trade] || [])).filter(b =>
     !b.roomScope ||
     (b.roomScope === 'interior' && _wizardRoom !== 'Exterior') ||
     (b.roomScope === 'exterior' && _wizardRoom === 'Exterior')
@@ -38534,8 +38611,10 @@ function applyTenantMode() {
     JTXD_LOCKED_RATES.consultantPct = 0;
     // OWN_CATALOG_V1: JTXD's built-in catalog, Smart Add and Guided Questions
     // carry JTXD's prices; another company builds its own.
+    tradeKeys();   // SMART_ADD_OWN_V1: remember the trade list before clearing
     Object.keys(CATALOG_DATA).forEach(k => { delete CATALOG_DATA[k]; });
     _flatCatalogIndex = null;
+    rebuildOwnCatalogData();
     const r = companyProfile || {};
     if (Number(r.billedPerCrewHour) > 0) JTXD_LOCKED_RATES.billedPerCrewHour = Number(r.billedPerCrewHour);
     if (Number(r.materialsMarkupPct) > 0) JTXD_LOCKED_RATES.materialsMarkupPct = Number(r.materialsMarkupPct) / (Number(r.materialsMarkupPct) > 1 ? 100 : 1);

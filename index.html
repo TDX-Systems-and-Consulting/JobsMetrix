@@ -2760,6 +2760,8 @@
         </div>
         <div class="full"><label class="small muted" style="display:block;margin-bottom:5px">Supplier / Vendor</label>
           <input id="catItemSupplier" placeholder="e.g. Home Depot, ABC Supply" /></div>
+        <div class="full"><label class="small muted" style="display:block;margin-bottom:5px">Trade <span style="font-weight:400">(where Smart Add shows it)</span></label>
+          <select id="catItemTrade"></select></div>
       </div>
     </div>
     <div class="modal-foot">
@@ -4298,6 +4300,10 @@
             <input id="estItemPhase" placeholder="e.g. Rough-in, Finish..." /></div>
           <div class="full"><label class="small muted" style="display:block;margin-bottom:5px">Notes</label>
             <input id="estItemNotes" placeholder="Specs, exclusions, notes..." /></div>
+          <div class="full" style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" id="estItemSaveToCatalog" style="cursor:pointer" />
+            <label for="estItemSaveToCatalog" style="cursor:pointer;font-size:.85rem;color:var(--text)">Also save to my Cost Catalog <span class="small muted">(updates the price if it's already there)</span></label>
+          </div>
           <div class="full" id="estItemLaborLineWrap" style="display:none;align-items:center;gap:8px;background:rgba(29,187,135,.08);border:1px solid rgba(29,187,135,.3);border-radius:8px;padding:8px 12px">
             <input type="checkbox" id="estItemLaborLineToggle" checked style="cursor:pointer" />
             <label for="estItemLaborLineToggle" id="estItemLaborLineLabel" style="cursor:pointer;font-size:.85rem;color:var(--text)"></label>
@@ -4863,7 +4869,7 @@
           <!-- Toolbar -->
           <!-- Smart Add Banner -->
           <div style="display:flex;gap:8px;margin-top:8px;margin-bottom:0;flex-wrap:wrap">
-            <button class="jtxd-only" onclick="openSmartAdd()" style="flex:1;min-width:150px;padding:9px;border-radius:12px;border:1.5px solid rgba(217,119,6,.5);background:linear-gradient(135deg,rgba(217,119,6,.15),rgba(217,119,6,.05));color:var(--amber);font-size:.86rem;font-weight:800;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px">
+            <button onclick="openSmartAdd()" style="flex:1;min-width:150px;padding:9px;border-radius:12px;border:1.5px solid rgba(217,119,6,.5);background:linear-gradient(135deg,rgba(217,119,6,.15),rgba(217,119,6,.05));color:var(--amber);font-size:.86rem;font-weight:800;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px">
               ⚡ Smart Add
               <span style="font-size:.74rem;font-weight:400;color:rgba(217,119,6,.7)">Browse by Room &amp; Trade</span>
             </button>
@@ -5324,7 +5330,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202611202107"></script>
+<script src="kytrac-app.js?v=202611231518"></script>
 <script src="kytlead.js?v=202611111110"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell
