@@ -2470,6 +2470,10 @@
                   <label>Make Checks Payable To <span style="font-weight:400;color:#8a97ad">(optional — defaults to company name)</span></label>
                   <input id="settCheckPayableTo" placeholder="Leave blank to use your company name" />
                 </div>
+                <div class="settings-field" style="grid-column:1/-1">
+                  <label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input id="settInvoicePayOnline" type="checkbox" checked style="width:auto" /> Include an online <b>Pay Now</b> link in invoice emails</label>
+                  <div class="small muted">Off: invoices go out with your check / payment instructions only, and the office marks them paid when the money comes in.</div>
+                </div>
                 <div class="settings-field">
                   <label>License Number</label>
                   <input id="settLicense" placeholder="Contractor license #" />
@@ -5339,7 +5343,7 @@
 <div class="photo-queue-badge" style="display:none;position:fixed;bottom:18px;right:18px;z-index:9999;background:#d97706;color:#fff;border-radius:999px;padding:8px 16px;font-size:.8rem;font-weight:700;box-shadow:var(--shadow);align-items:center;gap:6px"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="kytrac-app.js?v=202611231546"></script>
+<script src="kytrac-app.js?v=202611231557"></script>
 <script src="kytlead.js?v=202611111110"></script>
 <script>
   // Register PWA service worker for installability + offline app-shell

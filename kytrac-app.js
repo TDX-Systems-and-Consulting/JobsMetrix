@@ -13748,6 +13748,7 @@ function quickMarkPaid(jobId, invId, total) {
         <option value="QuickBooks Payments">QuickBooks Payments (paid online)</option>
         <option value="Card / Online">Card / Online (Stripe)</option>
         <option value="Bank Transfer">Bank Transfer / ACH</option>
+        <option value="Paid through our bank">Paid through our bank's pay page</option>
         <option value="Other">Other</option>
       </select>
       <div id="mpCheckFields">
@@ -14199,11 +14200,15 @@ async function emailInvoiceToCustomer(jobId, invId) {
   let stripePayLink = '';
   let stripeErrorMsg = '';
   const balanceOwed = (inv.total || 0) - (inv.amtPaid || 0);
+  // INVOICE_NO_PAYLINK_V1 (Travis 11/23/26): a company can email invoices with
+  // no online Pay Now link (NWI: their QuickBooks link is broken). The customer
+  // pays by check/their usual way and the office marks the invoice paid.
+  const payOnline = companyProfile.invoicePayOnline !== false;
   // XERO_V1: the invoice goes to Xero first (same number, job-tagged).
   // With "Use Xero's pay page" on, the email's Pay Now is Xero's page;
   // otherwise (or if Xero fails) it stays the Stripe link.
   // QBO_RESTORE_V1: a company on QuickBooks gets the invoice there before it's emailed.
-  if (window._qbStatus && window._qbStatus.connected && conFunctions) {
+  if (payOnline && window._qbStatus && window._qbStatus.connected && conFunctions) {
     try {
       await conFunctions.httpsCallable('qbCreateInvoice')({ companyId: currentCompanyId, jobId, invoiceId: invId });
       logInvoiceActivity(jobId, 'qbo_synced', `Invoice ${invNumSafe(inv)}sent to QuickBooks.`);
@@ -14224,7 +14229,7 @@ async function emailInvoiceToCustomer(jobId, invId) {
     }
   }
   const useXeroPage = !!(xeroReady() && _xeroStatus.usePayPage && xeroUrl && balanceOwed > 0);
-  if (conFunctions && balanceOwed > 0 && !useXeroPage) {
+  if (payOnline && conFunctions && balanceOwed > 0 && !useXeroPage) {
     try {
       const createLink = conFunctions.httpsCallable('createStripePaymentLink');
       const result = await createLink({ companyId: currentCompanyId, jobId, invoiceId: invId });
@@ -14235,7 +14240,7 @@ async function emailInvoiceToCustomer(jobId, invId) {
     }
   }
 
-  if (balanceOwed > 0 && !stripePayLink && !useXeroPage) {
+  if (payOnline && balanceOwed > 0 && !stripePayLink && !useXeroPage) {
     alert('Could not generate a Stripe payment link for this invoice.\n\n'
       + 'The invoice was NOT sent (to avoid emailing it with no way to pay).\n\n'
       + (stripeErrorMsg ? ('Actual error: ' + stripeErrorMsg + '\n\n') : '')
@@ -14248,7 +14253,7 @@ async function emailInvoiceToCustomer(jobId, invId) {
   const invNum = inv.number || 'Invoice';
   const total = (inv.total || 0).toLocaleString(undefined, {minimumFractionDigits:2});
   const due = inv.dueDate || '';
-  const payLink = useXeroPage ? xeroUrl : stripePayLink; // XERO_V1
+  const payLink = !payOnline ? '' : (useXeroPage ? xeroUrl : stripePayLink); // XERO_V1
 
   // Get portal link for invoice viewing
   let portalUrl = '';
@@ -15533,6 +15538,7 @@ function populateSettingsForm() {
   setVal('settWebsite', p.website);
   setVal('settAddress', p.address);
   setVal('settCheckPayableTo', p.checkPayableTo);
+  { const po = document.getElementById('settInvoicePayOnline'); if (po) po.checked = p.invoicePayOnline !== false; }
   setVal('settLicense', p.license);
   setVal('settInsurance', p.insurance);
   setVal('settPayTerms', p.payTerms || 30);
@@ -15601,6 +15607,7 @@ function saveCompanyProfile() {
     otMultiplier: parseFloat(document.getElementById('settOtMultiplier')?.value),
     weekStartDay: document.getElementById('settWeekStart')?.value || 'mon',
     ownerUid: document.getElementById('settPlannerxdOwnerUid')?.value.trim() || '',
+    invoicePayOnline: document.getElementById('settInvoicePayOnline') ? !!document.getElementById('settInvoicePayOnline').checked : (companyProfile.invoicePayOnline !== false),
     updatedAt: firebase.firestore.FieldValue.serverTimestamp()
   };
   if (isNaN(profile.defaultMaterialsMarkup)) profile.defaultMaterialsMarkup = 15;
@@ -15609,9 +15616,9 @@ function saveCompanyProfile() {
   if (isNaN(profile.otWeeklyThreshold)) profile.otWeeklyThreshold = 40;
   if (isNaN(profile.otMultiplier)) profile.otMultiplier = 1.5;
 
-  coll('settings').doc('company').set(profile)
+  coll('settings').doc('company').set(profile, { merge: true })
     .then(() => {
-      companyProfile = profile;
+      companyProfile = { ...companyProfile, ...profile };
       // Show saved confirmation
       const msg = document.getElementById('settSavedMsg');
       if (msg) { msg.style.display = 'block'; setTimeout(() => msg.style.display = 'none', 3000); }
