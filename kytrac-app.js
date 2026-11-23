@@ -18136,7 +18136,7 @@ function crewOpenForm(key) {
   _crewEditKey = key;
   const box = document.getElementById('crewForm'); if (!box) return;
   const m = key ? (_lastTeamMemberList || []).find(x => (x.email || '').replace(/\./g, '_') === key) : null;
-  const jobs = conJobs.filter(j => ACTIVE_STATUSES.includes(j.status));
+  const jobs = conJobs.filter(j => !/closed|lost|cancel/i.test(j.status || '') && !j.archived);
   const assigned = new Set((m && m.assignedJobIds) || []);
   const inp = 'padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--input-bg);color:var(--text);font-size:.85rem;min-width:0';
   box.innerHTML = `<div style="border:1px solid var(--amber-border);border-radius:12px;padding:12px;margin:8px 0 12px;display:grid;gap:8px">
